@@ -17,7 +17,13 @@ const parseNum = (v) => {
   const n = Number(t);
   return Number.isFinite(n) ? n : NaN;
 };
-const estimate = (priceUsd, nat, rate) => priceUsd * (1 + (nat || 0) / 100) * rate;
+// Estimado no Brasil (R$) = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio.
+// Arredonda para centavos igual ao servidor, para o valor do formulário bater com o salvo.
+const estimate = (priceUsd, nat, rate, freight = 0) => Math.round((priceUsd + (freight || 0)) * (1 + (nat || 0) / 100) * rate * 100) / 100;
+// Incoterms em que o preço já inclui o frete internacional (não soma o frete de novo).
+const FREIGHT_INCLUDED = ['CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
+const offerFreight = (incoterm, perUnit) => (FREIGHT_INCLUDED.includes(String(incoterm || '').toUpperCase()) ? 0 : perUnit || 0);
+const FORMULA = 'Estimado = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio';
 const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
 function formatCnpj(v) {
@@ -580,9 +586,12 @@ async function viewProduct(id) {
           <div>${esc(o.incoterm || 'Incoterm')}<b>${pct(o.nationalization_pct)}</b></div>
           <div>Estimado<b>${brl(o.estimated_brl)}</b></div>
         </div>
+        <div class="item-sub" style="margin-top:6px">${o.freight_usd > 0 ? `Frete incluído: ${usd(o.freight_usd)}/un.`
+          : FREIGHT_INCLUDED.includes(o.incoterm) && p.units_per_40hq ? `Frete já incluso no ${esc(o.incoterm)}` : 'Sem frete no cálculo'}
+        </div>
       </a>`).join('')}
     </div>
-    <p class="hint">Estimado = preço US$ × (1 + % nacionalização) × câmbio (${brl(p.exchange_rate)}). O percentual em cada oferta é o custo de nacionalização.</p>`
+    <p class="hint">${FORMULA} (${brl(p.exchange_rate)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
     : '<div class="empty">Nenhum fornecedor vinculado a este produto.</div>'}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
@@ -637,7 +646,7 @@ async function viewProductForm(id, query) {
         <div class="offer-head" style="margin-bottom:12px"><h3>Fornecedores e preços</h3>
           <button type="button" class="btn small" id="add-offer">+ Adicionar</button></div>
         <div id="offers"></div>
-        <p class="hint">Estimado no Brasil = US$ × (1 + % nacionalização) × câmbio ${brl(rate)}. Altere o câmbio em Conta.</p>
+        <p class="hint">${FORMULA} (${brl(rate)}). O frete não é somado quando o Incoterm já o inclui (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>
       </div>
       <div class="error-box" id="err" hidden></div>
       <div class="actions form-actions">
@@ -661,9 +670,14 @@ async function viewProductForm(id, query) {
     const usdV = parseNum(o.price_usd);
     const natV = parseNum(o.nationalization_pct) || 0;
     if (usdV == null || Number.isNaN(usdV)) return '<span class="item-sub">Informe o preço em US$</span>';
-    const est = estimate(usdV, natV, rate);
+    const perUnit = freightPerUnit(parseNum(form.units_per_40hq.value)) || 0;
+    const freight = offerFreight(o.incoterm, perUnit);
+    const est = estimate(usdV, natV, rate, freight);
     const br = parseNum(form.price_brl.value);
-    return `<span>Estimado: <b>${brl(est)}</b></span>${br > 0 ? savingBadge(br, est) : ''}`;
+    const note = freight > 0
+      ? `<span class="item-sub">inclui frete ${usd(freight)}/un.</span>`
+      : perUnit > 0 ? `<span class="item-sub">frete já incluso no ${esc(o.incoterm)}</span>` : '';
+    return `<span>Estimado: <b>${brl(est)}</b></span>${note}${br > 0 ? savingBadge(br, est) : ''}`;
   }
 
   function renderOffers() {
@@ -797,6 +811,7 @@ async function viewProductForm(id, query) {
   });
   form.units_per_40hq.addEventListener('input', () => {
     document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value), rate);
+    offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
   });
   form.price_brl.addEventListener('input', () => {
     offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
@@ -908,7 +923,7 @@ function renderRankProducts(r) {
         <div>Economia<b style="color:${it.saving_brl > 0 ? 'var(--good)' : it.saving_brl < 0 ? 'var(--bad)' : 'inherit'}">${it.saving_brl == null ? '—' : brl(it.saving_brl)}</b></div>
       </div>
     </a>`).join('')}</div>
-    <p class="hint">Ordenado pela maior economia percentual. Estimado = US$ × (1 + % nacionalização) × câmbio ${isAdmin() && !r.company ? 'de cada empresa' : brl(r.exchange_rate)}.</p>`;
+    <p class="hint">Ordenado pela maior economia percentual. ${FORMULA} ${isAdmin() && !r.company ? 'de cada empresa' : `(${brl(r.exchange_rate)})`}.</p>`;
 }
 
 function renderRankSuppliers(r) {
@@ -963,7 +978,7 @@ function freightHint(units, rate) {
       ? 'Quantidade que cabe num container 40HQ.'
       : `Frete 40HQ: ${usd(freight40hq())}. Informe as unidades para ver o frete por unidade.`;
   }
-  return `Frete por unidade: <b>${usd(f)}</b> (${brl(f * rate)}) — frete 40HQ de ${usd(freight40hq())} ÷ ${units.toLocaleString('pt-BR')} un.`;
+  return `Frete por unidade: <b>${usd(f)}</b> (${brl(f * rate)}) — frete 40HQ de ${usd(freight40hq())} ÷ ${units.toLocaleString('pt-BR')} un. Entra no preço estimado.`;
 }
 
 // Cartão do administrador na aba Conta: valor do frete internacional do container 40HQ.

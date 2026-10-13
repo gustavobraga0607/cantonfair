@@ -28,8 +28,10 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
 - **Frete 40HQ**: o administrador define em *Conta* o valor do frete internacional de um container 40HQ (USD),
-  válido para todas as empresas; cada produto mostra o frete por unidade (frete ÷ unidades por 40HQ).
-- **Cálculo**: `preço estimado no Brasil = preço US$ × (1 + % nacionalização) × câmbio`.
+  válido para todas as empresas; o frete por unidade entra no preço estimado (ver Cálculo).
+- **Cálculo**: `preço estimado no Brasil = (preço US$ + frete por unidade) × (1 + % nacionalização) × câmbio`,
+  com `frete por unidade = frete 40HQ ÷ unidades por container 40HQ`. O frete não é somado quando o Incoterm
+  da oferta já inclui o frete internacional (CFR, CIF, CPT, CIP, DAP, DPU, DDP).
 - **Câmbio do dia automático**: busca a cotação do dólar (taxa de venda) na PTAX do Banco Central,
   com AwesomeAPI e ExchangeRate-API como reserva, a cada 30 minutos. Se todas falharem, o app mantém o
   último valor, avisa o usuário e permite informar o câmbio manualmente em *Conta* (vale para toda a

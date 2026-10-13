@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
-const { buildRanking, estimateBrl, round2 } = require('./calc');
+const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
 const { OcrError } = require('./ocr');
 
 // A Vercel limita o corpo da requisição a 4,5 MB; as fotos são reduzidas no navegador.
@@ -186,8 +186,16 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     `, [...productIds, ...companyParam(cnpj)]);
   }
 
-  function productOut(p, offers, rate) {
+  // Frete internacional do container 40HQ (US$), definido pelo administrador.
+  async function freight40hq() {
+    const row = await db.get("SELECT value FROM app_settings WHERE key = 'freight_40hq_usd'");
+    return row?.value != null ? Number(row.value) : 0;
+  }
+
+  function productOut(p, offers, rate, freight = 0) {
+    const perUnit = freightPerUnit(freight, p.units_per_40hq);
     const opts = offers
+      .map((o) => ({ ...o, freight: offerFreight(o.incoterm, perUnit) }))
       .map((o) => ({
         id: o.id,
         supplier_id: o.supplier_id,
@@ -197,7 +205,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         moq: o.moq,
         incoterm: o.incoterm,
         nationalization_pct: o.nationalization_pct,
-        estimated_brl: round2(estimateBrl(o.price_usd, o.nationalization_pct, rate)),
+        freight_usd: round4(o.freight),
+        estimated_brl: round2(estimateBrl(o.price_usd, o.nationalization_pct, rate, o.freight)),
       }))
       .sort((a, b) => a.estimated_brl - b.estimated_brl);
     return {
@@ -210,7 +219,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   async function productResponse(cnpj, id) {
     const p = await loadProduct(cnpj, id);
-    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate);
+    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate, await freight40hq());
   }
 
   // Normaliza a lista de ofertas enviada pelo cliente e garante que os
@@ -435,13 +444,15 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('GET', '/api/suppliers/:id', async ({ user, params }) => {
     const s = await loadSupplier(db, accessCnpj(user), params.id);
     const company = await getCompany(s.cnpj);
+    const freight = await freight40hq();
     const products = (await db.all(`
-      SELECT p.id, p.name, p.photo, p.price_brl, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
+      SELECT p.id, p.name, p.photo, p.price_brl, p.units_per_40hq, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
       FROM offers o JOIN products p ON p.id = o.product_id
       WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
       .map((r) => ({
         ...r, photo: photoUrl(r.photo),
-        estimated_brl: round2(estimateBrl(r.price_usd, r.nationalization_pct, company.exchange_rate)),
+        estimated_brl: round2(estimateBrl(r.price_usd, r.nationalization_pct, company.exchange_rate,
+          offerFreight(r.incoterm, freightPerUnit(freight, r.units_per_40hq)))),
       }));
     return { ...supplierOut(s), products };
   });
@@ -521,7 +532,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));
-    return products.map((p) => productOut(p, offers.filter((o) => o.product_id === p.id), p.exchange_rate));
+    const freight = await freight40hq();
+    return products.map((p) => productOut(p, offers.filter((o) => o.product_id === p.id), p.exchange_rate, freight));
   });
 
   route('GET', '/api/products/:id', ({ user, params }) => productResponse(accessCnpj(user), params.id));
@@ -583,10 +595,11 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('GET', '/api/ranking', async ({ user, query }) => {
     const cnpj = listCnpj(user, query);
     const products = await db.all(`
-      SELECT p.id, p.cnpj, p.name, p.photo, p.price_brl, c.name AS company_name, c.exchange_rate
+      SELECT p.id, p.cnpj, p.name, p.photo, p.price_brl, p.units_per_40hq, c.name AS company_name, c.exchange_rate
       FROM products p JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)}`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));
+    const freight = await freight40hq();
 
     // Cada empresa tem seu próprio câmbio: calcula por empresa e junta o resultado.
     const byCompany = new Map();
@@ -597,7 +610,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const items = [];
     for (const list of byCompany.values()) {
       const ids = new Set(list.map((p) => p.id));
-      const ranked = buildRanking(list, offers.filter((o) => ids.has(o.product_id)), list[0].exchange_rate);
+      const ranked = buildRanking(list, offers.filter((o) => ids.has(o.product_id)), list[0].exchange_rate, freight);
       const meta = new Map(list.map((p) => [p.id, p]));
       for (const r of ranked) {
         items.push({ ...r, photo: photoUrl(r.photo), company_cnpj: meta.get(r.product_id).cnpj, company_name: meta.get(r.product_id).company_name });

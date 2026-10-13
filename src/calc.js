@@ -1,20 +1,36 @@
 'use strict';
 
-// Preço estimado no Brasil (R$) = preço US$ × (1 + % nacionalização) × câmbio.
-function estimateBrl(priceUsd, nationalizationPct, exchangeRate) {
-  return priceUsd * (1 + (nationalizationPct || 0) / 100) * exchangeRate;
+// Preço estimado no Brasil (R$) = (preço US$ + frete por unidade US$) × (1 + % nacionalização) × câmbio.
+function estimateBrl(priceUsd, nationalizationPct, exchangeRate, freightUsd = 0) {
+  return (priceUsd + (freightUsd || 0)) * (1 + (nationalizationPct || 0) / 100) * exchangeRate;
+}
+
+// Incoterms em que o preço do fornecedor já inclui o frete internacional:
+// nesses casos o frete do container não é somado de novo.
+const FREIGHT_INCLUDED = new Set(['CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP']);
+
+// Frete internacional por unidade (US$) = frete do container 40HQ ÷ unidades por container.
+function freightPerUnit(freight40hqUsd, unitsPer40hq) {
+  return freight40hqUsd > 0 && unitsPer40hq > 0 ? freight40hqUsd / unitsPer40hq : 0;
+}
+
+function offerFreight(incoterm, perUnitUsd) {
+  return FREIGHT_INCLUDED.has(String(incoterm || '').toUpperCase()) ? 0 : perUnitUsd;
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;
+const round4 = (n) => Math.round(n * 10000) / 10000;
 
 // Monta o ranking: para cada produto escolhe o fornecedor com menor preço
 // estimado e compara com o preço praticado no Brasil.
-function buildRanking(products, offers, exchangeRate) {
+function buildRanking(products, offers, exchangeRate, freight40hqUsd = 0) {
+  const units = new Map(products.map((p) => [p.id, p.units_per_40hq]));
   const byProduct = new Map();
   for (const o of offers) {
-    const estimated = estimateBrl(o.price_usd, o.nationalization_pct, exchangeRate);
+    const freight = offerFreight(o.incoterm, freightPerUnit(freight40hqUsd, units.get(o.product_id)));
+    const estimated = estimateBrl(o.price_usd, o.nationalization_pct, exchangeRate, freight);
     const list = byProduct.get(o.product_id) || [];
-    list.push({ ...o, estimated_brl: round2(estimated) });
+    list.push({ ...o, freight_usd: round4(freight), estimated_brl: round2(estimated) });
     byProduct.set(o.product_id, list);
   }
 
@@ -50,4 +66,4 @@ function buildRanking(products, offers, exchangeRate) {
   return rows;
 }
 
-module.exports = { estimateBrl, buildRanking, round2 };
+module.exports = { estimateBrl, buildRanking, round2, round4, freightPerUnit, offerFreight, FREIGHT_INCLUDED };

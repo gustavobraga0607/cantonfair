@@ -346,3 +346,39 @@ test('unidades por container 40HQ no produto e frete 40HQ definido pelo administ
   assert.equal(r.body.settings.freight_40hq_usd, 3500.5, 'todos os usuários enxergam o valor');
   assert.equal((await admin('PUT', '/api/admin/settings', { freight_40hq_usd: -1 })).status, 400);
 });
+
+test('frete 40HQ entra no preço estimado dos produtos e no ranking', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const a = client(base);
+  const admin = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11444777000161' });
+  await a('PUT', '/api/settings', { exchange_rate: 5 });
+  const sup = (await a('POST', '/api/suppliers', { name: 'S', card_photo: PNG })).body;
+  const sup2 = (await a('POST', '/api/suppliers', { name: 'T', card_photo: PNG })).body;
+  let r = await a('POST', '/api/products', { name: 'P', price_brl: 100, units_per_40hq: 1000, offers: [
+    { supplier_id: sup.id, price_usd: 10, incoterm: 'FOB', nationalization_pct: 100 },
+    { supplier_id: sup2.id, price_usd: 11, incoterm: 'CIF', nationalization_pct: 100 },
+  ] });
+  const id = r.body.id;
+  assert.equal(r.body.offers[0].estimated_brl, 100, 'sem frete definido: 10 × 2 × 5');
+
+  await admin('PUT', '/api/admin/settings', { freight_40hq_usd: 2000 }); // 2 US$/un.
+  r = await a('GET', `/api/products/${id}`);
+  const fob = r.body.offers.find((o) => o.incoterm === 'FOB');
+  const cif = r.body.offers.find((o) => o.incoterm === 'CIF');
+  assert.equal(fob.freight_usd, 2);
+  assert.equal(fob.estimated_brl, 120, '(10 + 2) × 2 × 5');
+  assert.equal(cif.freight_usd, 0);
+  assert.equal(cif.estimated_brl, 110, 'CIF já inclui frete');
+  assert.equal(r.body.offers[0].incoterm, 'CIF', 'CIF passa a ser o melhor');
+
+  r = await a('GET', '/api/ranking');
+  assert.equal(r.body.items[0].best.supplier_name, 'T');
+  assert.equal(r.body.items[0].best.estimated_brl, 110);
+  r = await a('GET', `/api/suppliers/${sup.id}`);
+  assert.equal(r.body.products[0].estimated_brl, 120);
+  r = await a('GET', '/api/products');
+  assert.equal(r.body[0].offers[1].estimated_brl, 120);
+});
