@@ -23,10 +23,20 @@
 
   <main id="app" aria-live="polite"></main>
 
+  <!-- Mapa oficial da feira: criado uma vez e mantido carregado entre as abas. -->
+  <section class="map-view" id="map-view" hidden>
+    <div class="map-toolbar">
+      <span class="item-sub">Mapa oficial dos pavilhões · cantonfair.org.cn</span>
+      <a class="btn small" id="map-open" target="_blank" rel="noopener">Abrir no navegador ↗</a>
+    </div>
+    <div class="map-frame" id="map-frame"></div>
+  </section>
+
   <nav class="tabbar" id="tabbar" hidden>
     <a href="#/ranking" data-tab="ranking"><span>&#9733;</span>Vantagens</a>
     <a href="#/products" data-tab="products"><span>&#9638;</span>Produtos</a>
     <a href="#/suppliers" data-tab="suppliers"><span>&#9742;</span>Fornecedores</a>
+    <a href="#/map" data-tab="map"><span>&#9873;</span>Mapa</a>
     <a href="#/account" data-tab="account"><span>&#9881;</span>Conta</a>
   </nav>
 

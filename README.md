@@ -29,6 +29,8 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   Um mesmo produto pode ter vários fornecedores.
 - **Cálculo**: `preço estimado no Brasil = preço US$ × (1 + % nacionalização) × câmbio`.
   O câmbio (R$ por US$) é configurável em *Conta* e vale para toda a equipe do CNPJ.
+- **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
+  mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:
   - *Por produto*: melhor fornecedor de cada item (menor preço estimado), comparação com o preço
     no Brasil e economia em R$ e %; ordenado do mais vantajoso para o menos.

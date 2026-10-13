@@ -115,7 +115,9 @@ function photoInputHtml(current, placeholder) {
 
 // form: telas de cadastro escondem a barra de abas (no celular ela sobe com o
 // teclado e cobre os campos) e usam uma barra fixa com o botão Salvar.
-function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false }) {
+function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false, map = false }) {
+  document.getElementById('map-view').hidden = !map;
+  document.body.classList.toggle('map-mode', map);
   document.title = title ? `${title} · Canton Fair Buyer` : 'Canton Fair Buyer by BR Trading';
   document.getElementById('topbar').hidden = auth;
   document.getElementById('tabbar').hidden = auth || form;
@@ -909,6 +911,31 @@ function renderRankSuppliers(r) {
     <p class="hint">Fornecedores ordenados pelo número de produtos em que oferecem o melhor preço estimado abaixo do preço no Brasil.</p>`;
 }
 
+// ===================== mapa da feira =====================
+
+const FAIR_MAP_URL = 'https://365.cantonfair.org.cn/en-US/exhibition-hall-map?phase=first';
+
+function viewMap() {
+  setChrome({ title: 'Mapa da feira', tab: 'map', map: true });
+  $app.innerHTML = '';
+  const frame = document.getElementById('map-frame');
+  document.getElementById('map-open').href = FAIR_MAP_URL;
+  // Ocupa exatamente o espaço entre a barra do topo e a barra de abas.
+  const fit = () => {
+    const view = document.getElementById('map-view');
+    view.style.top = `${document.getElementById('topbar').getBoundingClientRect().bottom}px`;
+    view.style.bottom = `${window.innerHeight - document.getElementById('tabbar').getBoundingClientRect().top}px`;
+  };
+  fit();
+  if (!viewMap.bound) { window.addEventListener('resize', () => { if (document.body.classList.contains('map-mode')) fit(); }); viewMap.bound = true; }
+  if (!frame.querySelector('iframe')) {
+    frame.innerHTML = `<div class="spinner" id="map-loading">Carregando o mapa da feira…</div>
+      <iframe src="${FAIR_MAP_URL}" title="Mapa dos pavilhões da Feira de Cantão" referrerpolicy="no-referrer"
+        allow="fullscreen" loading="eager"></iframe>`;
+    frame.querySelector('iframe').addEventListener('load', () => document.getElementById('map-loading')?.remove());
+  }
+}
+
 // ===================== conta =====================
 
 async function viewAccount() {
@@ -965,6 +992,7 @@ const routes = [
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
   [/^\/products\/(\d+)$/, (m) => viewProduct(m[1])],
   [/^\/products\/(\d+)\/edit$/, (m, q) => viewProductForm(m[1], q)],
+  [/^\/map$/, viewMap],
   [/^\/account$/, viewAccount],
 ];
 
