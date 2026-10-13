@@ -130,10 +130,58 @@ function setChrome({ title, back = null, tab = null, auth = false }) {
 
 const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</div>'; };
 
-async function getSuppliers(force = false) {
-  if (!state.suppliers || force) state.suppliers = await api('/api/suppliers');
-  return state.suppliers;
+async function getSuppliers(company) {
+  return api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS()));
 }
+
+// ===================== administrador =====================
+// O administrador vê fornecedores e produtos de todas as empresas e pode
+// filtrar por empresa (a escolha fica salva neste navegador).
+
+const isAdmin = () => Boolean(state.me?.user?.is_admin);
+const ownCnpj = () => state.me?.company?.cnpj;
+
+function getScope() {
+  if (!isAdmin()) return null;
+  let v = 'all';
+  try { v = localStorage.getItem('cfb.scope') || 'all'; } catch { /* sem armazenamento local */ }
+  return v === 'all' || companyInfo(v) ? v : 'all';
+}
+function setScope(v) {
+  try { localStorage.setItem('cfb.scope', v); } catch { /* sem armazenamento local */ }
+}
+const scopeQS = () => (isAdmin() ? `?company=${encodeURIComponent(getScope())}` : '');
+
+function companyInfo(cnpj) {
+  return state.me?.companies?.find((c) => c.cnpj === cnpj) || null;
+}
+function companyLabel(cnpj) {
+  const c = companyInfo(cnpj);
+  return c ? c.name || c.cnpj_formatted : cnpj;
+}
+// Etiqueta da empresa, exibida só para o administrador.
+function companyTag(cnpj) {
+  return isAdmin() && cnpj ? `<span class="badge company" title="Empresa">🏢 ${esc(companyLabel(cnpj))}</span>` : '';
+}
+
+function companyOptions(selected, { all = false } = {}) {
+  return (all ? `<option value="all" ${selected === 'all' ? 'selected' : ''}>Todas as empresas</option>` : '') +
+    (state.me.companies || []).map((c) => `<option value="${esc(c.cnpj)}" ${c.cnpj === selected ? 'selected' : ''}>
+      ${esc(c.name || 'Sem nome')} — ${esc(c.cnpj_formatted)}${c.cnpj === ownCnpj() ? ' (sua)' : ''}</option>`).join('');
+}
+
+// Barra de filtro por empresa no topo das listas (só administrador).
+function scopeBarHtml() {
+  if (!isAdmin()) return '';
+  return `<div class="scope-bar"><span class="badge admin">ADMIN</span>
+    <select id="scope" aria-label="Empresa">${companyOptions(getScope(), { all: true })}</select></div>`;
+}
+function bindScopeBar() {
+  document.getElementById('scope')?.addEventListener('change', (e) => { setScope(e.target.value); router(); });
+}
+
+// Empresa padrão para novos cadastros do administrador.
+const defaultCompany = () => (getScope() && getScope() !== 'all' ? getScope() : ownCnpj());
 
 // ===================== autenticação =====================
 
@@ -245,8 +293,9 @@ function viewRegister() {
 async function viewSuppliers() {
   setChrome({ title: 'Fornecedores', tab: 'suppliers' });
   loading();
-  const list = await getSuppliers(true);
+  const list = await getSuppliers();
   $app.innerHTML = `
+    ${scopeBarHtml()}
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar por nome ou stand"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/suppliers/new" aria-label="Novo fornecedor">+</a>`;
@@ -260,11 +309,13 @@ async function viewSuppliers() {
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             <div class="item-sub">${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
+            ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
       : `<div class="empty">${list.length ? 'Nenhum fornecedor encontrado.' : 'Nenhum fornecedor cadastrado ainda.<br><a class="btn primary" href="#/suppliers/new">Cadastrar fornecedor</a>'}</div>`;
   };
   render();
+  bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
 }
 
@@ -278,10 +329,11 @@ async function viewSupplier(id) {
     <div class="card stack" style="margin-top:14px">
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
       <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
+      ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>` : ''}
       ${s.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(s.notes)}</div></div>` : ''}
       <div class="actions">
         <a class="btn" href="#/suppliers/${s.id}/edit">Editar</a>
-        <a class="btn primary" href="#/products/new?supplier=${s.id}">+ Produto</a>
+        <a class="btn primary" href="#/products/new?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">+ Produto</a>
       </div>
       <div class="meta">Atualizado ${dateBr(s.updated_at)}${s.updated_by_name ? ' por ' + esc(s.updated_by_name) : ''}</div>
     </div>
@@ -305,8 +357,14 @@ async function viewSupplierForm(id) {
   loading();
   const s = editing ? await api(`/api/suppliers/${id}`) : {};
   let cardPhoto = null;
+  const companyField = !isAdmin() ? ''
+    : editing
+      ? `<div><label>Empresa</label><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>`
+      : `<div><label for="company">Empresa</label><select id="company" name="company">${companyOptions(defaultCompany())}</select>
+          <div class="hint">Como administrador, você pode cadastrar para qualquer empresa.</div></div>`;
   $app.innerHTML = `
     <form class="card stack" id="f" novalidate>
+      ${companyField}
       <div><label>Foto do cartão de visitas <span class="req">*</span></label>
         <div id="photo">${photoInputHtml(s.card_photo, 'Toque para fotografar o cartão')}</div></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
@@ -331,8 +389,8 @@ async function viewSupplierForm(id) {
     try {
       const body = { name: form.name.value, booth: form.booth.value, notes: form.notes.value };
       if (cardPhoto) body.card_photo = cardPhoto;
+      if (form.company) body.company = form.company.value;
       const saved = await api(editing ? `/api/suppliers/${id}` : '/api/suppliers', { method: editing ? 'PUT' : 'POST', body });
-      state.suppliers = null;
       toast('Fornecedor salvo.');
       location.hash = `#/suppliers/${saved.id}`;
     } catch (err) {
@@ -347,7 +405,6 @@ async function viewSupplierForm(id) {
       if (!confirm('Excluir este fornecedor? As ofertas dele nos produtos também serão removidas.')) return;
       try {
         await api(`/api/suppliers/${id}`, { method: 'DELETE' });
-        state.suppliers = null;
         toast('Fornecedor excluído.');
         location.hash = '#/suppliers';
       } catch (err) { toast(err.message); }
@@ -370,8 +427,9 @@ function savingBadge(priceBrl, estimated) {
 async function viewProducts() {
   setChrome({ title: 'Produtos', tab: 'products' });
   loading();
-  const list = await api('/api/products');
+  const list = await api('/api/products' + scopeQS());
   $app.innerHTML = `
+    ${scopeBarHtml()}
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/products/new" aria-label="Novo produto">+</a>`;
@@ -388,7 +446,7 @@ async function viewProducts() {
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
             <div class="item-sub">${p.offers.length} fornecedor(es)${b ? ' · melhor: ' + esc(b.supplier_name) : ''}</div>
-            <div style="margin-top:4px">${savingBadge(p.price_brl, b?.estimated_brl)}</div>
+            <div style="margin-top:4px">${savingBadge(p.price_brl, b?.estimated_brl)} ${companyTag(p.company_cnpj)}</div>
           </div>
           <div class="item-side"><div>${b ? brl(b.estimated_brl) : '—'}</div><div class="item-sub">BR ${brl(p.price_brl)}</div></div>
         </a>`;
@@ -396,6 +454,7 @@ async function viewProducts() {
       : `<div class="empty">${list.length ? 'Nenhum produto encontrado.' : 'Nenhum produto cadastrado ainda.<br><a class="btn primary" href="#/products/new">Cadastrar produto</a>'}</div>`;
   };
   render();
+  bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
 }
 
@@ -409,6 +468,7 @@ async function viewProduct(id) {
     ${p.photo ? `<div class="detail-photo" id="photo"><img src="${esc(p.photo)}" alt="${esc(p.name)}"></div>` : ''}
     <div class="card stack" style="margin-top:${p.photo ? 14 : 0}px">
       <div><div class="item-sub">Produto</div><div class="item-title">${esc(p.name)}</div></div>
+      ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(p.company_name || companyLabel(p.company_cnpj))}</div></div>` : ''}
       <div class="compare">
         <div>Preço no Brasil<b>${brl(p.price_brl)}</b></div>
         <div>Melhor estimado<b>${b ? brl(b.estimated_brl) : '—'}</b></div>
@@ -437,7 +497,7 @@ async function viewProduct(id) {
         </div>
       </a>`).join('')}
     </div>
-    <p class="hint">Estimado = preço US$ × (1 + % nacionalização) × câmbio (${brl(state.me.company.exchange_rate)}). O percentual em cada oferta é o custo de nacionalização.</p>`
+    <p class="hint">Estimado = preço US$ × (1 + % nacionalização) × câmbio (${brl(p.exchange_rate)}). O percentual em cada oferta é o custo de nacionalização.</p>`
     : '<div class="empty">Nenhum fornecedor vinculado a este produto.</div>'}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
@@ -447,16 +507,26 @@ async function viewProductForm(id, query) {
   const editing = id != null;
   setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products' });
   loading();
-  const [p, suppliers] = await Promise.all([
-    editing ? api(`/api/products/${id}`) : Promise.resolve({ offers: [] }),
-    getSuppliers(true),
-  ]);
-  const rate = state.me.company.exchange_rate;
+  const p = editing ? await api(`/api/products/${id}`) : { offers: [] };
+  // O produto pertence a uma empresa; os fornecedores das ofertas precisam ser dela.
+  const company = editing ? p.company_cnpj : isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
+  const suppliers = await getSuppliers(isAdmin() ? company : null);
+  const rate = editing ? p.exchange_rate : companyInfo(company)?.exchange_rate ?? state.me.company.exchange_rate;
   let photo; // undefined = sem alteração, null = remover, string = nova foto
 
+  const companyField = !isAdmin() ? ''
+    : editing
+      ? `<div class="card"><div class="item-sub">Empresa</div><div>${esc(p.company_name || companyLabel(company))}</div></div>`
+      : `<div class="card"><label for="company">Empresa</label><select id="company">${companyOptions(company)}</select>
+          <div class="hint">Os fornecedores disponíveis são os desta empresa.</div></div>`;
+  const bindCompany = () => document.getElementById('company')?.addEventListener('change', (e) => {
+    location.hash = `#/products/new?company=${encodeURIComponent(e.target.value)}`;
+  });
+
   if (!suppliers.length) {
-    $app.innerHTML = `<div class="empty">Cadastre um fornecedor antes de cadastrar produtos.<br>
+    $app.innerHTML = `${companyField}<div class="empty">Cadastre um fornecedor ${isAdmin() ? 'nesta empresa ' : ''}antes de cadastrar produtos.<br>
       <a class="btn primary" href="#/suppliers/new">Cadastrar fornecedor</a></div>`;
+    bindCompany();
     return;
   }
 
@@ -466,6 +536,7 @@ async function viewProductForm(id, query) {
 
   $app.innerHTML = `
     <form class="stack" id="f" novalidate>
+      ${companyField}
       <div class="card stack">
         <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, 'Toque para fotografar o produto')}</div>
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
@@ -488,6 +559,7 @@ async function viewProductForm(id, query) {
     </form>`;
 
   bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; });
+  bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
     document.querySelector('#photo .photo-preview').innerHTML = '<div style="padding:24px">📷<br>Toque para fotografar o produto</div>';
@@ -663,6 +735,7 @@ async function viewProductForm(id, query) {
 
     const body = { name: form.name.value, price_brl: priceBrl, notes: form.notes.value, offers: payloadOffers };
     if (photo !== undefined) body.photo = photo;
+    if (isAdmin() && !editing) body.company = company;
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
@@ -695,10 +768,11 @@ let rankingMode = 'products';
 async function viewRanking() {
   setChrome({ title: 'Mais vantajosos', tab: 'ranking' });
   loading();
-  const r = await api('/api/ranking');
+  const r = await api('/api/ranking' + scopeQS());
   const render = () => {
     const body = rankingMode === 'products' ? renderRankProducts(r) : renderRankSuppliers(r);
     $app.innerHTML = `
+      ${scopeBarHtml()}
       <div class="stats">
         <div class="stat"><b>${r.summary.products}</b><span>produtos</span></div>
         <div class="stat"><b>${r.summary.compared}</b><span>comparados</span></div>
@@ -710,6 +784,7 @@ async function viewRanking() {
       </div>
       ${body}`;
     $app.querySelectorAll('.segmented button').forEach((b) => b.addEventListener('click', () => { rankingMode = b.dataset.mode; render(); }));
+    bindScopeBar();
   };
   render();
 }
@@ -726,7 +801,7 @@ function renderRankProducts(r) {
         <div class="item-body">
           <div class="item-title">${esc(it.name)}</div>
           <div class="item-sub">${it.best ? `★ ${esc(it.best.supplier_name)}${it.best.supplier_booth ? ' · Stand ' + esc(it.best.supplier_booth) : ''}` : 'Sem fornecedor'}</div>
-          <div style="margin-top:4px">${savingBadge(it.price_brl, it.best?.estimated_brl)}${it.options.length > 1 ? ` <span class="badge">${it.options.length} fornecedores</span>` : ''}</div>
+          <div style="margin-top:4px">${savingBadge(it.price_brl, it.best?.estimated_brl)}${it.options.length > 1 ? ` <span class="badge">${it.options.length} fornecedores</span>` : ''} ${companyTag(it.company_cnpj)}</div>
         </div>
       </div>
       <div class="compare">
@@ -735,7 +810,7 @@ function renderRankProducts(r) {
         <div>Economia<b style="color:${it.saving_brl > 0 ? 'var(--good)' : it.saving_brl < 0 ? 'var(--bad)' : 'inherit'}">${it.saving_brl == null ? '—' : brl(it.saving_brl)}</b></div>
       </div>
     </a>`).join('')}</div>
-    <p class="hint">Ordenado pela maior economia percentual. Estimado = US$ × (1 + % nacionalização) × câmbio ${brl(r.exchange_rate)}.</p>`;
+    <p class="hint">Ordenado pela maior economia percentual. Estimado = US$ × (1 + % nacionalização) × câmbio ${isAdmin() && !r.company ? 'de cada empresa' : brl(r.exchange_rate)}.</p>`;
 }
 
 function renderRankSuppliers(r) {
@@ -746,6 +821,7 @@ function renderRankSuppliers(r) {
       <div class="item-body">
         <div class="item-title">${esc(s.name)}</div>
         <div class="item-sub">${s.booth ? 'Stand ' + esc(s.booth) + ' · ' : ''}melhor opção em ${s.best_count} produto(s)</div>
+        ${companyTag(s.company_cnpj)}
       </div>
       <div class="item-side"><span class="badge good">${s.advantageous_count} vantajoso(s)</span>
         <div class="item-sub" style="margin-top:4px">economia ${brl(s.total_saving_brl)}</div></div>
@@ -762,7 +838,8 @@ async function viewAccount() {
   const { user, company } = state.me;
   $app.innerHTML = `
     <div class="card stack">
-      <div><div class="item-sub">Usuário</div><div class="item-title">${esc(user.name)}</div><div class="item-sub">${esc(user.email)}</div></div>
+      <div><div class="item-sub">Usuário</div><div class="item-title">${esc(user.name)} ${user.is_admin ? '<span class="badge admin">ADMINISTRADOR</span>' : ''}</div><div class="item-sub">${esc(user.email)}</div></div>
+      ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
     </div>
     <h2>Câmbio para estimativas</h2>

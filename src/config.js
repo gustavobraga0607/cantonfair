@@ -4,6 +4,10 @@ const path = require('node:path');
 const { open } = require('./db');
 const { createApp } = require('./app');
 
+// Administradores: veem e editam fornecedores e produtos de todas as empresas.
+// Pode ser substituído pela variável ADMIN_EMAILS (e-mails separados por vírgula).
+const DEFAULT_ADMIN_EMAILS = 'gustavo.braga0607@gmail.com';
+
 // Procura a URL do Postgres. A integração Neon da Vercel cria DATABASE_URL/POSTGRES_URL,
 // mas pode usar um prefixo personalizado (ex.: STORAGE_DATABASE_URL).
 function findDatabaseUrl(env = process.env) {
@@ -28,6 +32,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     publicDir,
     cnpjOnlineCheck: process.env.CNPJ_ONLINE_CHECK !== 'false',
     secureCookies: process.env.SECURE_COOKIES === 'true' || Boolean(process.env.VERCEL),
+    adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
   });
   return { db, handler, dbVar: found?.name ?? null };
 }

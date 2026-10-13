@@ -14,6 +14,10 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
 - **Dados compartilhados por CNPJ**: todos os usuários de um mesmo CNPJ veem e editam os mesmos
   fornecedores, produtos e câmbio. Empresas diferentes nunca enxergam os dados umas das outras
   (inclusive as fotos).
+- **Administrador**: usuários com papel `admin` veem e editam fornecedores e produtos de **todas** as
+  empresas, com filtro por empresa nas listas e no ranking, e podem cadastrar itens em nome de qualquer empresa.
+  Os e-mails de administrador vêm da variável `ADMIN_EMAILS` (padrão: `gustavo.braga0607@gmail.com`);
+  o papel é gravado na coluna `users.role` no login.
 - **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nº do stand, observações.
 - **Produtos**: nome, foto, preço no Brasil (R$) e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
@@ -59,6 +63,7 @@ Variáveis de ambiente:
 | `DATA_DIR` | `./data` | Pasta do banco SQLite local |
 | `CNPJ_ONLINE_CHECK` | `true` | `false` desativa a consulta à Receita (só valida os dígitos) |
 | `CNPJ_API_URL` | BrasilAPI | URL base da consulta de CNPJ |
+| `ADMIN_EMAILS` | `gustavo.braga0607@gmail.com` | E-mails de administradores, separados por vírgula |
 | `SECURE_COOKIES` | `false` | Cookies só via HTTPS (automático na Vercel) |
 
 ## Estrutura

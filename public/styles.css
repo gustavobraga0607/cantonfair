@@ -251,3 +251,9 @@ tr.best td { font-weight: 600; }
 .combo-list li.selected span { font-weight: 700; }
 .combo-list li.disabled { opacity: .45; cursor: not-allowed; }
 .combo-list .empty-opt { color: var(--muted); cursor: default; }
+
+/* administrador */
+.badge.admin { background: var(--text); color: var(--bg); letter-spacing: .06em; }
+.badge.company { background: var(--neutral-bg); color: var(--text); font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
+.scope-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.scope-bar select { flex: 1; min-width: 0; }

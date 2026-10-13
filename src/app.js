@@ -28,7 +28,8 @@ class HttpError extends Error {
 
 const now = () => new Date().toISOString();
 
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false }) {
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [] }) {
+  const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();
 
   // ---------- utilidades HTTP ----------
@@ -109,29 +110,59 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate FROM companies WHERE cnpj = ?', [cnpj]);
 
+  // ---------- permissões ----------
+  // Usuário comum: enxerga apenas o próprio CNPJ.
+  // Administrador: enxerga e edita fornecedores e produtos de todas as empresas.
+  const isAdmin = (user) => user.role === 'admin';
+
+  // CNPJ a que o usuário está restrito ao acessar um item por id (null = qualquer um).
+  const accessCnpj = (user) => (isAdmin(user) ? null : user.cnpj);
+
+  // CNPJ usado nas listagens: o admin escolhe com ?company=<cnpj> ou ?company=all.
+  function listCnpj(user, query) {
+    if (!isAdmin(user)) return user.cnpj;
+    const c = query.get('company');
+    return !c || c === 'all' ? null : cnpjUtil.clean(c);
+  }
+
+  // Empresa em que um novo cadastro é criado (o admin pode escolher outra).
+  async function targetCnpj(user, body) {
+    if (!isAdmin(user) || !body.company) return user.cnpj;
+    const c = cnpjUtil.clean(body.company);
+    if (!(await getCompany(c))) throw new HttpError(400, 'Empresa não encontrada.');
+    return c;
+  }
+
+  const companyFilter = (alias, cnpj) => (cnpj ? ` AND ${alias}.cnpj = ?` : '');
+  const companyParam = (cnpj) => (cnpj ? [cnpj] : []);
+
   function supplierOut(s) {
     return {
       id: s.id, name: s.name, booth: s.booth, notes: s.notes,
+      company_cnpj: s.cnpj, company_name: s.company_name ?? null,
       card_photo: photoUrl(s.card_photo), created_at: s.created_at, updated_at: s.updated_at,
       updated_by_name: s.updated_by_name ?? null,
       product_count: s.product_count == null ? undefined : Number(s.product_count),
     };
   }
 
+  // cnpj null = sem restrição de empresa (administrador).
   async function loadSupplier(q, cnpj, id) {
     const s = await q.get(`
-      SELECT s.*, u.name AS updated_by_name FROM suppliers s
+      SELECT s.*, u.name AS updated_by_name, c.name AS company_name FROM suppliers s
       LEFT JOIN users u ON u.id = s.updated_by
-      WHERE s.id = ? AND s.cnpj = ?`, [toId(id), cnpj]);
+      JOIN companies c ON c.cnpj = s.cnpj
+      WHERE s.id = ?${companyFilter('s', cnpj)}`, [toId(id), ...companyParam(cnpj)]);
     if (!s) throw new HttpError(404, 'Fornecedor não encontrado.');
     return s;
   }
 
   async function loadProduct(cnpj, id) {
     const p = await db.get(`
-      SELECT p.*, u.name AS updated_by_name FROM products p
+      SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate FROM products p
       LEFT JOIN users u ON u.id = p.updated_by
-      WHERE p.id = ? AND p.cnpj = ?`, [toId(id), cnpj]);
+      JOIN companies c ON c.cnpj = p.cnpj
+      WHERE p.id = ?${companyFilter('p', cnpj)}`, [toId(id), ...companyParam(cnpj)]);
     if (!p) throw new HttpError(404, 'Produto não encontrado.');
     return p;
   }
@@ -149,8 +180,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       FROM offers o
       JOIN suppliers s ON s.id = o.supplier_id
       JOIN products p ON p.id = o.product_id
-      WHERE p.cnpj = ? AND o.product_id IN (${productIds.map(() => '?').join(',')})
-    `, [cnpj, ...productIds]);
+      WHERE o.product_id IN (${productIds.map(() => '?').join(',')})${companyFilter('p', cnpj)}
+    `, [...productIds, ...companyParam(cnpj)]);
   }
 
   function productOut(p, offers, rate) {
@@ -170,13 +201,14 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return {
       id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl,
       photo: photoUrl(p.photo), offers: opts,
+      company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rate,
       created_at: p.created_at, updated_at: p.updated_at, updated_by_name: p.updated_by_name ?? null,
     };
   }
 
   async function productResponse(cnpj, id) {
-    const [p, company] = await Promise.all([loadProduct(cnpj, id), getCompany(cnpj)]);
-    return productOut(p, await offersFor(cnpj, [p.id]), company.exchange_rate);
+    const p = await loadProduct(cnpj, id);
+    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate);
   }
 
   // Normaliza a lista de ofertas enviada pelo cliente e garante que os
@@ -220,17 +252,33 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     routes.push({ method, re, keys, handler, pub });
   };
 
+  // Papel efetivo: o definido no banco ou "admin" para e-mails em ADMIN_EMAILS.
+  function withRole(user) {
+    return { ...user, role: ADMIN_EMAILS.has(String(user.email).toLowerCase()) ? 'admin' : (user.role || 'user') };
+  }
+
+  // Grava no banco o papel de administrador dos e-mails configurados.
+  async function syncRole(user) {
+    const u = withRole(user);
+    if (u.role !== (user.role || 'user')) await db.run('UPDATE users SET role = ? WHERE id = ?', [u.role, u.id]);
+    return u;
+  }
+
   async function meOut(user) {
     const [company, members] = await Promise.all([
       getCompany(user.cnpj),
       db.all('SELECT name, email FROM users WHERE cnpj = ? ORDER BY lower(name)', [user.cnpj]),
     ]);
+    const companies = isAdmin(user)
+      ? await db.all('SELECT cnpj, name, exchange_rate FROM companies ORDER BY lower(coalesce(name, cnpj))')
+      : undefined;
     return {
-      user: { id: user.id, name: user.name, email: user.email },
+      user: { id: user.id, name: user.name, email: user.email, role: user.role || 'user', is_admin: isAdmin(user) },
       company: {
         cnpj: company.cnpj, cnpj_formatted: cnpjUtil.format(company.cnpj),
         name: company.name, exchange_rate: company.exchange_rate, members,
       },
+      companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
     };
   }
 
@@ -271,13 +319,14 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     }
 
     const passwordHash = auth.hashPassword(password);
+    const role = withRole({ email }).role;
     let userId;
     try {
       userId = await db.tx(async (q) => {
         await q.run('INSERT INTO companies (cnpj, name, created_at) VALUES (?, ?, ?) ON CONFLICT (cnpj) DO NOTHING',
           [cnpj, companyName, now()]);
-        const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, created_at) VALUES (?, ?, ?, ?, ?) RETURNING id',
-          [name, email, passwordHash, cnpj, now()]);
+        const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, role, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
+          [name, email, passwordHash, cnpj, role, now()]);
         return row.id;
       });
     } catch (err) {
@@ -286,7 +335,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     }
     const session = await auth.createSession(db, userId);
     res.setHeader('Set-Cookie', sessionCookie(session.token, session.maxAge));
-    return { status: 201, body: await meOut({ id: userId, name, email, cnpj }) };
+    return { status: 201, body: await meOut({ id: userId, name, email, cnpj, role }) };
   }, { pub: true });
 
   route('POST', '/api/login', async ({ body, req, res }) => {
@@ -302,7 +351,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     loginLimiter.clear(key);
     const session = await auth.createSession(db, user.id);
     res.setHeader('Set-Cookie', sessionCookie(session.token, session.maxAge));
-    return meOut(user);
+    return meOut(await syncRole(user));
   }, { pub: true });
 
   route('POST', '/api/logout', async ({ req, res }) => {
@@ -311,7 +360,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return { ok: true };
   }, { pub: true });
 
-  route('GET', '/api/me', ({ user }) => meOut(user));
+  route('GET', '/api/me', async ({ user }) => meOut(await syncRole(user)));
 
   route('PUT', '/api/settings', async ({ user, body }) => {
     const rate = num(body.exchange_rate, 'Câmbio', { required: true });
@@ -322,22 +371,24 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   // --- fornecedores ---
 
-  route('GET', '/api/suppliers', async ({ user }) => {
+  route('GET', '/api/suppliers', async ({ user, query }) => {
+    const cnpj = listCnpj(user, query);
     const rows = await db.all(`
-      SELECT s.*, u.name AS updated_by_name,
+      SELECT s.*, u.name AS updated_by_name, c.name AS company_name,
              (SELECT COUNT(*) FROM offers o WHERE o.supplier_id = s.id) AS product_count
       FROM suppliers s LEFT JOIN users u ON u.id = s.updated_by
-      WHERE s.cnpj = ? ORDER BY lower(s.name)`, [user.cnpj]);
+      JOIN companies c ON c.cnpj = s.cnpj
+      WHERE 1 = 1${companyFilter('s', cnpj)} ORDER BY lower(s.name)`, companyParam(cnpj));
     return rows.map(supplierOut);
   });
 
   route('GET', '/api/suppliers/:id', async ({ user, params }) => {
-    const s = await loadSupplier(db, user.cnpj, params.id);
-    const company = await getCompany(user.cnpj);
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
+    const company = await getCompany(s.cnpj);
     const products = (await db.all(`
       SELECT p.id, p.name, p.photo, p.price_brl, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
       FROM offers o JOIN products p ON p.id = o.product_id
-      WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, user.cnpj]))
+      WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
       .map((r) => ({
         ...r, photo: photoUrl(r.photo),
         estimated_brl: round2(estimateBrl(r.price_usd, r.nationalization_pct, company.exchange_rate)),
@@ -349,56 +400,57 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do fornecedor.');
     if (!body.card_photo) throw new HttpError(400, 'A foto do cartão de visitas é obrigatória.');
+    const cnpj = await targetCnpj(user, body);
     const img = parseImage(body.card_photo);
     const id = await db.tx(async (q) => {
-      const photo = await saveImage(q, img, user.cnpj);
+      const photo = await saveImage(q, img, cnpj);
       const t = now();
       const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, notes, created_by, updated_by, created_at, updated_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [user.cnpj, name, photo, str(body.booth, 50) || null, str(body.notes, 2000) || null, user.id, user.id, t, t]);
+        [cnpj, name, photo, str(body.booth, 50) || null, str(body.notes, 2000) || null, user.id, user.id, t, t]);
       return row.id;
     });
-    return { status: 201, body: supplierOut(await loadSupplier(db, user.cnpj, id)) };
+    return { status: 201, body: supplierOut(await loadSupplier(db, cnpj, id)) };
   });
 
   route('PUT', '/api/suppliers/:id', async ({ user, params, body }) => {
-    const s = await loadSupplier(db, user.cnpj, params.id);
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do fornecedor.');
     const img = body.card_photo && String(body.card_photo).startsWith('data:') ? parseImage(body.card_photo) : null;
     await db.tx(async (q) => {
       let photo = s.card_photo;
-      if (img) {
-        photo = await saveImage(q, img, user.cnpj);
-      }
+      if (img) photo = await saveImage(q, img, s.cnpj);
       await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, notes = ?, updated_by = ?, updated_at = ?
                    WHERE id = ?`, [name, photo, str(body.booth, 50) || null, str(body.notes, 2000) || null, user.id, now(), s.id]);
-      if (img) await removeImage(q, user.cnpj, s.card_photo);
+      if (img) await removeImage(q, s.cnpj, s.card_photo);
     });
-    return supplierOut(await loadSupplier(db, user.cnpj, s.id));
+    return supplierOut(await loadSupplier(db, s.cnpj, s.id));
   });
 
   route('DELETE', '/api/suppliers/:id', async ({ user, params }) => {
-    const s = await loadSupplier(db, user.cnpj, params.id);
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
     await db.tx(async (q) => {
       await q.run('DELETE FROM suppliers WHERE id = ?', [s.id]);
-      await removeImage(q, user.cnpj, s.card_photo);
+      await removeImage(q, s.cnpj, s.card_photo);
     });
     return { ok: true };
   });
 
   // --- produtos ---
 
-  route('GET', '/api/products', async ({ user }) => {
-    const { exchange_rate: rate } = await getCompany(user.cnpj);
+  route('GET', '/api/products', async ({ user, query }) => {
+    const cnpj = listCnpj(user, query);
     const products = await db.all(`
-      SELECT p.*, u.name AS updated_by_name FROM products p LEFT JOIN users u ON u.id = p.updated_by
-      WHERE p.cnpj = ? ORDER BY lower(p.name)`, [user.cnpj]);
-    const offers = await offersFor(user.cnpj, products.map((p) => p.id));
-    return products.map((p) => productOut(p, offers.filter((o) => o.product_id === p.id), rate));
+      SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate
+      FROM products p LEFT JOIN users u ON u.id = p.updated_by
+      JOIN companies c ON c.cnpj = p.cnpj
+      WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
+    const offers = await offersFor(cnpj, products.map((p) => p.id));
+    return products.map((p) => productOut(p, offers.filter((o) => o.product_id === p.id), p.exchange_rate));
   });
 
-  route('GET', '/api/products/:id', ({ user, params }) => productResponse(user.cnpj, params.id));
+  route('GET', '/api/products/:id', ({ user, params }) => productResponse(accessCnpj(user), params.id));
 
   function productFields(body) {
     const name = str(body.name, 150);
@@ -408,53 +460,79 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   route('POST', '/api/products', async ({ user, body }) => {
     const f = productFields(body);
-    const offers = await parseOffers(user.cnpj, body.offers);
+    const cnpj = await targetCnpj(user, body);
+    // Fornecedores das ofertas precisam ser da mesma empresa do produto.
+    const offers = await parseOffers(cnpj, body.offers);
     const img = body.photo ? parseImage(body.photo) : null;
     const id = await db.tx(async (q) => {
-      const photo = img ? await saveImage(q, img, user.cnpj) : null;
+      const photo = img ? await saveImage(q, img, cnpj) : null;
       const t = now();
       const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, notes, created_by, updated_by, created_at, updated_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [user.cnpj, f.name, photo, f.price_brl, f.notes, user.id, user.id, t, t]);
+        [cnpj, f.name, photo, f.price_brl, f.notes, user.id, user.id, t, t]);
       await replaceOffers(q, row.id, offers);
       return row.id;
     });
-    return { status: 201, body: await productResponse(user.cnpj, id) };
+    return { status: 201, body: await productResponse(cnpj, id) };
   });
 
   route('PUT', '/api/products/:id', async ({ user, params, body }) => {
-    const p = await loadProduct(user.cnpj, params.id);
+    const p = await loadProduct(accessCnpj(user), params.id);
     const f = productFields(body);
-    const offers = await parseOffers(user.cnpj, body.offers);
+    const offers = await parseOffers(p.cnpj, body.offers);
     const img = body.photo && String(body.photo).startsWith('data:') ? parseImage(body.photo) : null;
     await db.tx(async (q) => {
       let photo = p.photo;
       if (body.photo === null) photo = null;
-      else if (img) photo = await saveImage(q, img, user.cnpj);
+      else if (img) photo = await saveImage(q, img, p.cnpj);
       await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, notes = ?, updated_by = ?, updated_at = ?
                    WHERE id = ?`, [f.name, photo, f.price_brl, f.notes, user.id, now(), p.id]);
       await replaceOffers(q, p.id, offers);
-      if (photo !== p.photo) await removeImage(q, user.cnpj, p.photo);
+      if (photo !== p.photo) await removeImage(q, p.cnpj, p.photo);
     });
-    return productResponse(user.cnpj, p.id);
+    return productResponse(p.cnpj, p.id);
   });
 
   route('DELETE', '/api/products/:id', async ({ user, params }) => {
-    const p = await loadProduct(user.cnpj, params.id);
+    const p = await loadProduct(accessCnpj(user), params.id);
     await db.tx(async (q) => {
       await q.run('DELETE FROM products WHERE id = ?', [p.id]);
-      await removeImage(q, user.cnpj, p.photo);
+      await removeImage(q, p.cnpj, p.photo);
     });
     return { ok: true };
   });
 
   // --- relatório / ranking ---
 
-  route('GET', '/api/ranking', async ({ user }) => {
-    const { exchange_rate: rate } = await getCompany(user.cnpj);
-    const products = await db.all('SELECT id, name, photo, price_brl FROM products WHERE cnpj = ?', [user.cnpj]);
-    const offers = await offersFor(user.cnpj, products.map((p) => p.id));
-    const items = buildRanking(products, offers, rate).map((r) => ({ ...r, photo: photoUrl(r.photo) }));
+  route('GET', '/api/ranking', async ({ user, query }) => {
+    const cnpj = listCnpj(user, query);
+    const products = await db.all(`
+      SELECT p.id, p.cnpj, p.name, p.photo, p.price_brl, c.name AS company_name, c.exchange_rate
+      FROM products p JOIN companies c ON c.cnpj = p.cnpj
+      WHERE 1 = 1${companyFilter('p', cnpj)}`, companyParam(cnpj));
+    const offers = await offersFor(cnpj, products.map((p) => p.id));
+
+    // Cada empresa tem seu próprio câmbio: calcula por empresa e junta o resultado.
+    const byCompany = new Map();
+    for (const p of products) {
+      if (!byCompany.has(p.cnpj)) byCompany.set(p.cnpj, []);
+      byCompany.get(p.cnpj).push(p);
+    }
+    const items = [];
+    for (const list of byCompany.values()) {
+      const ids = new Set(list.map((p) => p.id));
+      const ranked = buildRanking(list, offers.filter((o) => ids.has(o.product_id)), list[0].exchange_rate);
+      const meta = new Map(list.map((p) => [p.id, p]));
+      for (const r of ranked) {
+        items.push({ ...r, photo: photoUrl(r.photo), company_cnpj: meta.get(r.product_id).cnpj, company_name: meta.get(r.product_id).company_name });
+      }
+    }
+    items.sort((a, b) => {
+      if (a.saving_pct === null && b.saving_pct === null) return a.name.localeCompare(b.name);
+      if (a.saving_pct === null) return 1;
+      if (b.saving_pct === null) return -1;
+      return b.saving_pct - a.saving_pct;
+    });
 
     // Resumo por fornecedor: em quantos produtos ele é a melhor opção.
     const suppliers = new Map();
@@ -462,6 +540,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       if (!it.best) continue;
       const s = suppliers.get(it.best.supplier_id) || {
         supplier_id: it.best.supplier_id, name: it.best.supplier_name, booth: it.best.supplier_booth,
+        company_cnpj: it.company_cnpj, company_name: it.company_name,
         best_count: 0, advantageous_count: 0, total_saving_brl: 0,
       };
       s.best_count++;
@@ -474,8 +553,10 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const supplierRanking = [...suppliers.values()]
       .sort((a, b) => b.advantageous_count - a.advantageous_count || b.total_saving_brl - a.total_saving_brl);
 
+    const own = await getCompany(cnpj || user.cnpj);
     return {
-      exchange_rate: rate,
+      exchange_rate: own.exchange_rate,
+      company: cnpj ? { cnpj, name: own.name } : null,
       items,
       suppliers: supplierRanking,
       summary: {
@@ -490,7 +571,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   async function serveUpload(res, user, id) {
     const img = /^[0-9a-f]{32}$/.test(id)
-      ? await db.get('SELECT mime, data FROM images WHERE id = ? AND cnpj = ?', [id, user.cnpj])
+      ? await db.get(`SELECT mime, data FROM images WHERE id = ?${isAdmin(user) ? '' : ' AND cnpj = ?'}`,
+        isAdmin(user) ? [id] : [id, user.cnpj])
       : null;
     if (!img) return send(res, 404, { error: 'Não encontrado.' });
     const data = Buffer.from(img.data);
@@ -528,8 +610,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const pathname = url.searchParams.get('__p') || url.pathname;
     try {
       if (pathname.startsWith('/uploads/')) {
-        const user = await auth.getSessionUser(db, parseCookies(req).sid);
-        if (!user) return send(res, 401, { error: 'Não autenticado.' });
+        const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
+        if (!sessionUser) return send(res, 401, { error: 'Não autenticado.' });
+        const user = withRole(sessionUser);
         return await serveUpload(res, user, pathname.slice('/uploads/'.length));
       }
       if (!pathname.startsWith('/api/')) {
@@ -542,8 +625,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         const m = r.re.exec(pathname);
         if (!m) continue;
         const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
-        const user = await auth.getSessionUser(db, parseCookies(req).sid);
-        if (!r.pub && !user) throw new HttpError(401, 'Não autenticado.');
+        const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
+        if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
+        const user = sessionUser && withRole(sessionUser);
         // Exigir JSON em POST/PUT também protege contra CSRF via formulários de outros sites.
         if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '')) {
           throw new HttpError(415, 'Envie os dados em JSON.');

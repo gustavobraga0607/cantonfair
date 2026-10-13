@@ -12,7 +12,7 @@ const { createApp } = require('../src/app');
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup() {
+async function setup({ adminEmails = [] } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -24,7 +24,7 @@ async function setup() {
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup }));
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
@@ -181,4 +181,67 @@ test('serve a interface', async (t) => {
   assert.match(await r.text(), /Canton Fair Buyer/);
   assert.equal((await fetch(base + '/../package.json')).status, 200); // cai no index (SPA), não expõe o arquivo
   assert.doesNotMatch(await (await fetch(base + '/%2e%2e/package.json')).text(), /"scripts"/);
+});
+
+test('administrador vê e edita fornecedores e produtos de todas as empresas', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  const admin = client(base);
+
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.user.is_admin, false);
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '12ABC34501DE35' });
+  r = await admin('POST', '/api/register', { name: 'Chefe', email: 'Chefe@BR.com', password: '12345678', cnpj: '33000167000101'.replace('33000167000101', '11444777000161') });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.user.role, 'admin');
+  assert.equal(r.body.companies.length, 3);
+
+  const supA = (await a('POST', '/api/suppliers', { name: 'Forn A', card_photo: PNG })).body;
+  const supB = (await b('POST', '/api/suppliers', { name: 'Forn B', card_photo: PNG })).body;
+  const prodA = (await a('POST', '/api/products', { name: 'Prod A', price_brl: 100, offers: [{ supplier_id: supA.id, price_usd: 2, nationalization_pct: 50 }] })).body;
+
+  // usuários comuns continuam isolados
+  assert.equal((await b('GET', `/api/products/${prodA.id}`)).status, 404);
+  assert.equal((await b('GET', '/api/suppliers')).body.length, 1);
+  assert.equal((await b('GET', '/api/suppliers?company=all')).body.length, 1, 'usuário comum ignora ?company');
+  assert.equal((await b('GET', supA.card_photo)).status, 404);
+
+  // admin enxerga tudo, ou filtra por empresa
+  r = await admin('GET', '/api/suppliers?company=all');
+  assert.deepEqual(r.body.map((s) => s.name).sort(), ['Forn A', 'Forn B']);
+  assert.ok(r.body.every((s) => s.company_cnpj));
+  r = await admin('GET', '/api/suppliers?company=12.ABC.345/01DE-35');
+  assert.deepEqual(r.body.map((s) => s.name), ['Forn B']);
+  assert.equal((await admin('GET', supA.card_photo)).status, 200);
+
+  // admin edita produto de outra empresa, usando fornecedores daquela empresa
+  r = await admin('PUT', `/api/products/${prodA.id}`, { name: 'Prod A (revisado)', price_brl: 100, offers: [{ supplier_id: supA.id, price_usd: 1, nationalization_pct: 50 }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.updated_by_name, 'Chefe');
+  assert.equal(r.body.company_cnpj, '11222333000181');
+  r = await admin('PUT', `/api/products/${prodA.id}`, { name: 'Misturado', offers: [{ supplier_id: supB.id, price_usd: 1 }] });
+  assert.equal(r.status, 404, 'não mistura fornecedor de outra empresa');
+  assert.equal((await a('GET', `/api/products/${prodA.id}`)).body.name, 'Prod A (revisado)');
+
+  // admin edita fornecedor de outra empresa e cria cadastro em nome dela
+  r = await admin('PUT', `/api/suppliers/${supB.id}`, { name: 'Forn B editado' });
+  assert.equal(r.status, 200);
+  r = await admin('POST', '/api/suppliers', { name: 'Novo em B', card_photo: PNG, company: '12ABC34501DE35' });
+  assert.equal(r.status, 201);
+  assert.equal((await b('GET', '/api/suppliers')).body.length, 2);
+  r = await admin('POST', '/api/suppliers', { name: 'X', card_photo: PNG, company: '99999999000191' });
+  assert.equal(r.status, 400);
+
+  // ranking geral e por empresa
+  r = await admin('GET', '/api/ranking?company=all');
+  assert.equal(r.body.items.length, 1);
+  assert.equal(r.body.items[0].company_cnpj, '11222333000181');
+  r = await admin('GET', '/api/ranking?company=12ABC34501DE35');
+  assert.equal(r.body.items.length, 0);
+
+  // admin exclui produto de outra empresa
+  assert.equal((await admin('DELETE', `/api/products/${prodA.id}`)).status, 200);
+  assert.equal((await a('GET', '/api/products')).body.length, 0);
 });

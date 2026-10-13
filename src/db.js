@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS users (
   email         TEXT NOT NULL UNIQUE,           -- sempre gravado em minúsculas
   password_hash TEXT NOT NULL,
   cnpj          TEXT NOT NULL REFERENCES companies(cnpj),
+  role          TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
   created_at    TEXT NOT NULL
 );
 
@@ -97,6 +98,10 @@ function sqlite(dataDir) {
   const conn = new DatabaseSync(path.join(dataDir, 'cantonfair.db'));
   conn.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   conn.exec(schemaFor('sqlite'));
+  // Migração: bancos criados antes da coluna "role".
+  if (!conn.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'role')) {
+    conn.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+  }
 
   const q = {
     driver: 'sqlite',
@@ -140,7 +145,12 @@ function postgres(connectionString) {
   });
 
   let ready;
-  const init = () => (ready ??= pool.query(schemaFor('postgres')).catch((err) => { ready = null; throw err; }));
+  const migrate = async () => {
+    await pool.query(schemaFor('postgres'));
+    // Migração: bancos criados antes da coluna "role".
+    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'");
+  };
+  const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));
   const base = wrap(pool);
   const withInit = (m) => async (...a) => { await init(); return base[m](...a); };
 
