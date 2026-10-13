@@ -29,6 +29,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     databaseUrl: found?.url,
     dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data')),
   });
+  const fx = process.env.FX_AUTO === 'false' ? null : createFxService({ db });
   const handler = createApp({
     db,
     publicDir,
@@ -36,9 +37,9 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     secureCookies: process.env.SECURE_COOKIES === 'true' || Boolean(process.env.VERCEL),
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
     readCard: cardReaderFromEnv(),
-    fx: process.env.FX_AUTO === 'false' ? null : createFxService({ db }),
+    fx,
   });
-  return { db, handler, dbVar: found?.name ?? null };
+  return { db, handler, fx, dbVar: found?.name ?? null };
 }
 
 module.exports = { appFromEnv, findDatabaseUrl };

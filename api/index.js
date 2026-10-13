@@ -4,7 +4,7 @@
 // Os arquivos de public/ são servidos diretamente pela CDN da Vercel.
 const { appFromEnv } = require('../src/config');
 
-const { db, handler, dbVar } = appFromEnv({ requirePostgres: true });
+const { db, handler, fx, dbVar } = appFromEnv({ requirePostgres: true });
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -32,8 +32,8 @@ module.exports = async (req, res) => {
   if (pathname === '/api/health') {
     try {
       await db.get('SELECT 1 AS ok');
-      const fx = await db.get("SELECT rate, source, quoted_at, fetched_at, error_at FROM fx_quotes WHERE pair = 'USD-BRL'").catch(() => null);
-      return json(res, 200, { ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: fx ?? null });
+      const quote = fx ? await fx.ensureFresh().catch((err) => ({ ok: false, error: err.message })) : null;
+      return json(res, 200, { ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: quote });
     } catch (err) {
       console.error(err);
       return json(res, 503, { ok: false, database: 'postgres', env: dbVar, error: err.code || err.message });
