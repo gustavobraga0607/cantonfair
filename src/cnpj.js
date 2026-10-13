@@ -38,24 +38,44 @@ function format(value) {
   return `${c.slice(0, 2)}.${c.slice(2, 5)}.${c.slice(5, 8)}/${c.slice(8, 12)}-${c.slice(12)}`;
 }
 
-// Consulta a existência do CNPJ na Receita Federal via BrasilAPI.
-// Retorna { status: 'found', name } | { status: 'not_found' } | { status: 'unavailable' }.
-async function lookup(value, { timeoutMs = 6000, fetchImpl = globalThis.fetch } = {}) {
-  const cnpj = clean(value);
-  const base = process.env.CNPJ_API_URL || 'https://brasilapi.com.br/api/cnpj/v1/';
+// Fontes públicas de consulta à base da Receita Federal, tentadas em ordem.
+// Se uma estiver fora do ar ou bloquear a requisição, passa para a próxima.
+const SOURCES = [
+  { name: 'brasilapi', url: (c) => `https://brasilapi.com.br/api/cnpj/v1/${c}`, name_of: (d) => d.razao_social || d.nome_fantasia },
+  { name: 'minhareceita', url: (c) => `https://minhareceita.org/${c}`, name_of: (d) => d.razao_social || d.nome_fantasia },
+  { name: 'cnpjws', url: (c) => `https://publica.cnpj.ws/cnpj/${c}`, name_of: (d) => d.razao_social || d.estabelecimento?.nome_fantasia },
+];
+
+async function querySource(source, cnpj, { timeoutMs, fetchImpl }) {
   try {
-    const res = await fetchImpl(base + cnpj, { signal: AbortSignal.timeout(timeoutMs) });
-    if (res.status === 404 || res.status === 400) return { status: 'not_found' };
-    if (!res.ok) return { status: 'unavailable' };
+    const res = await fetchImpl(source.url(cnpj), {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Accept: 'application/json', 'User-Agent': 'CantonFairBuyer/1.0 (+https://vercel.app)' },
+    });
+    if (res.status === 404) return { status: 'not_found', source: source.name };
+    if (!res.ok) {
+      console.warn(`CNPJ: ${source.name} respondeu ${res.status}`);
+      return { status: 'unavailable', source: source.name };
+    }
     const data = await res.json();
-    return {
-      status: 'found',
-      name: data.razao_social || data.nome_fantasia || null,
-      situation: data.descricao_situacao_cadastral || null,
-    };
-  } catch {
-    return { status: 'unavailable' };
+    return { status: 'found', source: source.name, name: source.name_of(data) || null };
+  } catch (err) {
+    console.warn(`CNPJ: falha ao consultar ${source.name}: ${err.message}`);
+    return { status: 'unavailable', source: source.name };
   }
+}
+
+// Consulta a existência do CNPJ na Receita Federal.
+// Retorna { status: 'found', name, source } | { status: 'not_found', source } | { status: 'unavailable' }.
+async function lookup(value, { timeoutMs = 5000, fetchImpl = globalThis.fetch, sources = SOURCES } = {}) {
+  const cnpj = clean(value);
+  const custom = process.env.CNPJ_API_URL;
+  const list = custom ? [{ name: 'custom', url: (c) => custom + c, name_of: (d) => d.razao_social || d.nome }] : sources;
+  for (const source of list) {
+    const r = await querySource(source, cnpj, { timeoutMs, fetchImpl });
+    if (r.status !== 'unavailable') return r;
+  }
+  return { status: 'unavailable' };
 }
 
 module.exports = { clean, isValid, format, lookup };

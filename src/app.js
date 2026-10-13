@@ -244,7 +244,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     if (!cnpjOnlineCheck) return { valid: true, name: null };
     const info = await cnpjLookup(cnpj);
     if (info.status === 'not_found') return { valid: false, message: 'CNPJ não encontrado na Receita Federal.' };
-    return { valid: true, name: info.name || null, verified_online: info.status === 'found' };
+    return { valid: true, name: info.name || null, verified_online: info.status === 'found', source: info.source || null };
   }, { pub: true });
 
   route('POST', '/api/register', async ({ body, res }) => {

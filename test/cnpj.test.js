@@ -30,13 +30,25 @@ test('formata CNPJ', () => {
   assert.equal(cnpj.format('11222333000181'), '11.222.333/0001-81');
 });
 
-test('lookup interpreta respostas da API', async () => {
+test('lookup interpreta respostas e passa para a próxima fonte quando uma falha', async () => {
   const mk = (status, json) => async () => ({ status, ok: status < 300, json: async () => json });
-  assert.deepEqual(await cnpj.lookup('11222333000181', { fetchImpl: mk(404) }), { status: 'not_found' });
+  assert.equal((await cnpj.lookup('11222333000181', { fetchImpl: mk(404) })).status, 'not_found');
   assert.equal((await cnpj.lookup('11222333000181', { fetchImpl: mk(500) })).status, 'unavailable');
   const found = await cnpj.lookup('11222333000181', { fetchImpl: mk(200, { razao_social: 'ACME LTDA' }) });
   assert.equal(found.status, 'found');
   assert.equal(found.name, 'ACME LTDA');
   const offline = await cnpj.lookup('11222333000181', { fetchImpl: async () => { throw new Error('offline'); } });
   assert.equal(offline.status, 'unavailable');
+
+  // primeira fonte bloqueada (403), segunda responde
+  const calls = [];
+  const fallback = await cnpj.lookup('11222333000181', {
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return calls.length === 1 ? { status: 403, ok: false } : { status: 200, ok: true, json: async () => ({ razao_social: 'X SA' }) };
+    },
+  });
+  assert.equal(fallback.status, 'found');
+  assert.equal(fallback.source, 'minhareceita');
+  assert.equal(calls.length, 2);
 });
