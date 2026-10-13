@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2 } = require('./calc');
+const { OcrError } = require('./ocr');
 
 // A Vercel limita o corpo da requisição a 4,5 MB; as fotos são reduzidas no navegador.
 const MAX_BODY = 4 * 1024 * 1024;
@@ -28,7 +29,7 @@ class HttpError extends Error {
 
 const now = () => new Date().toISOString();
 
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [] }) {
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();
 
@@ -139,6 +140,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   function supplierOut(s) {
     return {
       id: s.id, name: s.name, booth: s.booth, notes: s.notes,
+      contact_name: s.contact_name ?? null, phone: s.phone ?? null,
       company_cnpj: s.cnpj, company_name: s.company_name ?? null,
       card_photo: photoUrl(s.card_photo), created_at: s.created_at, updated_at: s.updated_at,
       updated_by_name: s.updated_by_name ?? null,
@@ -279,6 +281,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         name: company.name, exchange_rate: company.exchange_rate, members,
       },
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
+      features: { card_ocr: Boolean(readCard) },
     };
   }
 
@@ -396,6 +399,28 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return { ...supplierOut(s), products };
   });
 
+  // Campos opcionais do fornecedor.
+  function supplierFields(body) {
+    return {
+      booth: str(body.booth, 50) || null,
+      contact_name: str(body.contact_name, 150) || null,
+      phone: str(body.phone, 60) || null,
+      notes: str(body.notes, 2000) || null,
+    };
+  }
+
+  // Lê a foto do cartão de visita e devolve os campos para preencher o cadastro.
+  route('POST', '/api/ocr/card', async ({ body }) => {
+    if (!readCard) throw new HttpError(503, 'Leitor de cartões não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+    const img = parseImage(body.image);
+    try {
+      return await readCard(img.mime, img.data.toString('base64'));
+    } catch (err) {
+      if (err instanceof OcrError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  });
+
   route('POST', '/api/suppliers', async ({ user, body }) => {
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do fornecedor.');
@@ -405,9 +430,10 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const id = await db.tx(async (q) => {
       const photo = await saveImage(q, img, cnpj);
       const t = now();
-      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, notes, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, name, photo, str(body.booth, 50) || null, str(body.notes, 2000) || null, user.id, user.id, t, t]);
+      const f = supplierFields(body);
+      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, notes, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.notes, user.id, user.id, t, t]);
       return row.id;
     });
     return { status: 201, body: supplierOut(await loadSupplier(db, cnpj, id)) };
@@ -421,8 +447,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     await db.tx(async (q) => {
       let photo = s.card_photo;
       if (img) photo = await saveImage(q, img, s.cnpj);
-      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, notes = ?, updated_by = ?, updated_at = ?
-                   WHERE id = ?`, [name, photo, str(body.booth, 50) || null, str(body.notes, 2000) || null, user.id, now(), s.id]);
+      const f = supplierFields(body);
+      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, notes = ?, updated_by = ?, updated_at = ?
+                   WHERE id = ?`, [name, photo, f.booth, f.contact_name, f.phone, f.notes, user.id, now(), s.id]);
       if (img) await removeImage(q, s.cnpj, s.card_photo);
     });
     return supplierOut(await loadSupplier(db, s.cnpj, s.id));

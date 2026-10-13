@@ -12,7 +12,7 @@ const { createApp } = require('../src/app');
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup({ adminEmails = [] } = {}) {
+async function setup({ adminEmails = [], readCard = null } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -24,7 +24,7 @@ async function setup({ adminEmails = [] } = {}) {
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails }));
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
@@ -244,4 +244,41 @@ test('administrador vê e edita fornecedores e produtos de todas as empresas', a
   // admin exclui produto de outra empresa
   assert.equal((await admin('DELETE', `/api/products/${prodA.id}`)).status, 200);
   assert.equal((await a('GET', '/api/products')).body.length, 0);
+});
+
+test('fornecedor com telefone e contato; leitura de cartão', async (t) => {
+  const seen = [];
+  const readCard = async (mime, b64) => { seen.push([mime, b64.length]); return { company_name: 'ACME Ltd', phone: '+86 1', contact_name: 'Lily' }; };
+  const { base, close } = await setup({ readCard });
+  t.after(close);
+  const a = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.features.card_ocr, true);
+
+  assert.equal((await client(base)('POST', '/api/ocr/card', { image: PNG })).status, 401);
+  r = await a('POST', '/api/ocr/card', { image: 'data:text/plain;base64,AAAA' });
+  assert.equal(r.status, 400);
+  r = await a('POST', '/api/ocr/card', { image: PNG });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.company_name, 'ACME Ltd');
+  assert.equal(seen[0][0], 'image/png');
+
+  r = await a('POST', '/api/suppliers', { name: 'ACME', card_photo: PNG, contact_name: ' Lily Chen ', phone: '+86 138 0000 1111' });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.contact_name, 'Lily Chen');
+  assert.equal(r.body.phone, '+86 138 0000 1111');
+  r = await a('PUT', `/api/suppliers/${r.body.id}`, { name: 'ACME', phone: '' });
+  assert.equal(r.body.phone, null);
+  assert.equal(r.body.contact_name, null);
+});
+
+test('leitor de cartões desligado sem chave de API', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.features.card_ocr, false);
+  const o = await a('POST', '/api/ocr/card', { image: PNG });
+  assert.equal(o.status, 503);
+  assert.match(o.body.error, /ANTHROPIC_API_KEY/);
 });

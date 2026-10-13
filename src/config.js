@@ -3,6 +3,7 @@
 const path = require('node:path');
 const { open } = require('./db');
 const { createApp } = require('./app');
+const { cardReaderFromEnv } = require('./ocr');
 
 // Administradores: veem e editam fornecedores e produtos de todas as empresas.
 // Pode ser substituído pela variável ADMIN_EMAILS (e-mails separados por vírgula).
@@ -33,6 +34,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     cnpjOnlineCheck: process.env.CNPJ_ONLINE_CHECK !== 'false',
     secureCookies: process.env.SECURE_COOKIES === 'true' || Boolean(process.env.VERCEL),
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
+    readCard: cardReaderFromEnv(),
   });
   return { db, handler, dbVar: found?.name ?? null };
 }

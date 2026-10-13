@@ -296,19 +296,20 @@ async function viewSuppliers() {
   const list = await getSuppliers();
   $app.innerHTML = `
     ${scopeBarHtml()}
-    <div class="toolbar"><input type="search" id="q" placeholder="Buscar por nome ou stand"></div>
+    <div class="toolbar"><input type="search" id="q" placeholder="Buscar por nome, contato ou stand"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/suppliers/new" aria-label="Novo fornecedor">+</a>`;
   const render = (q = '') => {
     const term = q.trim().toLowerCase();
-    const rows = list.filter((s) => !term || s.name.toLowerCase().includes(term) || (s.booth || '').toLowerCase().includes(term));
+    const rows = list.filter((s) => !term || [s.name, s.booth, s.contact_name, s.phone]
+      .some((v) => (v || '').toLowerCase().includes(term)));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
         <a class="item" href="#/suppliers/${s.id}">
           <img class="thumb" src="${esc(s.card_photo)}" alt="" loading="lazy">
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
-            <div class="item-sub">${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -328,6 +329,11 @@ async function viewSupplier(id) {
     <div class="detail-photo" id="card-photo"><img src="${esc(s.card_photo)}" alt="Cartão de visitas"></div>
     <div class="card stack" style="margin-top:14px">
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
+      ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
+      ${s.phone ? `<div><div class="item-sub">Telefone</div><div class="phone-line">
+        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>
+        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/${esc(s.phone.replace(/\D/g, ''))}">WhatsApp</a>` : ''}
+      </div></div>` : ''}
       <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
       ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>` : ''}
       ${s.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(s.notes)}</div></div>` : ''}
@@ -351,6 +357,63 @@ async function viewSupplier(id) {
   document.getElementById('card-photo').addEventListener('click', () => openLightbox(s.card_photo));
 }
 
+// Lê o cartão de visita pela API e preenche os campos que ainda estão vazios.
+let ocrSeq = 0;
+async function readBusinessCard(form, dataUrl) {
+  const box = document.getElementById('ocr-status');
+  if (!state.me?.features?.card_ocr) return;
+  const seq = ++ocrSeq;
+  const submit = form.querySelector('button[type=submit]');
+  box.hidden = false;
+  box.className = 'ocr-status busy';
+  box.textContent = 'Lendo o cartão de visita…';
+  submit.disabled = true;
+  try {
+    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl } });
+    if (seq !== ocrSeq) return;
+    const filled = [];
+    const fill = (field, value, label) => {
+      const el = form[field];
+      if (!value || el.value.trim()) return;
+      el.value = value;
+      el.classList.add('autofilled');
+      filled.push(label);
+    };
+    fill('name', card.company_name || card.company_name_local, 'nome');
+    fill('contact_name', card.contact_name, 'contato');
+    fill('phone', card.phone || card.whatsapp, 'telefone');
+    fill('booth', card.booth, 'stand');
+
+    // Demais informações do cartão vão para as observações.
+    const extras = [
+      ['Empresa (nome local)', card.company_name && card.company_name_local],
+      ['E-mail', card.email],
+      ['WeChat', card.wechat],
+      ['WhatsApp', card.whatsapp && card.whatsapp !== form.phone.value ? card.whatsapp : ''],
+      ['Outros telefones', card.other_phones],
+      ['Site', card.website],
+      ['Endereço', card.address],
+      ['Produtos', card.products],
+    ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`)
+      .filter((line) => !form.notes.value.includes(line));
+    if (extras.length) {
+      form.notes.value = [form.notes.value.trim(), ...extras].filter(Boolean).join('\n');
+      form.notes.classList.add('autofilled');
+      filled.push('observações');
+    }
+    box.className = 'ocr-status ok';
+    box.textContent = filled.length
+      ? `✓ Cartão lido: ${filled.join(', ')} preenchido(s). Confira antes de salvar.`
+      : 'Cartão lido, mas nenhum campo vazio para preencher.';
+  } catch (err) {
+    if (seq !== ocrSeq) return;
+    box.className = 'ocr-status err';
+    box.textContent = err.message;
+  } finally {
+    if (seq === ocrSeq) submit.disabled = false;
+  }
+}
+
 async function viewSupplierForm(id) {
   const editing = id != null;
   setChrome({ title: editing ? 'Editar fornecedor' : 'Novo fornecedor', back: editing ? `#/suppliers/${id}` : '#/suppliers', tab: 'suppliers' });
@@ -366,9 +429,14 @@ async function viewSupplierForm(id) {
     <form class="card stack" id="f" novalidate>
       ${companyField}
       <div><label>Foto do cartão de visitas <span class="req">*</span></label>
-        <div id="photo">${photoInputHtml(s.card_photo, 'Toque para fotografar o cartão')}</div></div>
+        <div id="photo">${photoInputHtml(s.card_photo, state.me?.features?.card_ocr ? 'Toque para fotografar o cartão — os dados serão preenchidos automaticamente' : 'Toque para fotografar o cartão')}</div></div>
+      <div class="ocr-status" id="ocr-status" hidden></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
-      <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
+      <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
+      <div class="row">
+        <div><label for="phone">Telefone</label><input id="phone" name="phone" type="tel" value="${esc(s.phone)}" placeholder="+86 …"></div>
+        <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
+      </div>
       <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(s.notes)}</textarea></div>
       <div class="error-box" id="err" hidden></div>
       <div class="actions">
@@ -376,8 +444,8 @@ async function viewSupplierForm(id) {
         <button class="btn primary" type="submit">Salvar</button>
       </div>
     </form>`;
-  bindPhotoInput(document.getElementById('photo'), (d) => { cardPhoto = d; });
   const form = document.getElementById('f');
+  bindPhotoInput(document.getElementById('photo'), (d) => { cardPhoto = d; readBusinessCard(form, d); });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const box = document.getElementById('err');
@@ -387,7 +455,10 @@ async function viewSupplierForm(id) {
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      const body = { name: form.name.value, booth: form.booth.value, notes: form.notes.value };
+      const body = {
+        name: form.name.value, contact_name: form.contact_name.value, phone: form.phone.value,
+        booth: form.booth.value, notes: form.notes.value,
+      };
       if (cardPhoto) body.card_photo = cardPhoto;
       if (form.company) body.company = form.company.value;
       const saved = await api(editing ? `/api/suppliers/${id}` : '/api/suppliers', { method: editing ? 'PUT' : 'POST', body });

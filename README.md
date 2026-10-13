@@ -18,7 +18,12 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   empresas, com filtro por empresa nas listas e no ranking, e podem cadastrar itens em nome de qualquer empresa.
   Os e-mails de administrador vêm da variável `ADMIN_EMAILS` (padrão: `gustavo.braga0607@gmail.com`);
   o papel é gravado na coluna `users.role` no login.
-- **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nº do stand, observações.
+- **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nome de contato, telefone
+  (com atalhos para ligar e WhatsApp), nº do stand e observações.
+- **Leitor de cartões de visita (OCR)**: ao fotografar o cartão, o app usa o Claude (visão) para ler o cartão
+  — inclusive em chinês — e preenche automaticamente nome da empresa, contato, telefone e stand; e-mail,
+  WeChat, site, endereço e outros dados vão para as observações. Só campos vazios são preenchidos.
+  Requer a variável `ANTHROPIC_API_KEY`; sem ela, o cadastro funciona normalmente sem a leitura automática.
 - **Produtos**: nome, foto, preço no Brasil (R$) e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
@@ -64,6 +69,7 @@ Variáveis de ambiente:
 | `CNPJ_ONLINE_CHECK` | `true` | `false` desativa a consulta à Receita (só valida os dígitos) |
 | `CNPJ_API_URL` | BrasilAPI | URL base da consulta de CNPJ |
 | `ADMIN_EMAILS` | `gustavo.braga0607@gmail.com` | E-mails de administradores, separados por vírgula |
+| `ANTHROPIC_API_KEY` | — | Chave da API do Claude para o leitor de cartões de visita |
 | `SECURE_COOKIES` | `false` | Cookies só via HTTPS (automático na Vercel) |
 
 ## Estrutura

@@ -257,3 +257,15 @@ tr.best td { font-weight: 600; }
 .badge.company { background: var(--neutral-bg); color: var(--text); font-weight: 600; max-width: 100%; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; }
 .scope-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
 .scope-bar select { flex: 1; min-width: 0; }
+
+/* leitor de cartões */
+.ocr-status { border-radius: 10px; padding: 10px 12px; font-size: .9rem; background: var(--neutral-bg); }
+.ocr-status.busy::before {
+  content: ""; display: inline-block; width: 12px; height: 12px; margin-right: 8px; vertical-align: -1px;
+  border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: spin .8s linear infinite;
+}
+.ocr-status.ok { background: var(--good-bg); color: var(--good); }
+.ocr-status.err { background: var(--bad-bg); color: var(--bad); }
+@keyframes spin { to { transform: rotate(360deg); } }
+input.autofilled, textarea.autofilled { background: var(--good-bg); }
+.phone-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

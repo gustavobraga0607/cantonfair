@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   name        TEXT NOT NULL,
   card_photo  TEXT NOT NULL,                    -- id em images
   booth       TEXT,
+  contact_name TEXT,
+  phone       TEXT,
   notes       TEXT,
   created_by  INTEGER REFERENCES users(id),
   updated_by  INTEGER REFERENCES users(id),
@@ -88,6 +90,13 @@ const TYPES = {
   postgres: { ID: 'SERIAL PRIMARY KEY', REAL: 'DOUBLE PRECISION', BIGINT: 'BIGINT', BLOB: 'BYTEA' },
 };
 const schemaFor = (driver) => SCHEMA.replace(/\{\{(\w+)\}\}/g, (_, k) => TYPES[driver][k]);
+// Colunas acrescentadas depois da primeira versão (bancos existentes são atualizados).
+const ADDED_COLUMNS = [
+  ['users', 'role', "TEXT NOT NULL DEFAULT 'user'"],
+  ['suppliers', 'contact_name', 'TEXT'],
+  ['suppliers', 'phone', 'TEXT'],
+];
+
 const clean = (params) => params.map((p) => (p === undefined ? null : p));
 
 function sqlite(dataDir) {
@@ -98,9 +107,10 @@ function sqlite(dataDir) {
   const conn = new DatabaseSync(path.join(dataDir, 'cantonfair.db'));
   conn.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   conn.exec(schemaFor('sqlite'));
-  // Migração: bancos criados antes da coluna "role".
-  if (!conn.prepare('PRAGMA table_info(users)').all().some((c) => c.name === 'role')) {
-    conn.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    if (!conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+    }
   }
 
   const q = {
@@ -147,8 +157,9 @@ function postgres(connectionString) {
   let ready;
   const migrate = async () => {
     await pool.query(schemaFor('postgres'));
-    // Migração: bancos criados antes da coluna "role".
-    await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role TEXT NOT NULL DEFAULT 'user'");
+    for (const [table, column, type] of ADDED_COLUMNS) {
+      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
+    }
   };
   const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));
   const base = wrap(pool);
