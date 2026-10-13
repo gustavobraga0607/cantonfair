@@ -95,28 +95,34 @@ function resizeImage(file, maxSize = 1280, quality = 0.8) {
 
 // Liga um <label class="photo-input"> com <input type=file> a uma prévia.
 function bindPhotoInput(root, onChange) {
-  const input = root.querySelector('input[type=file]');
-  input.addEventListener('change', async () => {
+  // Dois campos: um abre a câmera, o outro a galeria do celular.
+  root.querySelectorAll('input[type=file]').forEach((input) => input.addEventListener('change', async () => {
     const file = input.files[0];
+    input.value = ''; // permite escolher a mesma foto de novo
     if (!file) return;
     try {
       const dataUrl = await resizeImage(file);
       root.querySelector('.photo-preview').innerHTML = `<img src="${dataUrl}" alt="Prévia">`;
       onChange(dataUrl);
     } catch (err) {
-      toast(err.message);
+      toast(/heic|heif/i.test(file.type + file.name)
+        ? 'Este celular não abriu a foto HEIC. Tire a foto pela câmera ou salve-a como JPG.'
+        : err.message);
     }
-  });
+  }));
 }
 
 function photoInputHtml(current, placeholder) {
   return `
-    <label class="photo-input">
+    <div class="photo-input">
       <div class="photo-preview" style="width:100%">${current
         ? `<img src="${esc(current)}" alt="Foto atual">`
         : `<div style="padding:24px">📷<br>${esc(placeholder)}</div>`}</div>
-      <input type="file" accept="image/*" capture="environment">
-    </label>`;
+    </div>
+    <div class="photo-buttons">
+      <label class="btn photo-camera">📷 Câmera<input type="file" accept="image/*" capture="environment"></label>
+      <label class="btn photo-gallery">🖼 Galeria<input type="file" accept="image/*"></label>
+    </div>`;
 }
 
 // form: telas de cadastro escondem a barra de abas (no celular ela sobe com o
@@ -446,7 +452,7 @@ async function viewSupplierForm(id) {
     <form class="card stack" id="f" novalidate>
       ${companyField}
       <div><label>Foto do cartão de visitas <span class="req">*</span></label>
-        <div id="photo">${photoInputHtml(s.card_photo, state.me?.features?.card_ocr ? 'Toque para fotografar o cartão — os dados serão preenchidos automaticamente' : 'Toque para fotografar o cartão')}</div></div>
+        <div id="photo">${photoInputHtml(s.card_photo, state.me?.features?.card_ocr ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria')}</div></div>
       <div class="ocr-status" id="ocr-status" hidden></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
       <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
@@ -632,7 +638,7 @@ async function viewProductForm(id, query) {
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
-        <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, 'Toque para fotografar o produto')}</div>
+        <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
         <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required></div>
         <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
@@ -659,7 +665,7 @@ async function viewProductForm(id, query) {
   bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
-    document.querySelector('#photo .photo-preview').innerHTML = '<div style="padding:24px">📷<br>Toque para fotografar o produto</div>';
+    document.querySelector('#photo .photo-preview').innerHTML = '<div style="padding:24px">📷<br>Tire uma foto ou escolha da galeria</div>';
     e.target.remove();
   });
 
