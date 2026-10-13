@@ -8,15 +8,16 @@ const os = require('node:os');
 const path = require('node:path');
 const { open } = require('../src/db');
 const { createApp } = require('../src/app');
+const { createFxService } = require('../src/fx');
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup({ adminEmails = [], readCard = null } = {}) {
+async function setup({ adminEmails = [], readCard = null, fxQuote = null } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, users, companies CASCADE')
+    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, users, companies, fx_quotes CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -24,7 +25,8 @@ async function setup({ adminEmails = [], readCard = null } = {}) {
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard }));
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard,
+    fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
@@ -281,4 +283,37 @@ test('leitor de cartões desligado sem chave de API', async (t) => {
   const o = await a('POST', '/api/ocr/card', { image: PNG });
   assert.equal(o.status, 503);
   assert.match(o.body.error, /ANTHROPIC_API_KEY/);
+});
+
+test('câmbio automático com opção manual quando a API falha', async (t) => {
+  let up = true;
+  const fxQuote = async () => { if (!up) throw new Error('fora do ar'); return { rate: 4.99, source: 'PTAX Banco Central', quoted_at: '2026-10-09T16:07:30.000Z' }; };
+  const { base, close } = await setup({ fxQuote });
+  t.after(close);
+  const a = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.company.exchange_rate, 4.99, 'empresa nova já nasce com a cotação do dia');
+  assert.equal(r.body.company.rate_mode, 'auto');
+  assert.equal(r.body.fx.ok, true);
+
+  // usuário fixa valor manual
+  r = await a('PUT', '/api/settings', { exchange_rate: '5,25' });
+  assert.equal(r.body.company.exchange_rate, 5.25);
+  assert.equal(r.body.company.rate_mode, 'manual');
+
+  // API fora: "atualizar agora" informa a falha e mantém o valor manual
+  up = false;
+  r = await a('POST', '/api/fx/refresh', {});
+  assert.equal(r.status, 200);
+  assert.equal(r.body.fx.ok, false);
+  assert.equal(r.body.company.exchange_rate, 5.25);
+
+  // volta para automático quando a API volta
+  up = true;
+  await a('POST', '/api/fx/refresh', {});
+  r = await a('PUT', '/api/settings', { mode: 'auto' });
+  assert.equal(r.body.company.rate_mode, 'auto');
+  assert.equal(r.body.company.exchange_rate, 4.99);
+  assert.equal(r.body.company.rate_source, 'PTAX Banco Central');
+  assert.equal((await a('PUT', '/api/settings', { exchange_rate: 0 })).status, 400);
 });

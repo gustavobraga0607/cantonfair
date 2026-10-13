@@ -130,8 +130,12 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   backBtn.onclick = () => { location.hash = back; };
   document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   const chip = document.getElementById('rate-chip');
-  chip.innerHTML = state.me ? `<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}` : '';
-  chip.title = 'Câmbio usado nas estimativas (R$ por US$ 1)';
+  chip.innerHTML = state.me
+    ? `${fxFailing() ? '⚠ ' : ''}<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}${state.me.company.rate_mode === 'manual' ? ' <small>manual</small>' : ''}`
+    : '';
+  chip.classList.toggle('warn', fxFailing());
+  chip.title = fxFailing() ? 'Cotação automática indisponível — toque para ajustar' : 'Câmbio usado nas estimativas — toque para ajustar';
+  chip.onclick = () => { location.hash = '#/account?cambio'; };
   chip.hidden = !state.me;
 }
 
@@ -936,6 +940,87 @@ function viewMap() {
   }
 }
 
+// ===================== câmbio =====================
+
+const fmtRate = (n) => (n == null ? '' : n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
+const fxFailing = () => state.me?.company?.rate_mode === 'auto' && state.me?.fx && !state.me.fx.ok;
+
+// Cartão de câmbio da aba Conta: cotação automática do dia ou valor manual.
+function renderRateCard() {
+  const box = document.getElementById('rate-card');
+  if (!box) return;
+  const { company, fx } = state.me;
+  const auto = company.rate_mode === 'auto';
+  const failing = fxFailing();
+  const quoteInfo = !auto
+    ? `Valor manual${company.rate_updated_at ? ` · definido em ${dateBr(company.rate_updated_at)}` : ''}`
+    : company.rate_source
+      ? `${esc(company.rate_source)}${company.rate_updated_at ? ` · cotação de ${dateBr(company.rate_updated_at)}` : ''}`
+      : 'valor padrão (aguardando a primeira cotação)';
+  box.innerHTML = `
+    <div class="card stack">
+      <div class="segmented" role="tablist" style="margin:0">
+        <button type="button" data-mode="auto" class="${auto ? 'active' : ''}">Automático</button>
+        <button type="button" data-mode="manual" class="${auto ? '' : 'active'}">Manual</button>
+      </div>
+      <div class="rate-now">
+        <span class="item-sub">US$ 1,00 =</span>
+        <b>R$ ${fmtRate(company.exchange_rate)}</b>
+        <span class="item-sub">${quoteInfo}</span>
+      </div>
+      ${failing ? `<div class="error-box">⚠ ${esc(fx.error)} Estamos usando o último valor disponível.
+        Tente atualizar de novo ou informe o câmbio manualmente abaixo.</div>` : ''}
+      ${auto ? `
+        <p class="hint" style="margin:0">Atualizado sozinho a cada 30 minutos pela PTAX (taxa de venda) do Banco Central,
+          com AwesomeAPI e ExchangeRate-API como reserva.</p>
+        <button type="button" class="btn" id="fx-refresh">↻ Atualizar agora</button>` : ''}
+      <form class="stack" id="rate-form" ${auto && !failing ? 'hidden' : ''}>
+        <div><label for="rate">${auto ? 'Informar manualmente (R$ por US$ 1,00)' : 'R$ por US$ 1,00'}</label>
+          <input id="rate" name="rate" inputmode="decimal" value="${fmtRate(company.exchange_rate)}"></div>
+        <button class="btn primary" type="submit">Usar este valor</button>
+        ${!auto && fx?.rate ? `<p class="hint" style="margin:0">Cotação do dia: ${brl(fx.rate)} (${esc(fx.source)}).</p>` : ''}
+      </form>
+      <p class="hint" style="margin:0">O câmbio vale para todos os usuários deste CNPJ.</p>
+    </div>`;
+
+  const save = async (body, msg) => {
+    try {
+      state.me = await api('/api/settings', { method: 'PUT', body });
+      setChrome({ title: 'Conta', tab: 'account' });
+      renderRateCard();
+      toast(msg);
+    } catch (err) { toast(err.message); }
+  };
+  box.querySelectorAll('.segmented button').forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.mode === 'auto' && !auto) save({ mode: 'auto' }, 'Câmbio automático ativado.');
+    if (b.dataset.mode === 'manual' && auto) {
+      box.querySelector('#rate-form').hidden = false;
+      box.querySelectorAll('.segmented button').forEach((x) => x.classList.toggle('active', x === b));
+      box.querySelector('#rate').focus();
+    }
+  }));
+  box.querySelector('#fx-refresh')?.addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    e.target.textContent = 'Atualizando…';
+    try {
+      state.me = await api('/api/fx/refresh', { method: 'POST', body: {} });
+      setChrome({ title: 'Conta', tab: 'account' });
+      renderRateCard();
+      toast(fxFailing() ? 'Não foi possível atualizar a cotação.' : `Cotação atualizada: ${brl(state.me.company.exchange_rate)}`);
+    } catch (err) {
+      toast(err.message);
+      e.target.disabled = false;
+      e.target.textContent = '↻ Atualizar agora';
+    }
+  });
+  box.querySelector('#rate-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const v = parseNum(e.target.rate.value);
+    if (!(v > 0)) return toast('Câmbio inválido.');
+    save({ exchange_rate: v }, 'Câmbio manual salvo.');
+  });
+}
+
 // ===================== conta =====================
 
 async function viewAccount() {
@@ -949,27 +1034,15 @@ async function viewAccount() {
       ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
     </div>
-    <h2>Câmbio para estimativas</h2>
-    <form class="card stack" id="rate-form">
-      <div><label for="rate">R$ por US$ 1,00</label><input id="rate" name="rate" inputmode="decimal" value="${String(company.exchange_rate).replace('.', ',')}"></div>
-      <p class="hint" style="margin:0">Compartilhado com todos os usuários deste CNPJ.</p>
-      <button class="btn primary" type="submit">Salvar câmbio</button>
-    </form>
+    <h2 id="cambio">Câmbio para estimativas</h2>
+    <div id="rate-card"></div>
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
     <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
-  document.getElementById('rate-form').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const v = parseNum(e.target.rate.value);
-    if (!(v > 0)) return toast('Câmbio inválido.');
-    try {
-      state.me = await api('/api/settings', { method: 'PUT', body: { exchange_rate: v } });
-      setChrome({ title: 'Conta', tab: 'account' });
-      toast('Câmbio atualizado.');
-    } catch (err) { toast(err.message); }
-  });
+  renderRateCard();
+  if (location.hash.includes('cambio')) document.getElementById('cambio').scrollIntoView();
   document.getElementById('logout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
     state.me = null;

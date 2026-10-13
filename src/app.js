@@ -29,7 +29,7 @@ class HttpError extends Error {
 
 const now = () => new Date().toISOString();
 
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null }) {
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, fx = null }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();
 
@@ -109,7 +109,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   // ---------- consultas ----------
 
-  const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate FROM companies WHERE cnpj = ?', [cnpj]);
+  const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate, rate_mode, rate_source, rate_updated_at FROM companies WHERE cnpj = ?', [cnpj]);
 
   // ---------- permissões ----------
   // Usuário comum: enxerga apenas o próprio CNPJ.
@@ -279,7 +279,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       company: {
         cnpj: company.cnpj, cnpj_formatted: cnpjUtil.format(company.cnpj),
         name: company.name, exchange_rate: company.exchange_rate, members,
+        rate_mode: company.rate_mode, rate_source: company.rate_source, rate_updated_at: company.rate_updated_at,
       },
+      fx: fx ? await fx.read() : null,
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
       features: { card_ocr: Boolean(readCard) },
     };
@@ -323,11 +325,14 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
     const passwordHash = auth.hashPassword(password);
     const role = withRole({ email }).role;
+    // Empresa nova já começa com a cotação do dia (ou 5,50 se as APIs estiverem fora).
+    const quote = !existing && fx ? await fx.ensureFresh().catch(() => null) : null;
     let userId;
     try {
       userId = await db.tx(async (q) => {
-        await q.run('INSERT INTO companies (cnpj, name, created_at) VALUES (?, ?, ?) ON CONFLICT (cnpj) DO NOTHING',
-          [cnpj, companyName, now()]);
+        await q.run(`INSERT INTO companies (cnpj, name, exchange_rate, rate_source, rate_updated_at, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (cnpj) DO NOTHING`,
+          [cnpj, companyName, quote?.rate ?? 5.5, quote?.rate ? quote.source : null, quote?.rate ? quote.quoted_at : null, now()]);
         const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, role, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
           [name, email, passwordHash, cnpj, role, now()]);
         return row.id;
@@ -365,10 +370,30 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   route('GET', '/api/me', async ({ user }) => meOut(await syncRole(user)));
 
+  // Câmbio: { mode: 'auto' } volta para a cotação do dia; { exchange_rate } fixa um valor manual.
   route('PUT', '/api/settings', async ({ user, body }) => {
+    if (body.mode === 'auto') {
+      if (!fx) throw new HttpError(400, 'Cotação automática desativada neste servidor.');
+      const q = await fx.ensureFresh();
+      if (q.rate) {
+        await db.run(`UPDATE companies SET rate_mode = 'auto', exchange_rate = ?, rate_source = ?, rate_updated_at = ? WHERE cnpj = ?`,
+          [q.rate, q.source, q.quoted_at, user.cnpj]);
+      } else {
+        await db.run(`UPDATE companies SET rate_mode = 'auto' WHERE cnpj = ?`, [user.cnpj]);
+      }
+      return meOut(user);
+    }
     const rate = num(body.exchange_rate, 'Câmbio', { required: true });
-    if (rate <= 0) throw new HttpError(400, 'Câmbio deve ser maior que zero.');
-    await db.run('UPDATE companies SET exchange_rate = ? WHERE cnpj = ?', [rate, user.cnpj]);
+    if (rate <= 0 || rate > 100) throw new HttpError(400, 'Câmbio inválido.');
+    await db.run(`UPDATE companies SET exchange_rate = ?, rate_mode = 'manual', rate_source = 'Manual', rate_updated_at = ? WHERE cnpj = ?`,
+      [rate, now(), user.cnpj]);
+    return meOut(user);
+  });
+
+  // Força a busca da cotação agora (botão "Atualizar agora").
+  route('POST', '/api/fx/refresh', async ({ user }) => {
+    if (!fx) throw new HttpError(400, 'Cotação automática desativada neste servidor.');
+    await fx.ensureFresh({ force: true });
     return meOut(user);
   });
 
@@ -655,6 +680,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
         if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
         const user = sessionUser && withRole(sessionUser);
+        // Mantém a cotação do dia atualizada (usa cache; busca nas APIs no máximo a cada 30 min).
+        if (user && fx && req.method === 'GET') await fx.ensureFresh().catch((err) => console.error(err));
         // Exigir JSON em POST/PUT também protege contra CSRF via formulários de outros sites.
         if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '')) {
           throw new HttpError(415, 'Envie os dados em JSON.');

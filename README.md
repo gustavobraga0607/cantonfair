@@ -28,7 +28,10 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
 - **Cálculo**: `preço estimado no Brasil = preço US$ × (1 + % nacionalização) × câmbio`.
-  O câmbio (R$ por US$) é configurável em *Conta* e vale para toda a equipe do CNPJ.
+- **Câmbio do dia automático**: busca a cotação do dólar (taxa de venda) na PTAX do Banco Central,
+  com AwesomeAPI e ExchangeRate-API como reserva, a cada 30 minutos. Se todas falharem, o app mantém o
+  último valor, avisa o usuário e permite informar o câmbio manualmente em *Conta* (vale para toda a
+  equipe do CNPJ; dá para voltar ao automático a qualquer momento). `FX_AUTO=false` desliga a busca.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

@@ -12,7 +12,21 @@ CREATE TABLE IF NOT EXISTS companies (
   cnpj          TEXT PRIMARY KEY,
   name          TEXT,
   exchange_rate {{REAL}} NOT NULL DEFAULT 5.5,   -- R$ por US$ usado nas estimativas
+  rate_mode     TEXT NOT NULL DEFAULT 'auto',   -- 'auto' (cotação do dia) | 'manual'
+  rate_source   TEXT,                           -- de onde veio o câmbio atual
+  rate_updated_at TEXT,
   created_at    TEXT NOT NULL
+);
+
+-- Última cotação obtida das APIs (compartilhada por todas as empresas).
+CREATE TABLE IF NOT EXISTS fx_quotes (
+  pair        TEXT PRIMARY KEY,
+  rate        {{REAL}},
+  source      TEXT,
+  quoted_at   TEXT,
+  fetched_at  TEXT,
+  error       TEXT,
+  error_at    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -93,6 +107,9 @@ const schemaFor = (driver) => SCHEMA.replace(/\{\{(\w+)\}\}/g, (_, k) => TYPES[d
 // Colunas acrescentadas depois da primeira versão (bancos existentes são atualizados).
 const ADDED_COLUMNS = [
   ['users', 'role', "TEXT NOT NULL DEFAULT 'user'"],
+  ['companies', 'rate_mode', "TEXT NOT NULL DEFAULT 'auto'"],
+  ['companies', 'rate_source', 'TEXT'],
+  ['companies', 'rate_updated_at', 'TEXT'],
   ['suppliers', 'contact_name', 'TEXT'],
   ['suppliers', 'phone', 'TEXT'],
 ];

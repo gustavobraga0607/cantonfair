@@ -32,7 +32,8 @@ module.exports = async (req, res) => {
   if (pathname === '/api/health') {
     try {
       await db.get('SELECT 1 AS ok');
-      return json(res, 200, { ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY) });
+      const fx = await db.get("SELECT rate, source, quoted_at, fetched_at, error_at FROM fx_quotes WHERE pair = 'USD-BRL'").catch(() => null);
+      return json(res, 200, { ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: fx ?? null });
     } catch (err) {
       console.error(err);
       return json(res, 503, { ok: false, database: 'postgres', env: dbVar, error: err.code || err.message });

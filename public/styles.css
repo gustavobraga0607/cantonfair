@@ -332,3 +332,11 @@ body.map-mode main { display: none; }
 .map-frame iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
 .map-frame .spinner { position: absolute; inset: 0; }
 @media (max-width: 400px) { .tabbar a { font-size: .66rem; } }
+
+/* câmbio */
+.rate-chip { cursor: pointer; }
+.rate-chip.warn { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
+.rate-chip small { font-size: .7rem; opacity: .8; }
+.rate-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
+.rate-now b { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+.rate-now .item-sub:last-child { flex-basis: 100%; }
