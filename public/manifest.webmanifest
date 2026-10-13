@@ -1,0 +1,13 @@
+{
+  "name": "Canton Fair Buyer",
+  "short_name": "Canton Buyer",
+  "description": "Apoio a compradores na Feira de Cantão",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f6f5f3",
+  "theme_color": "#b91c1c",
+  "lang": "pt-BR",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

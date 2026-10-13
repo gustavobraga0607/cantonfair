@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#b91c1c">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Canton Fair Buyer</title>
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" href="/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="topbar" id="topbar" hidden>
+    <button class="icon-btn" id="back-btn" hidden aria-label="Voltar">&#8592;</button>
+    <h1 id="page-title">Canton Fair Buyer</h1>
+    <span class="rate-chip" id="rate-chip" title="Câmbio usado nas estimativas"></span>
+  </header>
+
+  <main id="app" aria-live="polite"></main>
+
+  <nav class="tabbar" id="tabbar" hidden>
+    <a href="#/ranking" data-tab="ranking"><span>&#9733;</span>Vantagens</a>
+    <a href="#/products" data-tab="products"><span>&#9638;</span>Produtos</a>
+    <a href="#/suppliers" data-tab="suppliers"><span>&#9742;</span>Fornecedores</a>
+    <a href="#/account" data-tab="account"><span>&#9881;</span>Conta</a>
+  </nav>
+
+  <div class="toast" id="toast" role="status" hidden></div>
+  <div class="lightbox" id="lightbox" hidden><img alt=""></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
