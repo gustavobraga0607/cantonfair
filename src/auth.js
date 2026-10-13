@@ -23,30 +23,26 @@ function verifyPassword(password, stored) {
 
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-function createSession(db, userId) {
+async function createSession(db, userId) {
   const token = crypto.randomBytes(32).toString('base64url');
   const expiresAt = Date.now() + SESSION_DAYS * 86400_000;
-  db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)')
-    .run(sha256(token), userId, expiresAt);
+  await db.run('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?, ?, ?)', [sha256(token), userId, expiresAt]);
+  // Limpeza oportunista de sessões vencidas.
+  await db.run('DELETE FROM sessions WHERE expires_at < ?', [Date.now()]);
   return { token, maxAge: SESSION_DAYS * 86400 };
 }
 
-function getSessionUser(db, token) {
+async function getSessionUser(db, token) {
   if (!token) return null;
-  const row = db.prepare(`
-    SELECT u.id, u.name, u.email, u.cnpj, s.expires_at
+  const row = await db.get(`
+    SELECT u.id, u.name, u.email, u.cnpj
     FROM sessions s JOIN users u ON u.id = s.user_id
-    WHERE s.token_hash = ?`).get(sha256(token));
-  if (!row) return null;
-  if (row.expires_at < Date.now()) {
-    destroySession(db, token);
-    return null;
-  }
-  return { id: row.id, name: row.name, email: row.email, cnpj: row.cnpj };
+    WHERE s.token_hash = ? AND s.expires_at > ?`, [sha256(token), Date.now()]);
+  return row ? { id: row.id, name: row.name, email: row.email, cnpj: row.cnpj } : null;
 }
 
-function destroySession(db, token) {
-  if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha256(token));
+async function destroySession(db, token) {
+  if (token) await db.run('DELETE FROM sessions WHERE token_hash = ?', [sha256(token)]);
 }
 
 // Limitador simples de tentativas de login por IP+e-mail.

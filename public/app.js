@@ -18,7 +18,7 @@ const parseNum = (v) => {
   return Number.isFinite(n) ? n : NaN;
 };
 const estimate = (priceUsd, nat, rate) => priceUsd * (1 + (nat || 0) / 100) * rate;
-const dateBr = (s) => (s ? new Date(s.replace(' ', 'T') + 'Z').toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
+const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
 function formatCnpj(v) {
   const c = String(v).toUpperCase().replace(/[^0-9A-Z]/g, '').slice(0, 14);
@@ -65,7 +65,7 @@ function openLightbox(src) {
 document.getElementById('lightbox').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
 
 // Reduz a foto no navegador antes do envio (economiza dados móveis na feira).
-function resizeImage(file, maxSize = 1600, quality = 0.82) {
+function resizeImage(file, maxSize = 1280, quality = 0.8) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onerror = () => reject(new Error('Não foi possível ler a imagem.'));

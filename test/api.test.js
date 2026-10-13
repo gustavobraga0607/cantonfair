@@ -11,14 +11,23 @@ const { createApp } = require('../src/app');
 
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
+// Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
 async function setup() {
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-'));
-  const db = open(dataDir);
+  let db;
+  if (process.env.TEST_DATABASE_URL) {
+    db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
+    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, users, companies CASCADE')
+      .catch(() => {});
+    await db.close();
+    db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
+  } else {
+    db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
+  }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, dataDir, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup }));
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { base, close: () => new Promise((r) => server.close(r)) };
+  return { base, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
 }
 
 function client(base) {
@@ -149,6 +158,11 @@ test('fluxo completo: cadastro, CNPJ compartilhado, fornecedores, produtos e ran
   assert.equal(r.status, 200);
   r = await ana('GET', `/api/products/${prod.id}`);
   assert.equal(r.body.offers.length, 0);
+
+  // caminho reescrito pela Vercel (?__p=)
+  r = await ana('GET', '/api/index?__p=' + encodeURIComponent('/api/products/' + prod.id));
+  assert.equal(r.status, 200);
+  assert.equal(r.body.id, prod.id);
 
   // logout
   await ana('POST', '/api/logout', {});

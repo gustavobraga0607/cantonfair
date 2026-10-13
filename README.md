@@ -25,35 +25,51 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
     no Brasil e economia em R$ e %; ordenado do mais vantajoso para o menos.
   - *Melhores fornecedores*: em quantos produtos cada fornecedor é a melhor opção e a economia total.
 
-## Como executar
+## Publicar na Vercel
 
-Requer **Node.js 22.5+** (usa o SQLite embutido do Node; não há dependências para instalar).
+O projeto já está pronto para a Vercel (`vercel.json` + função em `api/index.js`).
+Como a Vercel não tem disco persistente, em produção os dados e as fotos ficam num banco **Postgres**.
+
+1. Em [vercel.com/new](https://vercel.com/new), importe este repositório do GitHub
+   (Framework Preset: **Other**; não precisa mudar build nem output).
+2. No projeto criado, abra **Storage → Create Database → Neon (Postgres)** e conecte ao projeto.
+   Isso cria automaticamente as variáveis `DATABASE_URL`/`POSTGRES_URL`.
+   (Qualquer Postgres serve — Supabase, Neon, etc. — basta definir `DATABASE_URL`.)
+3. Faça **Redeploy**. As tabelas são criadas sozinhas na primeira requisição.
+
+A cada `git push` a Vercel publica uma nova versão automaticamente. O HTTPS da Vercel
+já permite instalar o app no celular ("Adicionar à tela inicial") e usar a câmera.
+
+## Executar localmente
+
+Requer **Node.js 22.5+**. Sem `DATABASE_URL`, usa o SQLite embutido do Node (zero configuração).
 
 ```bash
+npm install
 npm start          # http://localhost:3000
-npm test           # testes automatizados
+npm test           # testes (SQLite); TEST_DATABASE_URL=postgres://... npm test para testar no Postgres
 ```
 
-Variáveis de ambiente opcionais:
+Variáveis de ambiente:
 
 | Variável | Padrão | Descrição |
 |---|---|---|
-| `PORT` | `3000` | Porta HTTP |
-| `DATA_DIR` | `./data` | Onde ficam o banco SQLite e as fotos |
+| `DATABASE_URL` / `POSTGRES_URL` | — | Postgres (obrigatório na Vercel). Sem ela, usa SQLite local |
+| `PORT` | `3000` | Porta HTTP (local) |
+| `DATA_DIR` | `./data` | Pasta do banco SQLite local |
 | `CNPJ_ONLINE_CHECK` | `true` | `false` desativa a consulta à Receita (só valida os dígitos) |
 | `CNPJ_API_URL` | BrasilAPI | URL base da consulta de CNPJ |
-| `SECURE_COOKIES` | `false` | `true` em produção com HTTPS |
-
-Para usar na feira, publique o app em um servidor com HTTPS (necessário para instalar como
-app no celular e para a câmera funcionar em todos os navegadores) e defina `SECURE_COOKIES=true`.
-Faça backup da pasta `DATA_DIR`.
+| `SECURE_COOKIES` | `false` | Cookies só via HTTPS (automático na Vercel) |
 
 ## Estrutura
 
 ```
-server.js          # inicialização do servidor HTTP
-src/app.js         # rotas da API, autenticação, uploads e arquivos estáticos
-src/db.js          # esquema SQLite
+server.js          # servidor HTTP local
+api/index.js       # função serverless da Vercel
+vercel.json        # configuração da Vercel (rotas /api e /uploads)
+src/config.js      # monta o app a partir das variáveis de ambiente
+src/app.js         # rotas da API, autenticação, fotos e arquivos estáticos
+src/db.js          # esquema e acesso ao banco (Postgres ou SQLite)
 src/cnpj.js        # validação e consulta de CNPJ
 src/calc.js        # cálculo de preço estimado e ranking
 src/auth.js        # hash de senha, sessões, limite de tentativas de login
