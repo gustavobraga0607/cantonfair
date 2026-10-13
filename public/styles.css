@@ -342,3 +342,10 @@ body.map-mode main { display: none; }
 .rate-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
 .rate-now b { font-size: 1.6rem; font-variant-numeric: tabular-nums; }
 .rate-now .item-sub:last-child { flex-basis: 100%; }
+
+/* bandeiras China (estimado) e Brasil (preço no Brasil) */
+.flag { display: inline-block; width: 1.25em; height: .84em; border-radius: 2px; vertical-align: -.08em;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / .08); flex: none; }
+.price-line { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+.price-line + .price-line { margin-top: 2px; }
+.compare .flag { margin-right: 2px; }

@@ -23,6 +23,9 @@ const estimate = (priceUsd, nat, rate, freight = 0) => Math.round((priceUsd + (f
 // Incoterms em que o preço já inclui o frete internacional (não soma o frete de novo).
 const FREIGHT_INCLUDED = ['CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
 const offerFreight = (incoterm, perUnit) => (FREIGHT_INCLUDED.includes(String(incoterm || '').toUpperCase()) ? 0 : perUnit || 0);
+// Bandeiras (SVG, para aparecerem iguais em qualquer aparelho — emoji de bandeira vira "CN"/"BR" no Windows).
+const FLAG_CN = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="China"><rect width="30" height="20" fill="#EE1C25"/><polygon fill="#FFDE00" points="5.00,2.00 5.67,4.07 7.85,4.07 6.09,5.35 6.76,7.43 5.00,6.15 3.24,7.43 3.91,5.35 2.15,4.07 4.33,4.07"/><polygon fill="#FFDE00" points="9.14,2.51 9.62,1.97 9.25,1.34 9.91,1.63 10.39,1.08 10.33,1.80 11.00,2.09 10.29,2.25 10.22,2.97 9.85,2.35"/><polygon fill="#FFDE00" points="11.01,4.14 11.66,3.82 11.56,3.10 12.07,3.62 12.72,3.30 12.38,3.95 12.88,4.47 12.17,4.34 11.83,4.99 11.73,4.27"/><polygon fill="#FFDE00" points="11.04,6.73 11.76,6.70 11.96,6.00 12.21,6.68 12.94,6.66 12.37,7.10 12.62,7.79 12.01,7.38 11.44,7.83 11.64,7.13"/><polygon fill="#FFDE00" points="9.22,8.38 9.90,8.63 10.35,8.06 10.32,8.79 11.00,9.05 10.30,9.24 10.26,9.96 9.87,9.36 9.16,9.55 9.62,8.98"/></svg>';
+const FLAG_BR = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Brasil"><rect width="30" height="20" fill="#009C3B"/><polygon fill="#FFDF00" points="15,2.2 27.6,10 15,17.8 2.4,10"/><circle cx="15" cy="10" r="4.3" fill="#002776"/><path d="M10.9 8.9a4.3 4.3 0 0 1 8.1 2.2" stroke="#fff" stroke-width=".8" fill="none"/></svg>';
 const FORMULA = 'Estimado = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio';
 const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
@@ -542,7 +545,10 @@ async function viewProducts() {
             <div class="item-sub">${p.offers.length} fornecedor(es)${b ? ' · melhor: ' + esc(b.supplier_name) : ''}</div>
             <div style="margin-top:4px">${savingBadge(p.price_brl, b?.estimated_brl)} ${companyTag(p.company_cnpj)}</div>
           </div>
-          <div class="item-side"><div>${b ? brl(b.estimated_brl) : '—'}</div><div class="item-sub">BR ${brl(p.price_brl)}</div></div>
+          <div class="item-side">
+            <div class="price-line" title="Preço estimado importando da China">${FLAG_CN}${b ? brl(b.estimated_brl) : '—'}</div>
+            <div class="price-line item-sub" title="Preço praticado no Brasil">${FLAG_BR}${brl(p.price_brl)}</div>
+          </div>
         </a>`;
       }).join('')
       : `<div class="empty">${list.length ? 'Nenhum produto encontrado.' : 'Nenhum produto cadastrado ainda.<br><a class="btn primary" href="#/products/new">Cadastrar produto</a>'}</div>`;
@@ -564,8 +570,8 @@ async function viewProduct(id) {
       <div><div class="item-sub">Produto</div><div class="item-title">${esc(p.name)}</div></div>
       ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(p.company_name || companyLabel(p.company_cnpj))}</div></div>` : ''}
       <div class="compare">
-        <div>Preço no Brasil<b>${brl(p.price_brl)}</b></div>
-        <div>Melhor estimado<b>${b ? brl(b.estimated_brl) : '—'}</b></div>
+        <div>${FLAG_BR} Preço no Brasil<b>${brl(p.price_brl)}</b></div>
+        <div>${FLAG_CN} Melhor estimado<b>${b ? brl(b.estimated_brl) : '—'}</b></div>
         <div>Diferença<b>${p.price_brl && b ? brl(p.price_brl - b.estimated_brl) : '—'}</b></div>
       </div>
       <div>${savingBadge(p.price_brl, b?.estimated_brl)}</div>
@@ -924,8 +930,8 @@ function renderRankProducts(r) {
         </div>
       </div>
       <div class="compare">
-        <div>Estimado<b>${it.best ? brl(it.best.estimated_brl) : '—'}</b></div>
-        <div>Brasil<b>${brl(it.price_brl)}</b></div>
+        <div>${FLAG_CN} Estimado<b>${it.best ? brl(it.best.estimated_brl) : '—'}</b></div>
+        <div>${FLAG_BR} Brasil<b>${brl(it.price_brl)}</b></div>
         <div>Economia<b style="color:${it.saving_brl > 0 ? 'var(--good)' : it.saving_brl < 0 ? 'var(--bad)' : 'inherit'}">${it.saving_brl == null ? '—' : brl(it.saving_brl)}</b></div>
       </div>
     </a>`).join('')}</div>
