@@ -16,8 +16,15 @@ module.exports = async (req, res) => {
   const pathname = url.searchParams.get('__p') || url.pathname;
 
   if (!handler) {
+    // Comum em deploys de Preview: a integração do Neon costuma liberar a variável só para Production.
+    const env = process.env.VERCEL_ENV || 'desconhecido';
+    const host = process.env.VERCEL_PROJECT_PRODUCTION_URL;
     return json(res, 503, {
-      error: 'Banco de dados não configurado: conecte um Postgres (Neon) ao projeto na Vercel e faça Redeploy.',
+      error: env === 'production'
+        ? 'Banco de dados não configurado: conecte um Postgres (Neon) ao projeto na Vercel e faça Redeploy.'
+        : `Este é um endereço de teste (${env}) da Vercel, sem acesso ao banco de dados. ` +
+          (host ? `Use o endereço oficial: https://${host}` : 'Use o endereço de produção do app.'),
+      vercel_env: env,
     });
   }
 
