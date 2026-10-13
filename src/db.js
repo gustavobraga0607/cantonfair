@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS users (
   created_at    TEXT NOT NULL
 );
 
+-- Configurações gerais do sistema, definidas pelo administrador.
+CREATE TABLE IF NOT EXISTS app_settings (
+  key         TEXT PRIMARY KEY,
+  value       TEXT,
+  updated_by  INTEGER REFERENCES users(id),
+  updated_at  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash  TEXT PRIMARY KEY,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -76,6 +84,7 @@ CREATE TABLE IF NOT EXISTS products (
   name        TEXT NOT NULL,
   photo       TEXT,                             -- id em images
   price_brl   {{REAL}},                         -- preço praticado no Brasil (R$)
+  units_per_40hq INTEGER,                       -- unidades que cabem num container 40HQ
   notes       TEXT,
   created_by  INTEGER REFERENCES users(id),
   updated_by  INTEGER REFERENCES users(id),
@@ -112,6 +121,7 @@ const ADDED_COLUMNS = [
   ['companies', 'rate_updated_at', 'TEXT'],
   ['suppliers', 'contact_name', 'TEXT'],
   ['suppliers', 'phone', 'TEXT'],
+  ['products', 'units_per_40hq', 'INTEGER'],
 ];
 
 const clean = (params) => params.map((p) => (p === undefined ? null : p));

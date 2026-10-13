@@ -17,7 +17,7 @@ async function setup({ adminEmails = [], readCard = null, fxQuote = null } = {})
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, users, companies, fx_quotes CASCADE')
+    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, app_settings, users, companies, fx_quotes CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -316,4 +316,33 @@ test('câmbio automático com opção manual quando a API falha', async (t) => {
   assert.equal(r.body.company.exchange_rate, 4.99);
   assert.equal(r.body.company.rate_source, 'PTAX Banco Central');
   assert.equal((await a('PUT', '/api/settings', { exchange_rate: 0 })).status, 400);
+});
+
+test('unidades por container 40HQ no produto e frete 40HQ definido pelo administrador', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const a = client(base);
+  const admin = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.settings.freight_40hq_usd, null);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11444777000161' });
+
+  const sup = (await a('POST', '/api/suppliers', { name: 'S', card_photo: PNG })).body;
+  r = await a('POST', '/api/products', { name: 'P', units_per_40hq: '12000', offers: [{ supplier_id: sup.id, price_usd: 1 }] });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.units_per_40hq, 12000);
+  assert.equal((await a('POST', '/api/products', { name: 'X', units_per_40hq: 1.5 })).status, 400);
+  assert.equal((await a('POST', '/api/products', { name: 'X', units_per_40hq: 0 })).status, 400);
+  r = await a('PUT', `/api/products/${r.body.id}`, { name: 'P', units_per_40hq: null, offers: [] });
+  assert.equal(r.body.units_per_40hq, null);
+
+  // só o administrador altera o frete
+  assert.equal((await a('PUT', '/api/admin/settings', { freight_40hq_usd: 100 })).status, 403);
+  r = await admin('PUT', '/api/admin/settings', { freight_40hq_usd: '3500,50' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.settings.freight_40hq_usd, 3500.5);
+  assert.equal(r.body.settings.freight_updated_by, 'Chefe');
+  r = await a('GET', '/api/me');
+  assert.equal(r.body.settings.freight_40hq_usd, 3500.5, 'todos os usuários enxergam o valor');
+  assert.equal((await admin('PUT', '/api/admin/settings', { freight_40hq_usd: -1 })).status, 400);
 });

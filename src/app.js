@@ -201,7 +201,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       }))
       .sort((a, b) => a.estimated_brl - b.estimated_brl);
     return {
-      id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl,
+      id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? null,
       photo: photoUrl(p.photo), offers: opts,
       company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rate,
       created_at: p.created_at, updated_at: p.updated_at, updated_by_name: p.updated_by_name ?? null,
@@ -266,6 +266,16 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return u;
   }
 
+  async function getSettings() {
+    const row = await db.get(`SELECT s.value, s.updated_at, u.name AS updated_by_name FROM app_settings s
+                              LEFT JOIN users u ON u.id = s.updated_by WHERE s.key = 'freight_40hq_usd'`);
+    return {
+      freight_40hq_usd: row?.value != null ? Number(row.value) : null,
+      freight_updated_at: row?.updated_at ?? null,
+      freight_updated_by: row?.updated_by_name ?? null,
+    };
+  }
+
   async function meOut(user) {
     const [company, members] = await Promise.all([
       getCompany(user.cnpj),
@@ -282,6 +292,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         rate_mode: company.rate_mode, rate_source: company.rate_source, rate_updated_at: company.rate_updated_at,
       },
       fx: fx ? await fx.read() : null,
+      settings: await getSettings(),
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
       features: { card_ocr: Boolean(readCard) },
     };
@@ -387,6 +398,17 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     if (rate <= 0 || rate > 100) throw new HttpError(400, 'Câmbio inválido.');
     await db.run(`UPDATE companies SET exchange_rate = ?, rate_mode = 'manual', rate_source = 'Manual', rate_updated_at = ? WHERE cnpj = ?`,
       [rate, now(), user.cnpj]);
+    return meOut(user);
+  });
+
+  // Configurações gerais (somente administrador): frete internacional do container 40HQ.
+  route('PUT', '/api/admin/settings', async ({ user, body }) => {
+    if (!isAdmin(user)) throw new HttpError(403, 'Apenas administradores podem alterar esta configuração.');
+    const freight = num(body.freight_40hq_usd, 'Valor do frete internacional 40HQ');
+    if (freight !== null && freight > 1_000_000) throw new HttpError(400, 'Valor do frete internacional 40HQ inválido.');
+    await db.run(`INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ('freight_40hq_usd', ?, ?, ?)
+                  ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
+      [freight === null ? null : String(freight), user.id, now()]);
     return meOut(user);
   });
 
@@ -507,7 +529,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   function productFields(body) {
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do produto.');
-    return { name, price_brl: num(body.price_brl, 'Preço no Brasil'), notes: str(body.notes, 2000) || null };
+    const units = num(body.units_per_40hq, 'Unidades por container 40HQ', { integer: true });
+    if (units !== null && (units < 1 || units > 100_000_000)) throw new HttpError(400, 'Unidades por container 40HQ inválido.');
+    return { name, price_brl: num(body.price_brl, 'Preço no Brasil'), units_per_40hq: units, notes: str(body.notes, 2000) || null };
   }
 
   route('POST', '/api/products', async ({ user, body }) => {
@@ -519,9 +543,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const id = await db.tx(async (q) => {
       const photo = img ? await saveImage(q, img, cnpj) : null;
       const t = now();
-      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, notes, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, f.name, photo, f.price_brl, f.notes, user.id, user.id, t, t]);
+      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, notes, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, user.id, t, t]);
       await replaceOffers(q, row.id, offers);
       return row.id;
     });
@@ -537,8 +561,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       let photo = p.photo;
       if (body.photo === null) photo = null;
       else if (img) photo = await saveImage(q, img, p.cnpj);
-      await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, notes = ?, updated_by = ?, updated_at = ?
-                   WHERE id = ?`, [f.name, photo, f.price_brl, f.notes, user.id, now(), p.id]);
+      await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, units_per_40hq = ?, notes = ?, updated_by = ?, updated_at = ?
+                   WHERE id = ?`, [f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, now(), p.id]);
       await replaceOffers(q, p.id, offers);
       if (photo !== p.photo) await removeImage(q, p.cnpj, p.photo);
     });

@@ -24,9 +24,11 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   — inclusive em chinês — e preenche automaticamente nome da empresa, contato, telefone e stand; e-mail,
   WeChat, site, endereço e outros dados vão para as observações. Só campos vazios são preenchidos.
   Requer a variável `ANTHROPIC_API_KEY`; sem ela, o cadastro funciona normalmente sem a leitura automática.
-- **Produtos**: nome, foto, preço no Brasil (R$) e uma ou mais ofertas — cada oferta tem
+- **Produtos**: nome, foto, preço no Brasil (R$), unidades por container 40HQ e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
+- **Frete 40HQ**: o administrador define em *Conta* o valor do frete internacional de um container 40HQ (USD),
+  válido para todas as empresas; cada produto mostra o frete por unidade (frete ÷ unidades por 40HQ).
 - **Cálculo**: `preço estimado no Brasil = preço US$ × (1 + % nacionalização) × câmbio`.
 - **Câmbio do dia automático**: busca a cotação do dólar (taxa de venda) na PTAX do Banco Central,
   com AwesomeAPI e ExchangeRate-API como reserva, a cada 30 minutos. Se todas falharem, o app mantém o

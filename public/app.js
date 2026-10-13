@@ -557,6 +557,9 @@ async function viewProduct(id) {
         <div>Diferença<b>${p.price_brl && b ? brl(p.price_brl - b.estimated_brl) : '—'}</b></div>
       </div>
       <div>${savingBadge(p.price_brl, b?.estimated_brl)}</div>
+      ${p.units_per_40hq ? `<div><div class="item-sub">Container 40HQ</div>
+        <div>${p.units_per_40hq.toLocaleString('pt-BR')} unidades${freightPerUnit(p.units_per_40hq) != null
+          ? ` · frete por unidade <b>${usd(freightPerUnit(p.units_per_40hq))}</b> (${brl(freightPerUnit(p.units_per_40hq) * p.exchange_rate)})` : ''}</div></div>` : ''}
       ${p.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(p.notes)}</div></div>` : ''}
       <a class="btn" href="#/products/${p.id}/edit">Editar</a>
     </div>
@@ -625,6 +628,9 @@ async function viewProductForm(id, query) {
         <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required></div>
         <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
           <div class="hint">Preço de referência praticado no mercado brasileiro.</div></div>
+        <div><label for="units_per_40hq">Unidades por container 40HQ</label>
+          <input id="units_per_40hq" name="units_per_40hq" inputmode="numeric" value="${p.units_per_40hq ?? ''}" placeholder="ex.: 12000">
+          <div class="hint" id="freight-hint">${freightHint(p.units_per_40hq, rate)}</div></div>
         <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(p.notes)}</textarea></div>
       </div>
       <div class="card">
@@ -789,6 +795,9 @@ async function viewProductForm(id, query) {
     offers.splice(Number(rm), 1);
     renderOffers();
   });
+  form.units_per_40hq.addEventListener('input', () => {
+    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value), rate);
+  });
   form.price_brl.addEventListener('input', () => {
     offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
   });
@@ -820,7 +829,9 @@ async function viewProductForm(id, query) {
       payloadOffers.push({ supplier_id: Number(o.supplier_id), price_usd: priceUsd, moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
     }
 
-    const body = { name: form.name.value, price_brl: priceBrl, notes: form.notes.value, offers: payloadOffers };
+    const units = parseNum(form.units_per_40hq.value);
+    if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('Unidades por container 40HQ deve ser um número inteiro.');
+    const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, notes: form.notes.value, offers: payloadOffers };
     if (photo !== undefined) body.photo = photo;
     if (isAdmin() && !editing) body.company = company;
     const btn = form.querySelector('button[type=submit]');
@@ -940,6 +951,48 @@ function viewMap() {
   }
 }
 
+// ===================== frete 40HQ =====================
+
+const freight40hq = () => state.me?.settings?.freight_40hq_usd ?? null;
+const freightPerUnit = (units) => (freight40hq() != null && units > 0 ? freight40hq() / units : null);
+
+function freightHint(units, rate) {
+  const f = freightPerUnit(units);
+  if (f == null) {
+    return freight40hq() == null
+      ? 'Quantidade que cabe num container 40HQ.'
+      : `Frete 40HQ: ${usd(freight40hq())}. Informe as unidades para ver o frete por unidade.`;
+  }
+  return `Frete por unidade: <b>${usd(f)}</b> (${brl(f * rate)}) — frete 40HQ de ${usd(freight40hq())} ÷ ${units.toLocaleString('pt-BR')} un.`;
+}
+
+// Cartão do administrador na aba Conta: valor do frete internacional do container 40HQ.
+function renderFreightCard() {
+  const box = document.getElementById('freight-card');
+  if (!box || !isAdmin()) return;
+  const st = state.me.settings || {};
+  box.innerHTML = `
+    <h2>Frete internacional</h2>
+    <form class="card stack" id="freight-form">
+      <div><label for="freight">Valor do frete internacional 40HQ (USD)</label>
+        <input id="freight" name="freight" inputmode="decimal" placeholder="ex.: 3500"
+          value="${st.freight_40hq_usd != null ? String(st.freight_40hq_usd).replace('.', ',') : ''}"></div>
+      <p class="hint" style="margin:0">Vale para todas as empresas. Usado para calcular o frete por unidade dos produtos
+        (frete ÷ unidades por container 40HQ).${st.freight_updated_at ? ` Atualizado em ${dateBr(st.freight_updated_at)}${st.freight_updated_by ? ' por ' + esc(st.freight_updated_by) : ''}.` : ''}</p>
+      <button class="btn primary" type="submit">Salvar frete</button>
+    </form>`;
+  box.querySelector('#freight-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const v = parseNum(e.target.freight.value);
+    if (Number.isNaN(v) || (v !== null && v < 0)) return toast('Valor do frete inválido.');
+    try {
+      state.me = await api('/api/admin/settings', { method: 'PUT', body: { freight_40hq_usd: v } });
+      renderFreightCard();
+      toast('Frete 40HQ salvo.');
+    } catch (err) { toast(err.message); }
+  });
+}
+
 // ===================== câmbio =====================
 
 const fmtRate = (n) => (n == null ? '' : n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
@@ -1036,12 +1089,14 @@ async function viewAccount() {
     </div>
     <h2 id="cambio">Câmbio para estimativas</h2>
     <div id="rate-card"></div>
+    <div id="freight-card"></div>
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
     <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
   renderRateCard();
+  renderFreightCard();
   if (location.hash.includes('cambio')) document.getElementById('cambio').scrollIntoView();
   document.getElementById('logout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
