@@ -113,11 +113,12 @@ function photoInputHtml(current, placeholder) {
 }
 
 function setChrome({ title, back = null, tab = null, auth = false }) {
-  document.title = title ? `${title} · Canton Fair Buyer` : 'Canton Fair Buyer';
+  document.title = title ? `${title} · Canton Fair Buyer` : 'Canton Fair Buyer by BR Trading';
   document.getElementById('topbar').hidden = auth;
   document.getElementById('tabbar').hidden = auth;
   document.body.classList.toggle('has-tabs', !auth);
   document.getElementById('page-title').textContent = title || 'Canton Fair Buyer';
+  document.getElementById('home-logo').hidden = Boolean(back);
   const backBtn = document.getElementById('back-btn');
   backBtn.hidden = !back;
   backBtn.onclick = () => { location.hash = back; };
@@ -141,8 +142,9 @@ function viewLogin() {
   $app.innerHTML = `
     <div class="auth">
       <div class="brand">
-        <img src="/icon.svg" alt="">
+        <img class="brand-logo" src="/brand/logo.png" alt="BR Trading — Importação e Exportação">
         <h1>Canton Fair Buyer</h1>
+        <p class="brand-by">by BR Trading</p>
         <p>Apoio ao comprador na Feira de Cantão</p>
       </div>
       <form class="card stack" id="login-form" novalidate>
@@ -176,7 +178,7 @@ function viewRegister() {
   $app.innerHTML = `
     <div class="auth">
       <div class="brand">
-        <img src="/icon.svg" alt="">
+        <img class="brand-logo" src="/brand/logo.png" alt="BR Trading — Importação e Exportação">
         <h1>Criar conta</h1>
         <p>Usuários com o mesmo CNPJ compartilham fornecedores e produtos.</p>
       </div>
@@ -508,10 +510,12 @@ async function viewProductForm(id, query) {
     offersEl.innerHTML = offers.map((o, i) => `
       <div class="offer" data-i="${i}">
         <div class="offer-head">
-          <select data-k="supplier_id" aria-label="Fornecedor">
-            <option value="">Selecione o fornecedor…</option>
-            ${suppliers.map((s) => `<option value="${s.id}" ${Number(o.supplier_id) === s.id ? 'selected' : ''}>${esc(s.name)}${s.booth ? ' — ' + esc(s.booth) : ''}</option>`).join('')}
-          </select>
+          <div class="combo">
+            <input class="combo-input" data-combo="${i}" value="${esc(supplierLabel(o.supplier_id))}"
+              placeholder="🔍 Buscar fornecedor pelo nome ou stand…" autocomplete="off" role="combobox"
+              aria-label="Fornecedor" aria-expanded="false" aria-autocomplete="list">
+            <ul class="combo-list" role="listbox" hidden></ul>
+          </div>
           ${offers.length > 1 ? `<button type="button" class="icon-btn" data-rm="${i}" aria-label="Remover">✕</button>` : ''}
         </div>
         <div class="row">
@@ -530,7 +534,90 @@ async function viewProductForm(id, query) {
   }
   renderOffers();
 
+  // ---- campo de fornecedor com busca ----
+  function supplierLabel(id) {
+    const s = suppliers.find((x) => x.id === Number(id));
+    return s ? s.name + (s.booth ? ` — ${s.booth}` : '') : '';
+  }
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
+
+  function comboOptions(i, text) {
+    const term = norm(text);
+    const showAll = !term || text === supplierLabel(offers[i].supplier_id);
+    const used = new Set(offers.filter((_, j) => j !== i).map((o) => Number(o.supplier_id)));
+    return suppliers.filter((s) => showAll || norm(s.name).includes(term) || norm(s.booth).includes(term))
+      .map((s) => ({ ...s, used: used.has(s.id) }));
+  }
+
+  function openCombo(input) {
+    const i = Number(input.dataset.combo);
+    const list = input.nextElementSibling;
+    const opts = comboOptions(i, input.value);
+    list.innerHTML = opts.length
+      ? opts.map((s) => `
+        <li role="option" data-id="${s.id}" class="${s.used ? 'disabled' : ''} ${Number(offers[i].supplier_id) === s.id ? 'selected' : ''}"
+          aria-disabled="${s.used}">
+          <span>${esc(s.name)}</span>
+          <small>${s.used ? 'já adicionado' : s.booth ? 'Stand ' + esc(s.booth) : ''}</small>
+        </li>`).join('')
+      : '<li class="empty-opt">Nenhum fornecedor encontrado</li>';
+    list.hidden = false;
+    input.setAttribute('aria-expanded', 'true');
+    list.querySelector('li[data-id]:not(.disabled)')?.classList.add('active');
+  }
+
+  function closeCombo(input) {
+    const list = input.nextElementSibling;
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    // Texto digitado sem escolher uma opção volta para o fornecedor selecionado.
+    input.value = supplierLabel(offers[Number(input.dataset.combo)].supplier_id);
+  }
+
+  function pickSupplier(input, id) {
+    const i = Number(input.dataset.combo);
+    offers[i].supplier_id = id;
+    input.value = supplierLabel(id);
+    closeCombo(input);
+  }
+
+  offersEl.addEventListener('focusin', (e) => {
+    if (e.target.dataset.combo === undefined) return;
+    e.target.select();
+    openCombo(e.target);
+  });
+  offersEl.addEventListener('focusout', (e) => {
+    if (e.target.dataset.combo !== undefined) closeCombo(e.target);
+  });
+  offersEl.addEventListener('mousedown', (e) => {
+    const li = e.target.closest('.combo-list li[data-id]');
+    if (!li) return;
+    e.preventDefault(); // mantém o foco no campo até concluir a escolha
+    if (li.classList.contains('disabled')) return;
+    pickSupplier(li.closest('.combo').querySelector('.combo-input'), Number(li.dataset.id));
+  });
+  offersEl.addEventListener('keydown', (e) => {
+    const input = e.target;
+    if (input.dataset.combo === undefined) return;
+    const list = input.nextElementSibling;
+    const items = [...list.querySelectorAll('li[data-id]:not(.disabled)')];
+    const cur = items.findIndex((li) => li.classList.contains('active'));
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (list.hidden) return openCombo(input);
+      const next = items[(cur + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length];
+      items.forEach((li) => li.classList.toggle('active', li === next));
+      next?.scrollIntoView({ block: 'nearest' });
+    } else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (!list.hidden && items[cur]) pickSupplier(input, Number(items[cur].dataset.id));
+    } else if (e.key === 'Escape') {
+      closeCombo(input);
+    }
+  });
+
   offersEl.addEventListener('input', (e) => {
+    if (e.target.dataset.combo !== undefined) { openCombo(e.target); return; }
     const k = e.target.dataset.k;
     if (!k) return;
     const i = Number(e.target.closest('.offer').dataset.i);
@@ -687,7 +774,8 @@ async function viewAccount() {
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><table><tbody>${company.members.map((m) => `<tr><td>${esc(m.name)}</td><td class="item-sub">${esc(m.email)}</td></tr>`).join('')}</tbody></table>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
-    <button class="btn block" id="logout" style="margin-top:20px">Sair</button>`;
+    <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
+    <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
   document.getElementById('rate-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const v = parseNum(e.target.rate.value);

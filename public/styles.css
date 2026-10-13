@@ -1,35 +1,40 @@
 :root {
-  --bg: #f6f5f3;
+  /* Identidade BR Trading: preto e branco, com verde/âmbar só para indicar vantagem ou desvantagem. */
+  --bg: #f5f5f4;
   --surface: #ffffff;
-  --text: #1c1917;
-  --muted: #6b6560;
-  --border: #e5e2de;
-  --primary: #b91c1c;
+  --text: #0a0a0a;
+  --muted: #6b6b6b;
+  --border: #e3e3e3;
+  --primary: #0a0a0a;
   --primary-ink: #ffffff;
+  --danger: #b91c1c;
   --good: #15803d;
   --good-bg: #dcfce7;
   --bad: #b45309;
   --bad-bg: #fef3c7;
-  --neutral-bg: #f1efec;
+  --neutral-bg: #f0f0ef;
   --radius: 12px;
-  --shadow: 0 1px 2px rgb(0 0 0 / .06), 0 2px 8px rgb(0 0 0 / .04);
+  --shadow: 0 1px 2px rgb(0 0 0 / .05), 0 2px 8px rgb(0 0 0 / .04);
+  --logo-filter: none;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #141211;
-    --surface: #1f1c1a;
-    --text: #f2efec;
-    --muted: #a39d97;
-    --border: #35302d;
-    --primary: #ef4444;
-    --primary-ink: #1a0505;
+    --bg: #0a0a0a;
+    --surface: #161616;
+    --text: #f5f5f5;
+    --muted: #a3a3a3;
+    --border: #2c2c2c;
+    --primary: #f5f5f5;
+    --primary-ink: #0a0a0a;
+    --danger: #f87171;
     --good: #4ade80;
-    --good-bg: #14301f;
+    --good-bg: #12301e;
     --bad: #fbbf24;
     --bad-bg: #3a2c0b;
-    --neutral-bg: #2a2623;
+    --neutral-bg: #222222;
     --shadow: none;
+    --logo-filter: invert(1);
     color-scheme: dark;
   }
 }
@@ -47,7 +52,7 @@ body.has-tabs main { padding-bottom: calc(84px + env(safe-area-inset-bottom)); }
 main { max-width: 760px; margin: 0 auto; padding: 16px; }
 h1, h2, h3 { line-height: 1.2; margin: 0; }
 h2 { font-size: 1.15rem; margin: 20px 0 10px; }
-a { color: var(--primary); }
+a { color: var(--text); }
 img { display: block; max-width: 100%; }
 [hidden] { display: none !important; }
 
@@ -81,7 +86,7 @@ img { display: block; max-width: 100%; }
   padding: 8px 0 10px; font-size: .75rem; color: var(--muted); text-decoration: none;
 }
 .tabbar a span { font-size: 1.25rem; line-height: 1; }
-.tabbar a.active { color: var(--primary); font-weight: 600; }
+.tabbar a.active { color: var(--text); font-weight: 700; }
 
 /* formulários */
 .card {
@@ -90,10 +95,10 @@ img { display: block; max-width: 100%; }
 }
 .stack > * + * { margin-top: 14px; }
 label { display: block; font-size: .9rem; font-weight: 600; margin-bottom: 6px; }
-label .req { color: var(--primary); }
+label .req { color: var(--danger); }
 .hint { font-size: .82rem; color: var(--muted); margin-top: 4px; }
 .hint.ok { color: var(--good); }
-.hint.err { color: var(--primary); }
+.hint.err { color: var(--danger); }
 input, select, textarea {
   width: 100%; font: inherit; color: var(--text);
   background: var(--surface); border: 1px solid var(--border);
@@ -112,7 +117,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--primary); o
   color: var(--text); cursor: pointer; text-decoration: none;
 }
 .btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
-.btn.danger { color: var(--primary); }
+.btn.danger { color: var(--danger); }
 .btn.block { width: 100%; }
 .btn.small { min-height: 36px; padding: 6px 12px; font-size: .88rem; }
 .btn:disabled { opacity: .55; cursor: default; }
@@ -198,8 +203,10 @@ tr.best td { font-weight: 600; }
 /* autenticação */
 .auth { max-width: 420px; margin: 0 auto; padding-top: 6vh; }
 .brand { text-align: center; margin-bottom: 22px; }
-.brand img { width: 64px; height: 64px; margin: 0 auto 10px; }
-.brand h1 { font-size: 1.5rem; }
+.brand-logo { filter: var(--logo-filter); }
+.brand .brand-logo { width: min(300px, 80%); height: auto; margin: 0 auto 22px; }
+.brand h1 { font-size: 1.5rem; letter-spacing: .02em; }
+.brand .brand-by { margin: 2px 0 8px; font-size: .9rem; letter-spacing: .25em; text-transform: uppercase; color: var(--text); }
 .brand p { color: var(--muted); margin: 4px 0 0; }
 .switch { text-align: center; margin-top: 16px; font-size: .95rem; }
 
@@ -220,3 +227,27 @@ tr.best td { font-weight: 600; }
 }
 .lightbox img { max-height: 100%; object-fit: contain; }
 .spinner { text-align: center; color: var(--muted); padding: 40px; }
+
+/* marca */
+.topbar-mark { width: 32px; height: 32px; border-radius: 6px; flex: none; }
+@media (prefers-color-scheme: dark) { .topbar-mark { outline: 1px solid var(--border); } }
+.signature { display: flex; flex-direction: column; align-items: center; gap: 6px; margin: 32px 0 8px; color: var(--muted); font-size: .8rem; }
+.signature img { width: 160px; height: auto; opacity: .85; }
+
+/* campo de fornecedor com busca */
+.combo { position: relative; flex: 1; min-width: 0; }
+.combo-list {
+  position: absolute; z-index: 20; left: 0; right: 0; top: calc(100% + 4px);
+  margin: 0; padding: 4px; list-style: none; max-height: 260px; overflow-y: auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .14);
+}
+.combo-list li {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 10px;
+  padding: 10px 12px; border-radius: 8px; cursor: pointer;
+}
+.combo-list li small { color: var(--muted); white-space: nowrap; }
+.combo-list li.active, .combo-list li:hover { background: var(--neutral-bg); }
+.combo-list li.selected span { font-weight: 700; }
+.combo-list li.disabled { opacity: .45; cursor: not-allowed; }
+.combo-list .empty-opt { color: var(--muted); cursor: default; }
