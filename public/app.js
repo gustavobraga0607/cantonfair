@@ -54,8 +54,9 @@ function toast(msg) {
   t.textContent = msg;
   t.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 2800);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2200);
 }
+document.getElementById('toast').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
 
 function openLightbox(src) {
   const lb = document.getElementById('lightbox');
@@ -112,11 +113,14 @@ function photoInputHtml(current, placeholder) {
     </label>`;
 }
 
-function setChrome({ title, back = null, tab = null, auth = false }) {
+// form: telas de cadastro escondem a barra de abas (no celular ela sobe com o
+// teclado e cobre os campos) e usam uma barra fixa com o botão Salvar.
+function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false }) {
   document.title = title ? `${title} · Canton Fair Buyer` : 'Canton Fair Buyer by BR Trading';
   document.getElementById('topbar').hidden = auth;
-  document.getElementById('tabbar').hidden = auth;
-  document.body.classList.toggle('has-tabs', !auth);
+  document.getElementById('tabbar').hidden = auth || form;
+  document.body.classList.toggle('has-tabs', !auth && !form);
+  document.body.classList.toggle('has-fab', fab);
   document.getElementById('page-title').textContent = title || 'Canton Fair Buyer';
   document.getElementById('home-logo').hidden = Boolean(back);
   const backBtn = document.getElementById('back-btn');
@@ -124,7 +128,8 @@ function setChrome({ title, back = null, tab = null, auth = false }) {
   backBtn.onclick = () => { location.hash = back; };
   document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   const chip = document.getElementById('rate-chip');
-  chip.textContent = state.me ? `US$1 = ${brl(state.me.company.exchange_rate)}` : '';
+  chip.innerHTML = state.me ? `<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}` : '';
+  chip.title = 'Câmbio usado nas estimativas (R$ por US$ 1)';
   chip.hidden = !state.me;
 }
 
@@ -291,12 +296,12 @@ function viewRegister() {
 // ===================== fornecedores =====================
 
 async function viewSuppliers() {
-  setChrome({ title: 'Fornecedores', tab: 'suppliers' });
+  setChrome({ title: 'Fornecedores', tab: 'suppliers', fab: true });
   loading();
   const list = await getSuppliers();
   $app.innerHTML = `
     ${scopeBarHtml()}
-    <div class="toolbar"><input type="search" id="q" placeholder="Buscar por nome, contato ou stand"></div>
+    <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/suppliers/new" aria-label="Novo fornecedor">+</a>`;
   const render = (q = '') => {
@@ -416,7 +421,7 @@ async function readBusinessCard(form, dataUrl) {
 
 async function viewSupplierForm(id) {
   const editing = id != null;
-  setChrome({ title: editing ? 'Editar fornecedor' : 'Novo fornecedor', back: editing ? `#/suppliers/${id}` : '#/suppliers', tab: 'suppliers' });
+  setChrome({ title: editing ? 'Editar fornecedor' : 'Novo fornecedor', back: editing ? `#/suppliers/${id}` : '#/suppliers', tab: 'suppliers', form: true });
   loading();
   const s = editing ? await api(`/api/suppliers/${id}`) : {};
   let cardPhoto = null;
@@ -433,13 +438,13 @@ async function viewSupplierForm(id) {
       <div class="ocr-status" id="ocr-status" hidden></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
       <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
-      <div class="row">
+      <div class="row stack-sm">
         <div><label for="phone">Telefone</label><input id="phone" name="phone" type="tel" value="${esc(s.phone)}" placeholder="+86 …"></div>
         <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
       </div>
       <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(s.notes)}</textarea></div>
       <div class="error-box" id="err" hidden></div>
-      <div class="actions">
+      <div class="actions form-actions">
         ${editing ? '<button type="button" class="btn danger" id="del">Excluir</button>' : ''}
         <button class="btn primary" type="submit">Salvar</button>
       </div>
@@ -496,7 +501,7 @@ function savingBadge(priceBrl, estimated) {
 }
 
 async function viewProducts() {
-  setChrome({ title: 'Produtos', tab: 'products' });
+  setChrome({ title: 'Produtos', tab: 'products', fab: true });
   loading();
   const list = await api('/api/products' + scopeQS());
   $app.innerHTML = `
@@ -560,7 +565,7 @@ async function viewProduct(id) {
           </div>
           ${i === 0 ? '<span class="badge good">melhor preço</span>' : ''}
         </div>
-        <div class="compare" style="grid-template-columns:repeat(4,1fr)">
+        <div class="compare four">
           <div>US$<b>${o.price_usd.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</b></div>
           <div>MOQ<b>${o.moq ?? '—'}</b></div>
           <div>${esc(o.incoterm || 'Incoterm')}<b>${pct(o.nationalization_pct)}</b></div>
@@ -576,7 +581,7 @@ async function viewProduct(id) {
 
 async function viewProductForm(id, query) {
   const editing = id != null;
-  setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products' });
+  setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products', form: true });
   loading();
   const p = editing ? await api(`/api/products/${id}`) : { offers: [] };
   // O produto pertence a uma empresa; os fornecedores das ofertas precisam ser dela.
@@ -618,12 +623,12 @@ async function viewProductForm(id, query) {
       </div>
       <div class="card">
         <div class="offer-head" style="margin-bottom:12px"><h3>Fornecedores e preços</h3>
-          <button type="button" class="btn small" id="add-offer">+ Fornecedor</button></div>
+          <button type="button" class="btn small" id="add-offer">+ Adicionar</button></div>
         <div id="offers"></div>
         <p class="hint">Estimado no Brasil = US$ × (1 + % nacionalização) × câmbio ${brl(rate)}. Altere o câmbio em Conta.</p>
       </div>
       <div class="error-box" id="err" hidden></div>
-      <div class="actions">
+      <div class="actions form-actions">
         ${editing ? '<button type="button" class="btn danger" id="del">Excluir</button>' : ''}
         <button class="btn primary" type="submit">Salvar</button>
       </div>
@@ -670,7 +675,7 @@ async function viewProductForm(id, query) {
             <option value="">—</option>
             ${INCOTERMS.map((t) => `<option ${o.incoterm === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
-          <div><label>% nacionalização</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
+          <div><label>Nacionaliz. (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
         </div>
         <div class="offer-calc" data-calc="${i}">${offerCalc(o)}</div>
       </div>`).join('');
@@ -728,6 +733,11 @@ async function viewProductForm(id, query) {
     if (e.target.dataset.combo === undefined) return;
     e.target.select();
     openCombo(e.target);
+    // No celular o teclado ocupa metade da tela: sobe o campo para a lista de opções caber.
+    if (matchMedia('(max-width: 600px)').matches) {
+      const input = e.target;
+      setTimeout(() => input.scrollIntoView({ block: 'start', behavior: 'smooth' }), 250);
+    }
   });
   offersEl.addEventListener('focusout', (e) => {
     if (e.target.dataset.combo !== undefined) closeCombo(e.target);
@@ -851,7 +861,7 @@ async function viewRanking() {
       </div>
       <div class="segmented" style="margin-top:14px">
         <button data-mode="products" class="${rankingMode === 'products' ? 'active' : ''}">Por produto</button>
-        <button data-mode="suppliers" class="${rankingMode === 'suppliers' ? 'active' : ''}">Melhores fornecedores</button>
+        <button data-mode="suppliers" class="${rankingMode === 'suppliers' ? 'active' : ''}">Por fornecedor</button>
       </div>
       ${body}`;
     $app.querySelectorAll('.segmented button').forEach((b) => b.addEventListener('click', () => { rankingMode = b.dataset.mode; render(); }));
@@ -892,10 +902,9 @@ function renderRankSuppliers(r) {
       <div class="item-body">
         <div class="item-title">${esc(s.name)}</div>
         <div class="item-sub">${s.booth ? 'Stand ' + esc(s.booth) + ' · ' : ''}melhor opção em ${s.best_count} produto(s)</div>
-        ${companyTag(s.company_cnpj)}
+        <div class="badges"><span class="badge good">${s.advantageous_count} vantajoso(s)</span>
+          <span class="badge">economia ${brl(s.total_saving_brl)}</span> ${companyTag(s.company_cnpj)}</div>
       </div>
-      <div class="item-side"><span class="badge good">${s.advantageous_count} vantajoso(s)</span>
-        <div class="item-sub" style="margin-top:4px">economia ${brl(s.total_saving_brl)}</div></div>
     </a>`).join('')}</div>
     <p class="hint">Fornecedores ordenados pelo número de produtos em que oferecem o melhor preço estimado abaixo do preço no Brasil.</p>`;
 }
@@ -915,12 +924,12 @@ async function viewAccount() {
     </div>
     <h2>Câmbio para estimativas</h2>
     <form class="card stack" id="rate-form">
-      <div><label for="rate">R$ por US$ 1,00</label><input id="rate" name="rate" inputmode="decimal" value="${company.exchange_rate}"></div>
+      <div><label for="rate">R$ por US$ 1,00</label><input id="rate" name="rate" inputmode="decimal" value="${String(company.exchange_rate).replace('.', ',')}"></div>
       <p class="hint" style="margin:0">Compartilhado com todos os usuários deste CNPJ.</p>
       <button class="btn primary" type="submit">Salvar câmbio</button>
     </form>
     <h2>Equipe (${company.members.length})</h2>
-    <div class="card"><table><tbody>${company.members.map((m) => `<tr><td>${esc(m.name)}</td><td class="item-sub">${esc(m.email)}</td></tr>`).join('')}</tbody></table>
+    <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
     <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
