@@ -49,6 +49,17 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
     no Brasil e economia em R$ e %; ordenado do mais vantajoso para o menos.
   - *Melhores fornecedores*: em quantos produtos cada fornecedor é a melhor opção e a economia total.
 
+## Desempenho e segurança
+
+- **Offline e abertura instantânea**: um service worker (`public/sw.js`) guarda as telas do app, as fotos
+  e os últimos dados vistos; sem internet o app abre e mostra o que já foi carregado (com aviso).
+  Os dados salvos são apagados ao sair da conta.
+- **Miniaturas**: as fotos são enviadas com uma miniatura (240 px) usada nas listas (`/uploads/<id>/thumb`).
+- **Cotação em segundo plano**: a atualização do dólar não atrasa as respostas (na Vercel usa `waitUntil`).
+- **Segurança**: Content-Security-Policy, imagens validadas pelo conteúdo real, senha com scrypt
+  assíncrono e tempo de login igual para e-mails existentes ou não, limites de tentativas
+  (login, consulta de CNPJ, leitura de cartões).
+
 ## Publicar na Vercel
 
 O projeto já está pronto para a Vercel (`vercel.json` + função em `api/index.js`).

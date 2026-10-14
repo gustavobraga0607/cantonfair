@@ -30,6 +30,10 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data')),
   });
   const fx = process.env.FX_AUTO === 'false' ? null : createFxService({ db });
+  // Na Vercel, trabalho em segundo plano precisa de waitUntil para não ser interrompido.
+  const background = process.env.VERCEL
+    ? (p) => require('@vercel/functions').waitUntil(p)
+    : (p) => p.catch(() => {});
   const handler = createApp({
     db,
     publicDir,
@@ -38,6 +42,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
     readCard: cardReaderFromEnv(),
     fx,
+    background,
   });
   return { db, handler, fx, dbVar: found?.name ?? null };
 }

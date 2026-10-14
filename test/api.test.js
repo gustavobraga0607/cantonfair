@@ -480,3 +480,50 @@ test('cartão de visitas do próprio usuário: salvar, trocar, remover; cada usu
   r = await a('DELETE', '/api/me/card');
   assert.equal(r.body.user.card_photo, null);
 });
+
+test('revisão: imagem falsa recusada, miniaturas, ranking com empresa inexistente, cabeçalhos de segurança', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const admin = client(base);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11222333000181' });
+
+  // conteúdo que não é imagem, mesmo declarado como PNG
+  const fake = 'data:image/png;base64,' + Buffer.from('<html><script>alert(1)</script></html>').toString('base64');
+  assert.equal((await admin('POST', '/api/suppliers', { name: 'X', card_photo: fake })).status, 400);
+
+  // foto + miniatura; sem miniatura, /thumb devolve a foto
+  let r = await admin('POST', '/api/suppliers', { name: 'S', card_photo: PNG, card_photo_thumb: PNG });
+  assert.equal(r.status, 201);
+  let res = await fetch(base + r.body.card_photo + '/thumb', { headers: { Cookie: '' } });
+  assert.equal(res.status, 401, 'miniatura também exige login');
+  const withCookie = await admin('GET', r.body.card_photo + '/thumb');
+  assert.equal(withCookie.status, 200);
+  r = await admin('POST', '/api/suppliers', { name: 'T', card_photo: PNG });
+  assert.equal((await admin('GET', r.body.card_photo + '/thumb')).status, 200);
+  assert.equal((await admin('GET', r.body.card_photo + '/outra')).status, 404);
+
+  // ranking filtrado por empresa que não existe não quebra
+  r = await admin('GET', '/api/ranking?company=99999999000191');
+  assert.equal(r.status, 200);
+  assert.equal(r.body.items.length, 0);
+
+  // cabeçalhos de segurança
+  res = await fetch(base + '/');
+  assert.match(res.headers.get('content-security-policy'), /frame-ancestors 'none'/);
+  assert.equal(res.headers.get('x-content-type-options'), 'nosniff');
+});
+
+test('revisão: login não revela e-mails cadastrados e tem limite de tentativas', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  const time = async (email) => { const t0 = performance.now(); await client(base)('POST', '/api/login', { email, password: 'errada000' }); return performance.now() - t0; };
+  const missing = await time('ninguem@x.com');
+  const existing = await time('a@x.com');
+  assert.ok(missing > existing * 0.4, `tempo parecido para e-mail inexistente (${missing.toFixed(0)}ms) e existente (${existing.toFixed(0)}ms)`);
+  const c = client(base);
+  let last;
+  for (let i = 0; i < 11; i++) last = await c('POST', '/api/login', { email: 'a@x.com', password: 'errada000' });
+  assert.equal(last.status, 429);
+});

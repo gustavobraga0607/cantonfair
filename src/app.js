@@ -12,7 +12,13 @@ const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 
 // A Vercel limita o corpo da requisição a 4,5 MB; as fotos são reduzidas no navegador.
 const MAX_BODY = 4 * 1024 * 1024;
-const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+// Tipo real da imagem pelos primeiros bytes (não confia no que o cliente declara).
+function sniffImage(buf) {
+  if (buf.length > 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'image/jpeg';
+  if (buf.length > 8 && buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return 'image/png';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'image/webp';
+  return null;
+}
 const INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
 const STATIC_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -24,6 +30,16 @@ const STATIC_TYPES = {
   '.png': 'image/png',
 };
 
+// Cabeçalhos de segurança: só scripts do próprio site, mapa da feira em iframe,
+// página não pode ser embutida em outros sites.
+const SECURITY_HEADERS = {
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'same-origin',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: blob:; connect-src 'self'; frame-src https://365.cantonfair.org.cn; " +
+    "worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'",
+};
+
 // Valor devolvido por rotas que já escreveram a resposta (ex.: download de arquivo).
 const RAW = Symbol('raw-response');
 
@@ -33,15 +49,21 @@ class HttpError extends Error {
 
 const now = () => new Date().toISOString();
 
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, fx = null }) {
+// background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
-  const loginLimiter = auth.createRateLimiter();
+  const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
+  const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
+  const cnpjLimiter = auth.createRateLimiter({ max: 60 });                           // consultas públicas de CNPJ por IP
+  const ocrLimiter = auth.createRateLimiter({ max: 60, windowMs: 60 * 60_000 });     // leituras de cartão por usuário/hora
+  const clientIp = (req) => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
+    .split(',')[0].trim();
 
   // ---------- utilidades HTTP ----------
 
   function send(res, status, body, headers = {}) {
     const payload = body === undefined ? '' : JSON.stringify(body);
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
+    res.writeHead(status, { ...SECURITY_HEADERS, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers });
     res.end(payload);
   }
 
@@ -94,14 +116,23 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   // ---------- imagens (guardadas no banco) ----------
 
   function parseImage(dataUrl) {
-    const m = /^data:(image\/[a-z]+);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
-    if (!m || !IMAGE_TYPES.includes(m[1])) throw new HttpError(400, 'Imagem inválida (use JPG, PNG ou WEBP).');
-    return { mime: m[1], data: Buffer.from(m[2], 'base64') };
+    const m = /^data:image\/[a-z]+;base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+    const data = m ? Buffer.from(m[1], 'base64') : null;
+    const mime = data && sniffImage(data);
+    if (!mime) throw new HttpError(400, 'Imagem inválida (use JPG, PNG ou WEBP).');
+    return { mime, data };
   }
 
-  async function saveImage(q, img, cnpj) {
+  // Miniatura opcional enviada pelo navegador junto com a foto (usada nas listas).
+  function parseThumb(dataUrl) {
+    if (!dataUrl) return null;
+    try { const t = parseImage(dataUrl); return t.data.length <= 200_000 ? t : null; } catch { return null; }
+  }
+
+  async function saveImage(q, img, cnpj, thumb = null) {
     const id = crypto.randomBytes(16).toString('hex');
-    await q.run('INSERT INTO images (id, cnpj, mime, data, created_at) VALUES (?, ?, ?, ?, ?)', [id, cnpj, img.mime, img.data, now()]);
+    await q.run('INSERT INTO images (id, cnpj, mime, data, thumb, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+      [id, cnpj, img.mime, img.data, thumb?.data ?? null, now()]);
     return id;
   }
 
@@ -290,13 +321,13 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   }
 
   async function meOut(user) {
-    const [company, members] = await Promise.all([
+    const [company, members, companies, fxStatus, settings] = await Promise.all([
       getCompany(user.cnpj),
       db.all('SELECT name, email FROM users WHERE cnpj = ? ORDER BY lower(name)', [user.cnpj]),
+      isAdmin(user) ? db.all('SELECT cnpj, name, exchange_rate FROM companies ORDER BY lower(coalesce(name, cnpj))') : undefined,
+      fx ? fx.read() : null,
+      getSettings(),
     ]);
-    const companies = isAdmin(user)
-      ? await db.all('SELECT cnpj, name, exchange_rate FROM companies ORDER BY lower(coalesce(name, cnpj))')
-      : undefined;
     return {
       user: {
         id: user.id, name: user.name, email: user.email, role: user.role || 'user', is_admin: isAdmin(user),
@@ -307,8 +338,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         name: company.name, exchange_rate: company.exchange_rate, members,
         rate_mode: company.rate_mode, rate_source: company.rate_source, rate_updated_at: company.rate_updated_at,
       },
-      fx: fx ? await fx.read() : null,
-      settings: await getSettings(),
+      fx: fxStatus,
+      settings,
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
       features: { card_ocr: Boolean(readCard) },
     };
@@ -316,7 +347,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   // --- autenticação ---
 
-  route('POST', '/api/cnpj/check', async ({ body }) => {
+  route('POST', '/api/cnpj/check', async ({ body, req }) => {
+    if (!cnpjLimiter.hit(clientIp(req))) throw new HttpError(429, 'Muitas consultas. Tente novamente em alguns minutos.');
     const cnpj = cnpjUtil.clean(body.cnpj);
     if (!cnpjUtil.isValid(cnpj)) return { valid: false, message: 'CNPJ inválido (dígitos verificadores não conferem).' };
     const existing = await getCompany(cnpj);
@@ -350,7 +382,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       companyName = info.name || null;
     }
 
-    const passwordHash = auth.hashPassword(password);
+    const passwordHash = await auth.hashPassword(password);
     const role = withRole({ email }).role;
     // Empresa nova já começa com a cotação do dia (ou 5,50 se as APIs estiverem fora).
     const quote = !existing && fx ? await fx.ensureFresh().catch(() => null) : null;
@@ -376,11 +408,11 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('POST', '/api/login', async ({ body, req, res }) => {
     const email = str(body.email, 200).toLowerCase();
     const password = typeof body.password === 'string' ? body.password : '';
-    const ip = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
-    const key = `${ip}|${email}`;
-    if (!loginLimiter.hit(key)) throw new HttpError(429, 'Muitas tentativas. Tente novamente em alguns minutos.');
+    const key = `${clientIp(req)}|${email}`;
+    if (!loginLimiter.hit(key) || !emailLimiter.hit(email)) throw new HttpError(429, 'Muitas tentativas. Tente novamente em alguns minutos.');
     const user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
-    if (!user || !auth.verifyPassword(password, user.password_hash)) {
+    // Sempre calcula o hash (mesmo sem usuário) para o tempo de resposta não revelar e-mails cadastrados.
+    if (!(await auth.verifyPassword(password, user?.password_hash)) || !user) {
       throw new HttpError(401, 'E-mail ou senha incorretos.');
     }
     loginLimiter.clear(key);
@@ -497,8 +529,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   }
 
   // Lê a foto do cartão de visita e devolve os campos para preencher o cadastro.
-  route('POST', '/api/ocr/card', async ({ body }) => {
+  route('POST', '/api/ocr/card', async ({ body, user }) => {
     if (!readCard) throw new HttpError(503, 'Leitor de cartões não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+    if (!ocrLimiter.hit(String(user.id))) throw new HttpError(429, 'Muitas leituras de cartão em pouco tempo. Tente mais tarde.');
     const img = parseImage(body.image);
     try {
       return await readCard(img.mime, img.data.toString('base64'));
@@ -514,8 +547,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     if (!body.card_photo) throw new HttpError(400, 'A foto do cartão de visitas é obrigatória.');
     const cnpj = await targetCnpj(user, body);
     const img = parseImage(body.card_photo);
+    const thumb = parseThumb(body.card_photo_thumb);
     const id = await db.tx(async (q) => {
-      const photo = await saveImage(q, img, cnpj);
+      const photo = await saveImage(q, img, cnpj, thumb);
       const t = now();
       const f = supplierFields(body);
       const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, notes, created_by, updated_by, created_at, updated_at)
@@ -533,7 +567,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const img = body.card_photo && String(body.card_photo).startsWith('data:') ? parseImage(body.card_photo) : null;
     await db.tx(async (q) => {
       let photo = s.card_photo;
-      if (img) photo = await saveImage(q, img, s.cnpj);
+      if (img) photo = await saveImage(q, img, s.cnpj, parseThumb(body.card_photo_thumb));
       const f = supplierFields(body);
       await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, notes = ?, updated_by = ?, updated_at = ?
                    WHERE id = ?`, [name, photo, f.booth, f.contact_name, f.phone, f.notes, user.id, now(), s.id]);
@@ -562,7 +596,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));
     const freight = await freight40hq();
-    return products.map((p) => productOut(p, offers.filter((o) => o.product_id === p.id), p.exchange_rate, freight));
+    const byProduct = Map.groupBy(offers, (o) => o.product_id);
+    return products.map((p) => productOut(p, byProduct.get(p.id) || [], p.exchange_rate, freight));
   });
 
   route('GET', '/api/products/:id', ({ user, params }) => productResponse(accessCnpj(user), params.id));
@@ -582,7 +617,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const offers = await parseOffers(cnpj, body.offers);
     const img = body.photo ? parseImage(body.photo) : null;
     const id = await db.tx(async (q) => {
-      const photo = img ? await saveImage(q, img, cnpj) : null;
+      const photo = img ? await saveImage(q, img, cnpj, parseThumb(body.photo_thumb)) : null;
       const t = now();
       const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, notes, created_by, updated_by, created_at, updated_at)
                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
@@ -601,7 +636,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     await db.tx(async (q) => {
       let photo = p.photo;
       if (body.photo === null) photo = null;
-      else if (img) photo = await saveImage(q, img, p.cnpj);
+      else if (img) photo = await saveImage(q, img, p.cnpj, parseThumb(body.photo_thumb));
       await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, units_per_40hq = ?, notes = ?, updated_by = ?, updated_at = ?
                    WHERE id = ?`, [f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, now(), p.id]);
       await replaceOffers(q, p.id, offers);
@@ -789,7 +824,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const supplierRanking = [...suppliers.values()]
       .sort((a, b) => b.advantageous_count - a.advantageous_count || b.total_saving_brl - a.total_saving_brl);
 
-    const own = await getCompany(cnpj || user.cnpj);
+    const own = (cnpj && await getCompany(cnpj)) || await getCompany(user.cnpj);
     return {
       exchange_rate: own.exchange_rate,
       company: cnpj ? { cnpj, name: own.name } : null,
@@ -805,22 +840,27 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   // ---------- arquivos ----------
 
-  async function serveUpload(res, user, id) {
-    const img = /^[0-9a-f]{32}$/.test(id)
-      ? await db.get(`SELECT mime, data FROM images WHERE id = ?${isAdmin(user) ? '' : ' AND cnpj = ?'}`,
+  // /uploads/<id> = foto; /uploads/<id>/thumb = miniatura (ou a foto, se não houver miniatura).
+  async function serveUpload(res, user, rest) {
+    const [id, variant] = rest.split('/');
+    const col = variant === 'thumb' ? 'coalesce(thumb, data)' : 'data';
+    const img = /^[0-9a-f]{32}$/.test(id) && (!variant || variant === 'thumb')
+      ? await db.get(`SELECT mime, ${col} AS data FROM images WHERE id = ?${isAdmin(user) ? '' : ' AND cnpj = ?'}`,
         isAdmin(user) ? [id] : [id, user.cnpj])
       : null;
     if (!img) return send(res, 404, { error: 'Não encontrado.' });
     const data = Buffer.from(img.data);
+    // Miniaturas são sempre JPEG; a foto mantém o tipo original.
+    if (variant === 'thumb' && sniffImage(data)) img.mime = sniffImage(data);
     // O id é único por foto, então pode ficar em cache indefinidamente.
-    res.writeHead(200, { 'Content-Type': img.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': img.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
     res.end(data);
   }
 
   function serveFile(res, file, type) {
     fs.stat(file, (err, st) => {
       if (err || !st.isFile()) { send(res, 404, { error: 'Não encontrado.' }); return; }
-      res.writeHead(200, { 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'no-cache' });
+      res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': type, 'Content-Length': st.size, 'Cache-Control': 'no-cache' });
       fs.createReadStream(file).pipe(res);
     });
   }
@@ -864,8 +904,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
         if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
         const user = sessionUser && withRole(sessionUser);
-        // Mantém a cotação do dia atualizada (usa cache; busca nas APIs no máximo a cada 30 min).
-        if (user && fx && req.method === 'GET') await fx.ensureFresh().catch((err) => console.error(err));
+        // Mantém a cotação do dia atualizada sem atrasar a resposta (busca em segundo plano;
+        // usa cache de 30 min). Só espera se ainda não existe nenhuma cotação.
+        if (user && fx && req.method === 'GET') await fx.refreshInBackground(background).catch((err) => console.error(err));
         // Exigir JSON em POST/PUT também protege contra CSRF via formulários de outros sites.
         if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '')) {
           throw new HttpError(415, 'Envie os dados em JSON.');
@@ -885,4 +926,4 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   };
 }
 
-module.exports = { createApp, INCOTERMS };
+module.exports = { createApp, INCOTERMS, SECURITY_HEADERS };

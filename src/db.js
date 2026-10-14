@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS images (
   cnpj        TEXT NOT NULL REFERENCES companies(cnpj),
   mime        TEXT NOT NULL,
   data        {{BLOB}} NOT NULL,
+  thumb       {{BLOB}},                          -- miniatura JPEG para as listas
   created_at  TEXT NOT NULL
 );
 
@@ -141,7 +142,14 @@ const ADDED_COLUMNS = [
   ['suppliers', 'phone', 'TEXT'],
   ['products', 'units_per_40hq', 'INTEGER'],
   ['users', 'card_photo', 'TEXT'],
+  ['images', 'thumb', '{{BLOB}}'],
 ];
+// Índices criados depois (bancos existentes também recebem).
+const ADDED_INDEXES = [
+  'CREATE INDEX IF NOT EXISTS idx_users_cnpj ON users(cnpj)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
+];
+const typed = (driver, sql) => sql.replace(/\{\{(\w+)\}\}/g, (_, k) => TYPES[driver][k]);
 
 const clean = (params) => params.map((p) => (p === undefined ? null : p));
 
@@ -155,9 +163,10 @@ function sqlite(dataDir) {
   conn.exec(schemaFor('sqlite'));
   for (const [table, column, type] of ADDED_COLUMNS) {
     if (!conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
-      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typed('sqlite', type)}`);
     }
   }
+  for (const sql of ADDED_INDEXES) conn.exec(sql);
 
   const q = {
     driver: 'sqlite',
@@ -201,12 +210,13 @@ function postgres(connectionString) {
   });
 
   let ready;
-  const migrate = async () => {
-    await pool.query(schemaFor('postgres'));
-    for (const [table, column, type] of ADDED_COLUMNS) {
-      await pool.query(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`);
-    }
-  };
+  // Esquema + migrações num único comando: uma ida ao banco só na primeira requisição
+  // de cada instância (deixa o "cold start" na Vercel mais rápido).
+  const migrate = () => pool.query([
+    schemaFor('postgres'),
+    ...ADDED_COLUMNS.map(([table, column, type]) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${typed('postgres', type)};`),
+    ...ADDED_INDEXES.map((sql) => `${sql};`),
+  ].join('\n'));
   const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));
   const base = wrap(pool);
   const withInit = (m) => async (...a) => { await init(); return base[m](...a); };

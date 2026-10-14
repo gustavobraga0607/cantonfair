@@ -40,13 +40,32 @@ function formatCnpj(v) {
   return out;
 }
 
+let offlineNoticeShown = false;
+// Navegação atual: se o usuário trocar de tela enquanto uma consulta (GET) está a caminho,
+// a resposta atrasada é descartada em vez de sobrescrever a tela nova.
+let navSeq = 0;
+class StaleNavigation extends Error {}
+
 async function api(path, { method = 'GET', body } = {}) {
-  const res = await fetch(path, {
-    method,
-    headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-    body: body !== undefined ? JSON.stringify(body) : undefined,
-    credentials: 'same-origin',
-  });
+  const nav = navSeq;
+  let res;
+  try {
+    res = await fetch(path, {
+      method,
+      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      credentials: 'same-origin',
+    });
+  } catch {
+    throw new Error('Sem conexão com a internet. Tente de novo quando o sinal voltar.');
+  }
+  // Resposta salva pelo service worker (sem internet): avisa uma vez.
+  if (res.headers.get('X-Offline') && res.ok && !offlineNoticeShown) {
+    offlineNoticeShown = true;
+    setTimeout(() => toast('Sem conexão: mostrando os últimos dados salvos.'), 300);
+  } else if (!res.headers.get('X-Offline')) {
+    offlineNoticeShown = false;
+  }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith('/api/login')) {
     state.me = null;
@@ -54,6 +73,7 @@ async function api(path, { method = 'GET', body } = {}) {
     throw new Error(data.error || 'Sessão expirada.');
   }
   if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+  if (method === 'GET' && nav !== navSeq) throw new StaleNavigation();
   return data;
 }
 
@@ -103,6 +123,27 @@ function resizeImage(file, maxSize = 1280, quality = 0.8) {
     reader.readAsDataURL(file);
   });
 }
+
+// Miniatura JPEG (para listas), gerada a partir da foto já reduzida.
+function makeThumb(dataUrl, size = 240) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve(null);
+    img.onload = () => {
+      const scale = Math.min(1, size / Math.max(img.width, img.height));
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.75));
+    };
+    img.src = dataUrl;
+  });
+}
+const thumbUrl = (url) => (url ? `${url}/thumb` : null);
+const thumbImg = (url, fallback = '📦') => (url
+  ? `<img class="thumb" src="${esc(thumbUrl(url))}" alt="" loading="lazy" decoding="async" width="64" height="64">`
+  : `<div class="thumb">${fallback}</div>`);
 
 // Liga um <label class="photo-input"> com <input type=file> a uma prévia.
 function bindPhotoInput(root, onChange, { maxSize, quality } = {}) {
@@ -340,7 +381,7 @@ async function viewSuppliers() {
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
         <a class="item" href="#/suppliers/${s.id}">
-          <img class="thumb" src="${esc(s.card_photo)}" alt="" loading="lazy">
+          ${thumbImg(s.card_photo, '📇')}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
@@ -380,7 +421,7 @@ async function viewSupplier(id) {
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
     <div class="list">${s.products.length ? s.products.map((p) => `
       <a class="item" href="#/products/${p.id}">
-        ${p.photo ? `<img class="thumb" src="${esc(p.photo)}" alt="" loading="lazy">` : '<div class="thumb">📦</div>'}
+        ${thumbImg(p.photo)}
         <div class="item-body">
           <div class="item-title">${esc(p.name)}</div>
           <div class="item-sub">${usd(p.price_usd)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
@@ -493,7 +534,7 @@ async function viewSupplierForm(id) {
         name: form.name.value, contact_name: form.contact_name.value, phone: form.phone.value,
         booth: form.booth.value, notes: form.notes.value,
       };
-      if (cardPhoto) body.card_photo = cardPhoto;
+      if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
       if (form.company) body.company = form.company.value;
       const saved = await api(editing ? `/api/suppliers/${id}` : '/api/suppliers', { method: editing ? 'PUT' : 'POST', body });
       toast('Fornecedor salvo.');
@@ -547,7 +588,7 @@ async function viewProducts() {
         const b = bestOffer(p);
         return `
         <a class="item" href="#/products/${p.id}">
-          ${p.photo ? `<img class="thumb" src="${esc(p.photo)}" alt="" loading="lazy">` : '<div class="thumb">📦</div>'}
+          ${thumbImg(p.photo)}
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
             <div class="item-sub">${p.offers.length} fornecedor(es)${b ? ' · melhor: ' + esc(b.supplier_name) : ''}</div>
@@ -868,6 +909,7 @@ async function viewProductForm(id, query) {
     if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('Unidades por container 40HQ deve ser um número inteiro.');
     const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, notes: form.notes.value, offers: payloadOffers };
     if (photo !== undefined) body.photo = photo;
+    if (photo) body.photo_thumb = await makeThumb(photo);
     if (isAdmin() && !editing) body.company = company;
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
@@ -930,7 +972,7 @@ function renderRankProducts(r) {
     <a class="item rank-item" href="#/products/${it.product_id}">
       <div class="rank-top">
         <div class="rank-pos">${it.saving_pct !== null ? i + 1 : '–'}</div>
-        ${it.photo ? `<img class="thumb" src="${esc(it.photo)}" alt="" loading="lazy">` : '<div class="thumb">📦</div>'}
+        ${thumbImg(it.photo)}
         <div class="item-body">
           <div class="item-title">${esc(it.name)}</div>
           <div class="item-sub">${it.best ? `★ ${esc(it.best.supplier_name)}${it.best.supplier_booth ? ' · Stand ' + esc(it.best.supplier_booth) : ''}` : 'Sem fornecedor'}</div>
@@ -1501,6 +1543,7 @@ async function viewAccount() {
   if (location.hash.includes('cambio')) document.getElementById('cambio').scrollIntoView();
   document.getElementById('logout').addEventListener('click', async () => {
     await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
+    navigator.serviceWorker?.controller?.postMessage('logout'); // apaga dados e fotos salvos offline
     state.me = null;
     state.suppliers = null;
     location.hash = '#/login';
@@ -1530,6 +1573,7 @@ const routes = [
 ];
 
 async function router() {
+  const nav = ++navSeq;
   const raw = location.hash.slice(1) || '/ranking';
   const [path, qs] = raw.split('?');
   const query = new URLSearchParams(qs || '');
@@ -1545,9 +1589,15 @@ async function router() {
   try {
     await view(path.match(re), query);
   } catch (err) {
+    if (err instanceof StaleNavigation || nav !== navSeq) return; // o usuário já foi para outra tela
     if (state.me) $app.innerHTML = `<div class="empty">${esc(err.message)}<br><a class="btn" href="#/ranking">Voltar</a></div>`;
   }
 }
 
 window.addEventListener('hashchange', router);
 router();
+
+// Service worker: abre o app na hora e mantém os últimos dados disponíveis sem internet.
+if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+}

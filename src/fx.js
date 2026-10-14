@@ -106,7 +106,20 @@ function createFxService({ db, fetchQuote = fetchUsdBrl, now = () => Date.now() 
     };
   }
 
-  return { ensureFresh, read: async () => status(await read()) };
+  // Para o caminho das requisições: se já existe uma cotação, devolve na hora e atualiza
+  // em segundo plano (background mantém o trabalho vivo após a resposta). Só espera
+  // quando ainda não há nenhuma cotação.
+  async function refreshInBackground(background = (p) => p) {
+    const row = await read();
+    if (!row?.rate) return ensureFresh();
+    const age = (iso) => (iso ? now() - new Date(iso).getTime() : Infinity);
+    const stale = age(row.fetched_at) > FRESH_MS;
+    const cooling = age(row.error_at) < RETRY_MS && age(row.error_at) < age(row.fetched_at);
+    if (stale && !cooling) background(ensureFresh().catch((err) => console.error('Cotação:', err.message)));
+    return status(row);
+  }
+
+  return { ensureFresh, refreshInBackground, read: async () => status(await read()) };
 }
 
 module.exports = { fetchUsdBrl, createFxService, SOURCES };
