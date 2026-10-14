@@ -1032,7 +1032,6 @@ function tripItemHtml(it, dayCity) {
       <div class="trip-body">
         ${it.city && it.city !== dayCity ? `<span class="badge">${esc(it.city)}</span>` : ''}
         ${it.activity ? `<div class="trip-activity">${icon ? `<span aria-hidden="true">${icon}</span> ` : ''}${esc(it.activity)}</div>` : ''}
-        ${it.category ? `<span class="cat-chip">${esc(it.category)}</span>` : ''}
         ${lines}${extras}
       </div>
     </li>`;
@@ -1044,9 +1043,6 @@ function renderTrip(it, { back }) {
   const first = it.start_date;
   const dayNumber = (d, i) => (first && d.date
     ? Math.round((Date.parse(d.date) - Date.parse(first)) / 86400_000) + 1 : i + 1);
-  // Legenda: tipos de atividade com as cores da planilha.
-  const legend = new Map();
-  it.days.forEach((d) => d.items.forEach((x) => { if (x.category && !legend.has(x.category)) legend.set(x.category, x.color); }));
   $app.innerHTML = `
     ${subnavHtml('trip')}
     <div class="card trip-head">
@@ -1057,8 +1053,6 @@ function renderTrip(it, { back }) {
         <a class="btn small" href="/api/itineraries/${it.id}/file" download>⬇ Planilha original</a>
         ${isAdmin() ? `<a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>` : ''}
       </div>
-      ${legend.size ? `<div class="badges trip-legend">${[...legend].map(([c, color]) =>
-        `<span class="cat-chip"${color ? ` style="--cat:${esc(color)}"` : ''}>${esc(c)}</span>`).join('')}</div>` : ''}
     </div>
     <div class="trip-days">${it.days.map((d, i) => {
       const cities = [...new Set(d.items.map((x) => x.city).filter(Boolean))];
