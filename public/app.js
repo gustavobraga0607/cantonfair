@@ -955,9 +955,11 @@ function renderRankSuppliers(r) {
 
 // ===================== roteiro de viagem =====================
 
+// Campos do editor de roteiro (Local/endereço e Contato saíram do formulário a pedido;
+// se vierem na planilha, continuam aparecendo no roteiro e são preservados ao salvar).
 const TRIP_FIELDS = [
-  ['time', 'Hora'], ['city', 'Cidade'], ['activity', 'Atividade'], ['location', 'Local / endereço'],
-  ['transport', 'Transporte'], ['hotel', 'Hotel'], ['contact', 'Contato'], ['notes', 'Observações'],
+  ['time', 'Hora'], ['city', 'Cidade'], ['activity', 'Atividade'],
+  ['transport', 'Transporte'], ['hotel', 'Hotel'], ['notes', 'Observações'],
 ];
 const TRIP_ICONS = { location: '📍', transport: '🚆', hotel: '🏨', contact: '👤', notes: '📝' };
 // Ícone pelo tipo da atividade (vindo da legenda de cores da planilha) ou pelo texto.
