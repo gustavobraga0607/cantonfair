@@ -52,3 +52,19 @@ test('normaliza dias editados (limpa campos, datas inválidas, limites)', () => 
   assert.equal(r.start_date, '2026-10-20');
   assert.throws(() => normalizeDays('x'), /inválido/);
 });
+
+test('modelo BR Trading: título, dia da semana e numeração ignorados, coluna sem título, cores da legenda', async () => {
+  const buf = fs.readFileSync(path.join(__dirname, 'fixtures', 'roteiro-modelo-cores.xlsx'));
+  const r = await parseItineraryXlsx(buf);
+  assert.equal(r.title, 'PROGRAMAÇÃO CHINA - 2026 · Cliente • Roteiro de viagem');
+  assert.deepEqual(r.days.map((x) => x.date), ['2026-10-25', '2026-10-27'], 'a legenda não vira um dia');
+  assert.deepEqual(r.days[0].items, [
+    { time: '07:25', activity: 'Chegada em Hong Kong e transfer para Guangzhou', category: 'Deslocamento (voo, trem, transfer)', color: '#FFF3DC' },
+    { time: '13:00 – 17:00', activity: 'Feira de Cantão - 2ª Edição', category: 'Feira de Cantão', color: '#E6EEFC' },
+  ]);
+  assert.deepEqual(r.days[1].items[0], {
+    time: '08:25', activity: 'Voo para Jinan TNA (a partir de Guangzhou CAN)', notes: 'Shenzhen Airlines',
+    category: 'Deslocamento (voo, trem, transfer)', color: '#FFF3DC',
+  });
+  assert.equal(r.days[1].items[1].category, 'Visita a fábrica');
+});

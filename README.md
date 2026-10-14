@@ -38,7 +38,8 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   equipe do CNPJ; dá para voltar ao automático a qualquer momento). `FX_AUTO=false` desliga a busca.
 - **Roteiro de viagem** (aba *Viagem*): o administrador envia o roteiro da viagem na China em Excel (.xlsx), por CNPJ;
   o app lê a planilha (colunas reconhecidas pelo título: Data, Hora, Cidade, Atividade, Local, Transporte, Hotel,
-  Contato, Observações — em português, inglês ou chinês; colunas extras também aparecem) e mostra dia a dia para
+  Contato, Observações — em português, inglês ou chinês; colunas extras também aparecem; cores das células com
+  legenda viram o tipo de cada atividade; o título no topo da planilha vira o título do roteiro) e mostra dia a dia para
   os usuários daquela empresa, destacando o dia de hoje. O administrador pode editar na tela, substituir a planilha
   ou excluir; a planilha original fica disponível para download.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,

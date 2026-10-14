@@ -22,6 +22,9 @@ const KEYWORDS = [
     'roteiro', 'activity', 'description', 'event', 'schedule', 'itinerary', '活动', '行程', '安排']],
 ];
 
+const WEEKDAY_RE = /^(domingo|segunda|terca|quarta|quinta|sexta|sabado)(-feira)?$|^(sun|mon|tues|wednes|thurs|fri|satur)day$|^(sun|mon|tue|wed|thu|fri|sat)\.?$|^(星期|周)[一二三四五六日天]$/;
+const LEGEND_RE = /^(legenda|legend|图例)\b/;
+
 const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const pad = (n) => String(n).padStart(2, '0');
 
@@ -66,7 +69,31 @@ function asTime(v) {
     const mins = Math.round(v * 24 * 60);
     return `${pad(Math.floor(mins / 60) % 24)}:${pad(mins % 60)}`;
   }
-  return asText(v);
+  // Texto: "13:00:00 as 17:00" → "13:00 – 17:00"
+  return asText(v)
+    .replace(/(\d{1,2}):(\d{2}):\d{2}/g, '$1:$2')
+    .replace(/(\d{1,2}[:h]\d{2})\s*(?:-|–|a|as|às|ate|até|to|~)\s*(\d{1,2}[:h]\d{2})/i, '$1 – $2');
+}
+
+// Cor de fundo de uma célula ("#RRGGBB"), ou null.
+function fillColor(cell) {
+  const argb = cell?.fill?.type === 'pattern' && cell.fill.pattern !== 'none' ? cell.fill.fgColor?.argb : null;
+  return argb && /^[0-9A-F]{8}$/i.test(argb) ? `#${argb.slice(2).toUpperCase()}` : null;
+}
+
+// Legenda de cores (ex.: amarelo = Deslocamento): linhas abaixo de uma célula "Legenda".
+function readLegend(ws, legendRow, colCount) {
+  const legend = new Map();
+  for (let r = legendRow; r <= Math.min(ws.rowCount, legendRow + 15); r++) {
+    const row = ws.getRow(r);
+    for (let c = 1; c <= colCount; c++) {
+      const cell = row.getCell(c);
+      const color = fillColor(cell);
+      const text = asText(cellValue(cell.value));
+      if (color && text && !LEGEND_RE.test(norm(text)) && !legend.has(color)) legend.set(color, text.slice(0, 60));
+    }
+  }
+  return legend;
 }
 
 // Data: Date do Excel ou textos como "20/10/2026", "20/10", "2026-10-20", "Dia 1 - 20/10".
@@ -121,17 +148,44 @@ function parseSheet(ws, { year }) {
   const headers = rowValues(ws, headerRow, colCount).map((h) => asText(h));
 
   // Mapeia cada coluna para um campo (cada campo usado uma vez; o resto vira extra).
+  // Fim da tabela: a linha "Legenda" (se houver) e o que vem depois não são atividades.
+  let lastRow = ws.rowCount;
+  for (let r = headerRow + 1; r <= ws.rowCount; r++) {
+    const first = rowValues(ws, r, colCount).find((v) => v != null && asText(v) !== '');
+    if (first != null && LEGEND_RE.test(norm(asText(first)))) { lastRow = r - 1; break; }
+  }
+  const legend = lastRow < ws.rowCount ? readLegend(ws, lastRow + 1, colCount) : new Map();
+
   const mapping = [];
   const used = new Set();
   headers.forEach((h, i) => {
     const f = fieldFor(h);
-    if (f && !used.has(f)) { used.add(f); mapping[i] = f; } else if (h) mapping[i] = `extra:${h}`;
+    if (f && !used.has(f)) { used.add(f); mapping[i] = f; }
+    else if (f === 'date') mapping[i] = `weekday:${h}`; // 2ª coluna de data costuma ser o dia da semana
+    else if (h) mapping[i] = `extra:${h}`;
   });
+
+  // Colunas sem título: números do dia (1, 2, 3...) são ignorados; o resto vira observação.
+  const columnValues = (i) => {
+    const out = [];
+    for (let r = headerRow + 1; r <= lastRow; r++) {
+      const v = cellValue(ws.getRow(r).getCell(i + 1).value);
+      if (v != null && asText(v) !== '') out.push(v);
+    }
+    return out;
+  };
+  for (let i = 0; i < colCount; i++) {
+    if (mapping[i] || headers[i]) continue;
+    const vals = columnValues(i);
+    if (!vals.length || vals.every((v) => /^\d{1,2}$/.test(asText(v)))) continue;
+    if (!used.has('notes')) { used.add('notes'); mapping[i] = 'notes'; } else mapping[i] = 'extra:Info';
+  }
+  const activityCol = mapping.indexOf('activity');
 
   const days = [];
   let current = null;
   let currentKey = null;
-  for (let r = headerRow + 1; r <= ws.rowCount; r++) {
+  for (let r = headerRow + 1; r <= lastRow; r++) {
     const vals = rowValues(ws, r, colCount);
     if (vals.every((v) => v == null || asText(v) === '')) continue;
 
@@ -142,6 +196,10 @@ function parseSheet(ws, { year }) {
       if (!f || v == null) return;
       if (f === 'date') dateRaw = v;
       else if (f === 'time') item.time = asTime(v);
+      else if (f.startsWith('weekday:')) {
+        const t = asText(v);
+        if (t && !WEEKDAY_RE.test(norm(t))) item.extra.push({ label: f.slice(8), value: t });
+      }
       else if (f.startsWith('extra:')) { const t = asText(v); if (t) item.extra.push({ label: f.slice(6), value: t }); }
       else item[f] = asText(v);
     });
@@ -164,10 +222,25 @@ function parseSheet(ws, { year }) {
       currentKey = '';
     }
     const hasContent = FIELDS.some((f) => item[f]) || item.extra.length;
-    if (hasContent) current.items.push(item);
+    if (!hasContent) continue;
+    // Tipo da atividade pela cor da célula, conforme a legenda da planilha.
+    if (legend.size) {
+      const row = ws.getRow(r);
+      const color = [activityCol, mapping.indexOf('time')].filter((i) => i >= 0)
+        .map((i) => fillColor(row.getCell(i + 1))).find((c) => c && legend.has(c));
+      if (color) { item.category = legend.get(color); item.color = color; }
+    }
+    current.items.push(item);
   }
   const filled = days.filter((d) => d.items.length);
-  return filled.length ? { name: ws.name, days: filled, columns: mapping.filter(Boolean) } : null;
+  // Título: textos acima do cabeçalho (ex.: "PROGRAMAÇÃO CHINA - 2026").
+  const titleLines = [];
+  for (let r = 1; r < headerRow; r++) {
+    const t = rowValues(ws, r, colCount).map(asText).find(Boolean);
+    if (t) titleLines.push(t);
+  }
+  const title = titleLines.join(' · ').replace(/\s+/g, ' ').slice(0, 120) || null;
+  return filled.length ? { name: ws.name, days: filled, title } : null;
 }
 
 async function parseItineraryXlsx(buffer, { year = new Date().getFullYear() } = {}) {
@@ -193,7 +266,7 @@ async function parseItineraryXlsx(buffer, { year = new Date().getFullYear() } = 
   }
   // Várias abas viram uma sequência só, com o nome da aba no dia.
   const days = sheets.flatMap((s) => s.days.map((d) => ({ ...d, sheet: sheets.length > 1 ? s.name : undefined })));
-  return normalizeDays(days);
+  return { ...normalizeDays(days), title: sheets[0].title };
 }
 
 // Valida e limpa os dias (usado na leitura do Excel e na edição pelo administrador).
@@ -210,8 +283,11 @@ function normalizeDays(days) {
       const extra = (Array.isArray(it?.extra) ? it.extra : []).slice(0, 20)
         .map((e) => ({ label: str(e?.label, 80), value: str(e?.value, 1000) })).filter((e) => e.label && e.value);
       if (extra.length) item.extra = extra;
+      const category = str(it?.category, 60);
+      if (category) item.category = category;
+      if (category && /^#[0-9A-F]{6}$/i.test(it?.color || '')) item.color = it.color.toUpperCase();
       return item;
-    }).filter((it) => Object.keys(it).length),
+    }).filter((it) => FIELDS.some((f) => it[f]) || it.extra),
   }));
   const dates = out.map((d) => d.date).filter(Boolean).sort();
   return { days: out, start_date: dates[0] || null, end_date: dates[dates.length - 1] || null };

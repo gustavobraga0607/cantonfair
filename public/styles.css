@@ -376,3 +376,12 @@ body.map-mode main { display: none; }
 .trip-line > span:nth-child(2) { flex: 1; min-width: 0; white-space: pre-wrap; }
 .copy-btn { flex: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; font-size: .75rem; padding: 2px 8px; cursor: pointer; }
 .trip-edit-day + .trip-edit-day { margin-top: 12px; }
+
+/* tipos de atividade (cores da legenda da planilha) */
+.cat-chip {
+  display: inline-block; font-size: .72rem; font-weight: 600; padding: 2px 8px; border-radius: 999px;
+  background: var(--cat, var(--neutral-bg)); color: #1c1917; border: 1px solid rgb(0 0 0 / .08);
+}
+.trip-item.tinted { border-left: 4px solid var(--cat); padding-left: 8px; margin-left: -12px; }
+.trip-item .cat-chip { margin-bottom: 4px; }
+.trip-legend { margin-top: 10px; }

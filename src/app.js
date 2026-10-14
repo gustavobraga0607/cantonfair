@@ -660,7 +660,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const cnpj = await targetCnpj(user, body);
     const buf = parseXlsxUpload(body.file);
     const parsed = await readItinerary(buf);
-    const title = str(body.title, 120) || str(body.file_name, 120).replace(/\.xlsx$/i, '') || 'Roteiro de viagem';
+    const title = str(body.title, 120) || parsed.title || str(body.file_name, 120).replace(/\.xlsx$/i, '') || 'Roteiro de viagem';
     const t = now();
     const row = await db.get(`INSERT INTO itineraries (cnpj, title, days, start_date, end_date, file_name, file_data, created_by, updated_by, created_at, updated_at)
                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,

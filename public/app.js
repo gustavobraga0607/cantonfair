@@ -960,6 +960,18 @@ const TRIP_FIELDS = [
   ['transport', 'Transporte'], ['hotel', 'Hotel'], ['contact', 'Contato'], ['notes', 'Observações'],
 ];
 const TRIP_ICONS = { location: '📍', transport: '🚆', hotel: '🏨', contact: '👤', notes: '📝' };
+// Ícone pelo tipo da atividade (vindo da legenda de cores da planilha) ou pelo texto.
+function tripIcon(it) {
+  const t = `${it.category || ''} ${it.activity || ''}`.toLowerCase();
+  if (/voo|aeroporto|flight|airport/.test(t)) return '✈️';
+  if (/trem|train|metr[oô]/.test(t)) return '🚆';
+  if (/transfer|deslocamento|carro|van|taxi|táxi/.test(t)) return '🚐';
+  if (/feira|fair|expo/.test(t)) return '🏛️';
+  if (/f[aá]brica|factory|visita/.test(t)) return '🏭';
+  if (/hotel|check-?in/.test(t)) return '🏨';
+  if (/livre|descanso|free/.test(t)) return '☀️';
+  return '';
+}
 const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 
 const isoToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
@@ -1008,12 +1020,14 @@ function tripItemHtml(it, dayCity) {
     <div class="trip-line"><span aria-hidden="true">${TRIP_ICONS[f]}</span><span>${esc(it[f])}</span>${f === 'location'
       ? `<button type="button" class="copy-btn" data-copy="${esc(it[f])}" title="Copiar endereço">Copiar</button>` : ''}</div>`).join('');
   const extras = (it.extra || []).map((e) => `<div class="trip-line"><span class="item-sub">${esc(e.label)}:</span><span>${esc(e.value)}</span></div>`).join('');
+  const icon = tripIcon(it);
   return `
-    <li class="trip-item">
+    <li class="trip-item${it.color ? ' tinted' : ''}"${it.color ? ` style="--cat:${esc(it.color)}"` : ''}>
       <div class="trip-time">${esc(it.time || '')}</div>
       <div class="trip-body">
         ${it.city && it.city !== dayCity ? `<span class="badge">${esc(it.city)}</span>` : ''}
-        ${it.activity ? `<div class="trip-activity">${esc(it.activity)}</div>` : ''}
+        ${it.activity ? `<div class="trip-activity">${icon ? `<span aria-hidden="true">${icon}</span> ` : ''}${esc(it.activity)}</div>` : ''}
+        ${it.category ? `<span class="cat-chip">${esc(it.category)}</span>` : ''}
         ${lines}${extras}
       </div>
     </li>`;
@@ -1025,6 +1039,9 @@ function renderTrip(it, { back }) {
   const first = it.start_date;
   const dayNumber = (d, i) => (first && d.date
     ? Math.round((Date.parse(d.date) - Date.parse(first)) / 86400_000) + 1 : i + 1);
+  // Legenda: tipos de atividade com as cores da planilha.
+  const legend = new Map();
+  it.days.forEach((d) => d.items.forEach((x) => { if (x.category && !legend.has(x.category)) legend.set(x.category, x.color); }));
   $app.innerHTML = `
     ${subnavHtml('trip')}
     <div class="card trip-head">
@@ -1035,6 +1052,8 @@ function renderTrip(it, { back }) {
         <a class="btn small" href="/api/itineraries/${it.id}/file" download>⬇ Planilha original</a>
         ${isAdmin() ? `<a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>` : ''}
       </div>
+      ${legend.size ? `<div class="badges trip-legend">${[...legend].map(([c, color]) =>
+        `<span class="cat-chip"${color ? ` style="--cat:${esc(color)}"` : ''}>${esc(c)}</span>`).join('')}</div>` : ''}
     </div>
     <div class="trip-days">${it.days.map((d, i) => {
       const cities = [...new Set(d.items.map((x) => x.city).filter(Boolean))];
@@ -1076,7 +1095,8 @@ async function viewTripUpload() {
     <form class="card stack" id="f" novalidate>
       <div><label for="company">Empresa (CNPJ) <span class="req">*</span></label><select id="company">${companyOptions(defaultCompany())}</select>
         <div class="hint">Todos os usuários deste CNPJ verão o roteiro.</div></div>
-      <div><label for="title">Título</label><input id="title" placeholder="ex.: Viagem China – Outubro 2026"></div>
+      <div><label for="title">Título</label><input id="title" placeholder="em branco = título da planilha">
+        <div class="hint">Se ficar em branco, usa o título escrito no topo da planilha.</div></div>
       <div><label for="file">Planilha do roteiro (.xlsx) <span class="req">*</span></label>
         <input id="file" type="file" accept="${XLSX_ACCEPT}">
         <div class="hint">A primeira linha da tabela deve ter os títulos das colunas, por exemplo: Data, Hora, Cidade,

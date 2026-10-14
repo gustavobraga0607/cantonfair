@@ -402,7 +402,7 @@ test('roteiro: administrador envia Excel por CNPJ, edita e exclui; usuários só
   r = await admin('POST', '/api/itineraries', { file: xlsx, file_name: 'Roteiro Out 2026.xlsx', company: '11222333000181' });
   assert.equal(r.status, 201);
   const id = r.body.id;
-  assert.equal(r.body.title, 'Roteiro Out 2026');
+  assert.equal(r.body.title, 'ROTEIRO CHINA – OUTUBRO 2026', 'título vem do topo da planilha');
   assert.equal(r.body.company_cnpj, '11222333000181');
   assert.equal(r.body.days.length, 4);
   assert.equal(r.body.start_date, '2026-10-15');
