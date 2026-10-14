@@ -1,12 +1,12 @@
 'use strict';
 
-// Service worker do Canton Fair Buyer.
+// Service worker do Missão China.
 // - Telas do app (HTML/JS/CSS/ícones): abre do cache na hora e atualiza em segundo plano.
 // - Fotos (/uploads/<id>): o id muda a cada foto nova, então ficam no cache.
 // - Dados (/api/...): sempre busca na rede; sem conexão (comum na feira), mostra a última
 //   versão salva. O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v3';
+const VERSION = 'v4';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';

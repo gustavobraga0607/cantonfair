@@ -1,7 +1,7 @@
 {
-  "name": "Canton Fair Buyer by BR Trading",
-  "short_name": "Canton Buyer",
-  "description": "Canton Fair Buyer by BR Trading — apoio ao comprador na Feira de Cantão",
+  "name": "Missão China by BR Trading",
+  "short_name": "Missão China",
+  "description": "Missão China by BR Trading — apoio ao comprador na Feira de Cantão",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#ffffff",

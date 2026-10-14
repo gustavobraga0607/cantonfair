@@ -182,12 +182,12 @@ function photoInputHtml(current, placeholder) {
 function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false, map = false }) {
   document.getElementById('map-view').hidden = !map;
   document.body.classList.toggle('map-mode', map);
-  document.title = title ? `${title} · Canton Fair Buyer` : 'Canton Fair Buyer by BR Trading';
+  document.title = title ? `${title} · Missão China` : 'Missão China by BR Trading';
   document.getElementById('topbar').hidden = auth;
   document.getElementById('tabbar').hidden = auth || form;
   document.body.classList.toggle('has-tabs', !auth && !form);
   document.body.classList.toggle('has-fab', fab);
-  document.getElementById('page-title').textContent = title || 'Canton Fair Buyer';
+  document.getElementById('page-title').textContent = title || 'Missão China';
   document.getElementById('home-logo').hidden = Boolean(back);
   const backBtn = document.getElementById('back-btn');
   backBtn.hidden = !back;
@@ -266,7 +266,7 @@ function viewLogin() {
     <div class="auth">
       <div class="brand">
         <img class="brand-logo" src="/brand/logo.png" alt="BR Trading — Importação e Exportação">
-        <h1>Canton Fair Buyer</h1>
+        <h1>Missão China</h1>
         <p class="brand-by">by BR Trading</p>
         <p>Apoio ao comprador na Feira de Cantão</p>
       </div>
@@ -1536,7 +1536,7 @@ async function viewAccount() {
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
     <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
-    <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
+    <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Missão China by BR Trading</span></div>`;
   renderMyCard();
   renderRateCard();
   renderFreightCard();

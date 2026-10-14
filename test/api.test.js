@@ -180,7 +180,7 @@ test('serve a interface', async (t) => {
   t.after(close);
   const r = await fetch(base + '/');
   assert.equal(r.status, 200);
-  assert.match(await r.text(), /Canton Fair Buyer/);
+  assert.match(await r.text(), /Missão China/);
   assert.equal((await fetch(base + '/../package.json')).status, 200); // cai no index (SPA), não expõe o arquivo
   assert.doesNotMatch(await (await fetch(base + '/%2e%2e/package.json')).text(), /"scripts"/);
 });

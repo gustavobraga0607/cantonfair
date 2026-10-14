@@ -38,7 +38,7 @@ async function fetchUsdBrl({ fetchImpl = globalThis.fetch, sources = SOURCES, ti
   const errors = [];
   for (const s of sources) {
     try {
-      const res = await fetchImpl(s.url(), { signal: AbortSignal.timeout(timeoutMs), headers: { Accept: 'application/json', 'User-Agent': 'CantonFairBuyer/1.0' } });
+      const res = await fetchImpl(s.url(), { signal: AbortSignal.timeout(timeoutMs), headers: { Accept: 'application/json', 'User-Agent': 'MissaoChinaBRTrading/1.0' } });
       if (!res.ok) { errors.push(`${s.name}: HTTP ${res.status}`); continue; }
       const q = s.parse(await res.json());
       // Faixa de sanidade para não aplicar um valor absurdo.

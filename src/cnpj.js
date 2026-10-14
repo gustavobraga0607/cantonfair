@@ -50,7 +50,7 @@ async function querySource(source, cnpj, { timeoutMs, fetchImpl }) {
   try {
     const res = await fetchImpl(source.url(cnpj), {
       signal: AbortSignal.timeout(timeoutMs),
-      headers: { Accept: 'application/json', 'User-Agent': 'CantonFairBuyer/1.0 (+https://vercel.app)' },
+      headers: { Accept: 'application/json', 'User-Agent': 'MissaoChinaBRTrading/1.0 (+https://vercel.app)' },
     });
     if (res.status === 404) return { status: 'not_found', source: source.name };
     if (!res.ok) {

@@ -1,4 +1,4 @@
-# Canton Fair Buyer by BR Trading
+# Missão China by BR Trading
 
 Aplicativo web (instalável no celular como PWA) de apoio a compradores na **Feira de Cantão**:
 cadastre fornecedores e produtos durante as visitas aos stands, calcule o custo estimado no
