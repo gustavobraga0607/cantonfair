@@ -482,6 +482,98 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return meOut({ ...user, card_photo: null });
   });
 
+  // --- administração: usuários e empresas (somente administrador) ---
+
+  function requireAdminUser(user) {
+    if (!isAdmin(user)) throw new HttpError(403, 'Apenas administradores podem gerenciar usuários e empresas.');
+  }
+
+  // Colunas que registram quem criou/alterou algo; são limpas ao excluir o usuário.
+  const USER_REFS = [
+    ['suppliers', 'created_by'], ['suppliers', 'updated_by'], ['products', 'created_by'], ['products', 'updated_by'],
+    ['itineraries', 'created_by'], ['itineraries', 'updated_by'], ['app_settings', 'updated_by'],
+  ];
+
+  route('GET', '/api/admin/users', async ({ user }) => {
+    requireAdminUser(user);
+    const rows = await db.all(`
+      SELECT u.id, u.name, u.email, u.role, u.cnpj, u.created_at, c.name AS company_name
+      FROM users u JOIN companies c ON c.cnpj = u.cnpj ORDER BY lower(u.name)`);
+    return rows.map((r) => ({
+      ...withRole(r), cnpj_formatted: cnpjUtil.format(r.cnpj), is_self: r.id === user.id,
+      // Admin definido por ADMIN_EMAILS continua admin mesmo se excluído e recadastrado.
+      admin_by_config: ADMIN_EMAILS.has(String(r.email).toLowerCase()),
+    }));
+  });
+
+  route('GET', '/api/admin/companies', async ({ user }) => {
+    requireAdminUser(user);
+    const rows = await db.all(`
+      SELECT c.cnpj, c.name, c.created_at,
+        (SELECT COUNT(*) FROM users u WHERE u.cnpj = c.cnpj) AS users,
+        (SELECT COUNT(*) FROM suppliers s WHERE s.cnpj = c.cnpj) AS suppliers,
+        (SELECT COUNT(*) FROM products p WHERE p.cnpj = c.cnpj) AS products,
+        (SELECT COUNT(*) FROM itineraries i WHERE i.cnpj = c.cnpj) AS itineraries
+      FROM companies c ORDER BY lower(coalesce(c.name, c.cnpj))`);
+    return rows.map((r) => ({
+      cnpj: r.cnpj, cnpj_formatted: cnpjUtil.format(r.cnpj), name: r.name, created_at: r.created_at,
+      users: Number(r.users), suppliers: Number(r.suppliers), products: Number(r.products), itineraries: Number(r.itineraries),
+    }));
+  });
+
+  // Muda a empresa (CNPJ) do usuário. Ele passa a ver os dados da nova empresa na hora.
+  route('PUT', '/api/admin/users/:id', async ({ user, params, body }) => {
+    requireAdminUser(user);
+    const target = await db.get('SELECT id, cnpj, card_photo FROM users WHERE id = ?', [toId(params.id)]);
+    if (!target) throw new HttpError(404, 'Usuário não encontrado.');
+    const cnpj = cnpjUtil.clean(body.cnpj);
+    if (!(await getCompany(cnpj))) throw new HttpError(400, 'Empresa não encontrada.');
+    if (cnpj !== target.cnpj) {
+      await db.tx(async (q) => {
+        await q.run('UPDATE users SET cnpj = ? WHERE id = ?', [cnpj, target.id]);
+        // O cartão de visitas pessoal acompanha o usuário.
+        if (target.card_photo) await q.run('UPDATE images SET cnpj = ? WHERE id = ?', [cnpj, target.card_photo]);
+      });
+    }
+    return { ok: true };
+  });
+
+  route('DELETE', '/api/admin/users/:id', async ({ user, params }) => {
+    requireAdminUser(user);
+    const target = await db.get('SELECT id, cnpj, card_photo FROM users WHERE id = ?', [toId(params.id)]);
+    if (!target) throw new HttpError(404, 'Usuário não encontrado.');
+    if (target.id === user.id) throw new HttpError(400, 'Você não pode excluir o seu próprio usuário.');
+    await db.tx(async (q) => {
+      for (const [table, col] of USER_REFS) await q.run(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`, [target.id]);
+      await q.run('DELETE FROM sessions WHERE user_id = ?', [target.id]);
+      await q.run('DELETE FROM users WHERE id = ?', [target.id]);
+      await removeImage(q, target.cnpj, target.card_photo);
+    });
+    return { ok: true };
+  });
+
+  // Exclui a empresa e todos os dados dela (fornecedores, produtos, roteiros, fotos).
+  // Só é permitido quando não há mais usuários vinculados a ela.
+  route('DELETE', '/api/admin/companies/:cnpj', async ({ user, params }) => {
+    requireAdminUser(user);
+    const cnpj = cnpjUtil.clean(params.cnpj);
+    if (!(await getCompany(cnpj))) throw new HttpError(404, 'Empresa não encontrada.');
+    const { n } = await db.get('SELECT COUNT(*) AS n FROM users WHERE cnpj = ?', [cnpj]);
+    if (Number(n) > 0) {
+      throw new HttpError(409, `Esta empresa ainda tem ${n} usuário(s). Exclua ou mude a empresa deles antes de excluir a empresa.`);
+    }
+    await db.tx(async (q) => {
+      await q.run('DELETE FROM offers WHERE product_id IN (SELECT id FROM products WHERE cnpj = ?)', [cnpj]);
+      await q.run('DELETE FROM offers WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
+      await q.run('DELETE FROM products WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM suppliers WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM itineraries WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM images WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM companies WHERE cnpj = ?', [cnpj]);
+    });
+    return { ok: true };
+  });
+
   // Força a busca da cotação agora (botão "Atualizar agora").
   route('POST', '/api/fx/refresh', async ({ user }) => {
     if (!fx) throw new HttpError(400, 'Cotação automática desativada neste servidor.');

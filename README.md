@@ -18,6 +18,9 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   empresas, com filtro por empresa nas listas e no ranking, e podem cadastrar itens em nome de qualquer empresa.
   Os e-mails de administrador vêm da variável `ADMIN_EMAILS` (padrão: `gustavo.braga0607@gmail.com`);
   o papel é gravado na coluna `users.role` no login.
+- **Administração de usuários e empresas** (aba *Conta* → *Usuários e empresas*, só administrador): lista todos os
+  usuários e empresas, permite mudar a empresa de um usuário e excluir usuários (exceto a si mesmo). Uma empresa só
+  pode ser excluída quando não tiver mais usuários; a exclusão apaga fornecedores, produtos, roteiros e fotos dela.
 - **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nome de contato, telefone
   (com atalhos para ligar e WhatsApp), nº do stand e observações.
 - **Leitor de cartões de visita (OCR)**: ao fotografar o cartão, o app usa o Claude (visão) para ler o cartão

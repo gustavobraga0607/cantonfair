@@ -398,3 +398,10 @@ body.map-mode main { display: none; }
   width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer;
   background: rgb(255 255 255 / .18); color: #fff; font-size: 1.3rem; line-height: 1;
 }
+
+/* administração */
+.admin-row { align-items: flex-start; }
+.admin-company { display: block; margin: 8px 0 0; font-size: .8rem; font-weight: 600; color: var(--muted); }
+.admin-company select { margin-top: 4px; min-height: 40px; font-size: .9rem; color: var(--text); font-weight: 400; }
+.danger-icon { color: var(--danger); font-size: 1.15rem; }
+.danger-icon:disabled { opacity: .3; cursor: not-allowed; }

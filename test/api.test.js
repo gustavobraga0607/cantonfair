@@ -527,3 +527,63 @@ test('revisão: login não revela e-mails cadastrados e tem limite de tentativas
   for (let i = 0; i < 11; i++) last = await c('POST', '/api/login', { email: 'a@x.com', password: 'errada000' });
   assert.equal(last.status, 429);
 });
+
+test('administração: listar, mudar empresa e excluir usuários; excluir empresa só sem usuários', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const admin = client(base);
+  const a = client(base);
+  const b = client(base);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11444777000161' });
+  let r = await a('POST', '/api/register', { name: 'Ana', email: 'ana@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'Bia', email: 'bia@x.com', password: '12345678', cnpj: '11222333000181' });
+  await a('PUT', '/api/me/card', { image: PNG });
+  const sup = (await a('POST', '/api/suppliers', { name: 'S', card_photo: PNG })).body;
+  await a('POST', '/api/products', { name: 'P', offers: [{ supplier_id: sup.id, price_usd: 1 }] });
+
+  // só admin
+  assert.equal((await a('GET', '/api/admin/users')).status, 403);
+  assert.equal((await a('GET', '/api/admin/companies')).status, 403);
+  assert.equal((await a('DELETE', '/api/admin/companies/11444777000161')).status, 403);
+
+  let users = (await admin('GET', '/api/admin/users')).body;
+  assert.deepEqual(users.map((u) => u.name), ['Ana', 'Bia', 'Chefe']);
+  assert.equal(users.find((u) => u.name === 'Chefe').is_self, true);
+  let companies = (await admin('GET', '/api/admin/companies')).body;
+  const casa = companies.find((c) => c.cnpj === '11222333000181');
+  assert.deepEqual([casa.users, casa.suppliers, casa.products], [2, 1, 1]);
+
+  // empresa com usuários não pode ser excluída
+  r = await admin('DELETE', '/api/admin/companies/11222333000181');
+  assert.equal(r.status, 409);
+  assert.match(r.body.error, /2 usuário/);
+
+  // admin não exclui a si mesmo
+  const me = users.find((u) => u.is_self);
+  assert.equal((await admin('DELETE', `/api/admin/users/${me.id}`)).status, 400);
+
+  // mudar Ana de empresa: passa a ver a empresa nova e mantém o cartão pessoal
+  const ana = users.find((u) => u.name === 'Ana');
+  assert.equal((await admin('PUT', `/api/admin/users/${ana.id}`, { cnpj: '99999999000191' })).status, 400);
+  assert.equal((await admin('PUT', `/api/admin/users/${ana.id}`, { cnpj: '11.444.777/0001-61' })).status, 200);
+  r = await a('GET', '/api/me');
+  assert.equal(r.body.company.cnpj, '11444777000161');
+  assert.equal((await a('GET', r.body.user.card_photo)).status, 200, 'cartão continua acessível');
+  assert.equal((await a('GET', '/api/products')).body.length, 0, 'não vê mais os dados da empresa antiga');
+
+  // excluir Bia (que criou registros? não) e Ana (criou fornecedor/produto: referências são limpas)
+  const bia = users.find((u) => u.name === 'Bia');
+  assert.equal((await admin('DELETE', `/api/admin/users/${bia.id}`)).status, 200);
+  assert.equal((await b('GET', '/api/me')).status, 401, 'sessão da usuária excluída deixa de valer');
+  assert.equal((await admin('DELETE', `/api/admin/users/${ana.id}`)).status, 200);
+  assert.equal((await admin('GET', '/api/products?company=11222333000181')).body[0].updated_by_name, null);
+
+  // agora a empresa sem usuários pode ser excluída, com todos os dados
+  r = await admin('DELETE', '/api/admin/companies/11222333000181');
+  assert.equal(r.status, 200);
+  companies = (await admin('GET', '/api/admin/companies')).body;
+  assert.deepEqual(companies.map((c) => c.cnpj), ['11444777000161']);
+  assert.equal((await admin('GET', '/api/products?company=all')).body.length, 0);
+  assert.equal((await admin('GET', sup.card_photo)).status, 404, 'fotos da empresa apagadas');
+  assert.equal((await admin('DELETE', '/api/admin/companies/11222333000181')).status, 404);
+});

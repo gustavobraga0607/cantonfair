@@ -1450,6 +1450,92 @@ function renderFreightCard() {
   });
 }
 
+// ===================== administração: usuários e empresas =====================
+
+async function viewAdmin(query) {
+  if (!isAdmin()) { location.hash = '#/account'; return; }
+  const tab = query.get('tab') === 'companies' ? 'companies' : 'users';
+  setChrome({ title: 'Usuários e empresas', tab: 'account', back: '#/account' });
+  loading();
+  const [users, companies] = await Promise.all([api('/api/admin/users'), api('/api/admin/companies')]);
+  const companyName = (c) => c.name || c.cnpj_formatted;
+  $app.innerHTML = `
+    <nav class="subnav subnav-page">
+      <a href="#/admin?tab=users" class="${tab === 'users' ? 'active' : ''}">Usuários (${users.length})</a>
+      <a href="#/admin?tab=companies" class="${tab === 'companies' ? 'active' : ''}">Empresas (${companies.length})</a>
+    </nav>
+    <div class="toolbar"><input type="search" id="q" placeholder="${tab === 'users' ? 'Buscar nome, e-mail ou empresa' : 'Buscar empresa ou CNPJ'}"></div>
+    <div class="list" id="list"></div>
+    ${tab === 'companies' ? '<p class="hint">Uma empresa só pode ser excluída depois que todos os usuários dela forem excluídos ou mudados para outra empresa. Ao excluir, os fornecedores, produtos, roteiros e fotos dela são apagados.</p>' : ''}`;
+
+  const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+  const renderUsers = (term) => users.filter((u) => !term || norm(`${u.name} ${u.email} ${u.company_name} ${u.cnpj}`).includes(term))
+    .map((u) => `
+      <div class="item admin-row" data-user="${u.id}">
+        <div class="item-body">
+          <div class="item-title">${esc(u.name)} ${u.role === 'admin' ? '<span class="badge admin">ADMIN</span>' : ''} ${u.is_self ? '<span class="badge">você</span>' : ''}</div>
+          <div class="item-sub">${esc(u.email)}</div>
+          <label class="admin-company">Empresa
+            <select data-move="${u.id}">${companies.map((c) => `<option value="${esc(c.cnpj)}" ${c.cnpj === u.cnpj ? 'selected' : ''}>${c.name ? `${esc(c.name)} — ` : ''}${esc(c.cnpj_formatted)}</option>`).join('')}</select>
+          </label>
+        </div>
+        ${u.is_self ? '' : `<button type="button" class="icon-btn danger-icon" data-del-user="${u.id}" aria-label="Excluir usuário" title="Excluir usuário">🗑</button>`}
+      </div>`).join('') || '<div class="empty">Nenhum usuário encontrado.</div>';
+  const renderCompanies = (term) => companies.filter((c) => !term || norm(`${c.name} ${c.cnpj} ${c.cnpj_formatted}`).includes(term))
+    .map((c) => `
+      <div class="item admin-row">
+        <div class="item-body">
+          <div class="item-title">${esc(c.name || 'Empresa sem razão social')}</div>
+          <div class="item-sub">CNPJ ${esc(c.cnpj_formatted)}</div>
+          <div class="badges"><span class="badge">${c.users} usuário(s)</span><span class="badge">${c.suppliers} fornecedor(es)</span>
+            <span class="badge">${c.products} produto(s)</span><span class="badge">${c.itineraries} roteiro(s)</span></div>
+          ${c.users ? '<div class="hint">Para excluir, primeiro exclua ou mude a empresa dos usuários.</div>' : ''}
+        </div>
+        <button type="button" class="icon-btn danger-icon" data-del-company="${esc(c.cnpj)}" ${c.users ? 'disabled' : ''}
+          aria-label="Excluir empresa" title="${c.users ? 'Exclua os usuários primeiro' : 'Excluir empresa'}">🗑</button>
+      </div>`).join('') || '<div class="empty">Nenhuma empresa encontrada.</div>';
+
+  const list = document.getElementById('list');
+  const render = () => {
+    const term = norm(document.getElementById('q').value.trim());
+    list.innerHTML = tab === 'users' ? renderUsers(term) : renderCompanies(term);
+  };
+  render();
+  document.getElementById('q').addEventListener('input', render);
+
+  // Depois de alterar cadastros, atualiza a lista de empresas usada nos filtros do admin.
+  const refresh = async (msg) => { toast(msg); state.me = await api('/api/me'); router(); };
+
+  list.addEventListener('change', async (e) => {
+    const id = e.target.dataset.move;
+    if (!id) return;
+    const u = users.find((x) => String(x.id) === id);
+    const to = companies.find((c) => c.cnpj === e.target.value);
+    if (!confirm(`Mudar ${u.name} para a empresa ${companyName(to)}?\n\nEle(a) passará a ver os fornecedores, produtos e roteiros dessa empresa.`)) {
+      e.target.value = u.cnpj; return;
+    }
+    try {
+      await api(`/api/admin/users/${id}`, { method: 'PUT', body: { cnpj: to.cnpj } });
+      await refresh(`${u.name} agora está em ${companyName(to)}.`);
+    } catch (err) { toast(err.message); e.target.value = u.cnpj; }
+  });
+  list.addEventListener('click', async (e) => {
+    const btn = e.target.closest('button');
+    if (!btn) return;
+    if (btn.dataset.delUser) {
+      const u = users.find((x) => String(x.id) === btn.dataset.delUser);
+      if (!confirm(`Excluir o usuário ${u.name} (${u.email})?\n\nEle(a) perde o acesso ao app. Os cadastros feitos por ele(a) continuam na empresa.`)) return;
+      try { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); await refresh('Usuário excluído.'); } catch (err) { toast(err.message); }
+    } else if (btn.dataset.delCompany) {
+      const c = companies.find((x) => x.cnpj === btn.dataset.delCompany);
+      const typed = prompt(`Excluir a empresa ${companyName(c)}?\n\nSerão apagados ${c.suppliers} fornecedor(es), ${c.products} produto(s) e ${c.itineraries} roteiro(s). Não dá para desfazer.\n\nPara confirmar, digite EXCLUIR:`);
+      if (typed == null) return;
+      if (typed.trim().toUpperCase() !== 'EXCLUIR') { toast('Exclusão cancelada.'); return; }
+      try { await api(`/api/admin/companies/${encodeURIComponent(c.cnpj)}`, { method: 'DELETE' }); await refresh('Empresa excluída.'); } catch (err) { toast(err.message); }
+    }
+  });
+}
+
 // ===================== câmbio =====================
 
 const fmtRate = (n) => (n == null ? '' : n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
@@ -1548,6 +1634,10 @@ async function viewAccount() {
     <h2 id="cambio">Câmbio para estimativas</h2>
     <div id="rate-card"></div>
     <div id="freight-card"></div>
+    ${user.is_admin ? `<h2>Administração</h2>
+      <a class="item" href="#/admin"><div class="thumb">👥</div><div class="item-body">
+        <div class="item-title">Usuários e empresas</div>
+        <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>` : ''}
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
@@ -1586,6 +1676,7 @@ const routes = [
   [/^\/trip\/(\d+)$/, (m) => viewTrip(m[1])],
   [/^\/trip\/(\d+)\/edit$/, (m) => viewTripEdit(m[1])],
   [/^\/account$/, viewAccount],
+  [/^\/admin$/, (m, q) => viewAdmin(q)],
 ];
 
 async function router() {
