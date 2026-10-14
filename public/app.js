@@ -1027,22 +1027,32 @@ const TRIP_FIELDS = [
   ['time', 'Hora'], ['city', 'Cidade'], ['activity', 'Atividade'],
   ['transport', 'Transporte'], ['hotel', 'Hotel'], ['notes', 'Observações'],
 ];
-const TRIP_ICONS = { location: '📍', transport: '🚆', hotel: '🏨', contact: '👤', notes: '📝' };
-// Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → 🚆) e só usa
-// o tipo da legenda de cores quando o texto não indica nada — o tipo costuma ser genérico,
-// ex.: "Deslocamento (voo, trem, transfer)".
+const TRIP_ICONS = { location: '📍', hotel: '🏨', contact: '👤', notes: '📝' };
+// Meios de transporte. A ordem importa: "Transfer para o aeroporto" é 🚐, não ✈️.
+const TRANSPORT_RULES = [
+  [/transfer|translado|\bcarro\b|\bvan\b|t[aá]xi|\bdidi\b|\buber\b|motorista|\bcar\b|\btaxi\b|专车|接送|出租/, '🚐'],
+  [/\bvoo\b|\bvoos\b|avi[aã]o|a[eé]reo|aeroporto|\bflight|airport|airline|航班|飞机|\b[a-z]{2}\s?\d{3,4}\b/, '✈️'],
+  [/\btrem\b|\btrens\b|\btrain|trem-bala|alta velocidade|high.?speed|\bcrh\b|\bg\d{1,4}\b|metr[oô]|\bmetro\b|subway|高铁|动车|火车|地铁/, '🚆'],
+  [/[oô]nibus|\bbus\b|\bcoach\b|巴士|大巴/, '🚌'],
+  [/\bbarco\b|balsa|ferry|\bboat\b|轮渡/, '⛴️'],
+  [/a p[eé]\b|caminhada|\bwalk/, '🚶'],
+];
+// Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → 🚆), depois o
+// campo Transporte, e só usa o tipo da legenda de cores quando nada indica — o tipo costuma ser
+// genérico, ex.: "Deslocamento (voo, trem, transfer)".
 const ICON_RULES = [
-  [/transfer|translado|\bcarro\b|\bvan\b|t[aá]xi/, '🚐'], // antes do voo: "Transfer para o aeroporto" é 🚐
-  [/\bvoo\b|\bvoos\b|aeroporto|\bflight|airport/, '✈️'],
-  [/\btrem\b|\btrens\b|\btrain|metr[oô]/, '🚆'],
+  ...TRANSPORT_RULES,
   [/deslocamento/, '🚐'],
   [/\bfeira\b|\bfair\b|\bexpo\b/, '🏛️'],
   [/f[aá]brica|factory|visita/, '🏭'],
   [/\bhotel\b|check-?in/, '🏨'],
   [/\blivre\b|descanso|\bfree\b/, '☀️'],
 ];
-const iconFor = (text) => ICON_RULES.find(([re]) => re.test(String(text || '').toLowerCase()))?.[1] || '';
-const tripIcon = (it) => iconFor(it.activity) || iconFor(it.category);
+const matchIcon = (rules, text) => rules.find(([re]) => re.test(String(text || '').toLowerCase()))?.[1] || '';
+const iconFor = (text) => matchIcon(ICON_RULES, text);
+// Ícone da linha "Transporte": conforme o meio informado; 🚗 quando não dá para saber.
+const transportIcon = (text) => matchIcon(TRANSPORT_RULES, text) || '🚗';
+const tripIcon = (it) => iconFor(it.activity) || matchIcon(TRANSPORT_RULES, it.transport) || iconFor(it.category);
 const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 
 const isoToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
@@ -1088,7 +1098,7 @@ async function viewTrip(id) {
 
 function tripItemHtml(it, dayCity) {
   const lines = ['location', 'transport', 'hotel', 'contact', 'notes'].filter((f) => it[f]).map((f) => `
-    <div class="trip-line"><span aria-hidden="true">${TRIP_ICONS[f]}</span><span>${esc(it[f])}</span>${f === 'location'
+    <div class="trip-line"><span aria-hidden="true">${f === 'transport' ? transportIcon(it[f]) : TRIP_ICONS[f]}</span><span>${esc(it[f])}</span>${f === 'location'
       ? `<button type="button" class="copy-btn" data-copy="${esc(it[f])}" title="Copiar endereço">Copiar</button>` : ''}</div>`).join('');
   const extras = (it.extra || []).map((e) => `<div class="trip-line"><span class="item-sub">${esc(e.label)}:</span><span>${esc(e.value)}</span></div>`).join('');
   const icon = tripIcon(it);
