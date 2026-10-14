@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   cnpj          TEXT NOT NULL REFERENCES companies(cnpj),
   role          TEXT NOT NULL DEFAULT 'user',   -- 'user' | 'admin'
+  card_photo    TEXT,                           -- cartão de visitas do próprio usuário (id em images)
   created_at    TEXT NOT NULL
 );
 
@@ -139,6 +140,7 @@ const ADDED_COLUMNS = [
   ['suppliers', 'contact_name', 'TEXT'],
   ['suppliers', 'phone', 'TEXT'],
   ['products', 'units_per_40hq', 'INTEGER'],
+  ['users', 'card_photo', 'TEXT'],
 ];
 
 const clean = (params) => params.map((p) => (p === undefined ? null : p));

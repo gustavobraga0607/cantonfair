@@ -446,3 +446,37 @@ test('roteiro: administrador envia Excel por CNPJ, edita e exclui; usuários só
   assert.equal((await admin('DELETE', `/api/itineraries/${id}`)).status, 200);
   assert.equal((await a('GET', '/api/itineraries')).body.length, 0);
 });
+
+test('cartão de visitas do próprio usuário: salvar, trocar, remover; cada usuário tem o seu', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const a2 = client(base);
+  const b = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.user.card_photo, null);
+  await a2('POST', '/api/register', { name: 'A2', email: 'a2@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+
+  assert.equal((await a('PUT', '/api/me/card', { image: 'data:text/plain;base64,AAAA' })).status, 400);
+  r = await a('PUT', '/api/me/card', { image: PNG });
+  assert.equal(r.status, 200);
+  const first = r.body.user.card_photo;
+  assert.match(first, /^\/uploads\/[0-9a-f]{32}$/);
+  assert.equal((await a('GET', '/api/me')).body.user.card_photo, first, 'persiste');
+  assert.equal((await a2('GET', '/api/me')).body.user.card_photo, null, 'colega do mesmo CNPJ não herda o cartão');
+  assert.equal((await a('GET', first)).status, 200);
+  assert.equal((await b('GET', first)).status, 404, 'outra empresa não acessa a imagem');
+
+  r = await a('PUT', '/api/me/card', { image: PNG });
+  assert.notEqual(r.body.user.card_photo, first);
+  assert.equal((await a('GET', first)).status, 404, 'foto antiga é apagada ao trocar');
+
+  // login devolve o cartão
+  const again = client(base);
+  r = await again('POST', '/api/login', { email: 'a@x.com', password: '12345678' });
+  assert.equal(r.body.user.card_photo, (await a('GET', '/api/me')).body.user.card_photo);
+
+  r = await a('DELETE', '/api/me/card');
+  assert.equal(r.body.user.card_photo, null);
+});

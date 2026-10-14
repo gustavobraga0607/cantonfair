@@ -67,9 +67,17 @@ function toast(msg) {
 }
 document.getElementById('toast').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
 
-function openLightbox(src) {
+// rotateToFit: com o celular em pé e a imagem deitada (ex.: cartão de visitas),
+// gira a imagem 90° para ela ocupar a tela inteira.
+function openLightbox(src, { rotateToFit = false } = {}) {
   const lb = document.getElementById('lightbox');
-  lb.querySelector('img').src = src;
+  const img = lb.querySelector('img');
+  lb.classList.remove('rotated');
+  img.onload = () => {
+    const portrait = window.innerHeight > window.innerWidth;
+    lb.classList.toggle('rotated', rotateToFit && portrait && img.naturalWidth > img.naturalHeight);
+  };
+  img.src = src;
   lb.hidden = false;
 }
 document.getElementById('lightbox').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
@@ -97,14 +105,14 @@ function resizeImage(file, maxSize = 1280, quality = 0.8) {
 }
 
 // Liga um <label class="photo-input"> com <input type=file> a uma prévia.
-function bindPhotoInput(root, onChange) {
+function bindPhotoInput(root, onChange, { maxSize, quality } = {}) {
   // Dois campos: um abre a câmera, o outro a galeria do celular.
   root.querySelectorAll('input[type=file]').forEach((input) => input.addEventListener('change', async () => {
     const file = input.files[0];
     input.value = ''; // permite escolher a mesma foto de novo
     if (!file) return;
     try {
-      const dataUrl = await resizeImage(file);
+      const dataUrl = await resizeImage(file, maxSize, quality);
       root.querySelector('.photo-preview').innerHTML = `<img src="${dataUrl}" alt="Prévia">`;
       onChange(dataUrl);
     } catch (err) {
@@ -1266,6 +1274,82 @@ function viewMap() {
   }
 }
 
+// ===================== meu cartão de visitas =====================
+
+// Cartão de visitas do próprio usuário: mostrar em tela cheia ao fornecedor ou compartilhar.
+function renderMyCard() {
+  const box = document.getElementById('my-card');
+  if (!box) return;
+  const { user, company } = state.me;
+  box.innerHTML = `
+    <div class="item-sub" style="margin-bottom:6px">Meu cartão de visitas</div>
+    ${user.card_photo ? `
+      <button type="button" class="my-card-img" id="my-card-show" aria-label="Mostrar cartão em tela cheia">
+        <img src="${esc(user.card_photo)}" alt="Meu cartão de visitas"></button>
+      <div class="actions" style="margin-top:10px">
+        <button type="button" class="btn" id="my-card-full">⤢ Mostrar</button>
+        <button type="button" class="btn primary" id="my-card-share">↗ Compartilhar</button>
+      </div>
+      <details class="my-card-more"><summary>Trocar ou remover</summary>
+        <div id="my-card-photo" style="margin-top:8px">${photoInputHtml(null, '')}</div>
+        <button type="button" class="btn small danger" id="my-card-del" style="margin-top:8px">Remover cartão</button>
+      </details>` : `
+      <div id="my-card-photo">${photoInputHtml(null, 'Adicione a foto do seu cartão para mostrar ou enviar aos fornecedores')}</div>`}`;
+
+  const root = document.getElementById('my-card-photo');
+  if (!user.card_photo) root.querySelector('.photo-input').classList.add('compact');
+  else root.querySelector('.photo-input').hidden = true;
+  bindPhotoInput(root, async (dataUrl) => {
+    try {
+      state.me = await api('/api/me/card', { method: 'PUT', body: { image: dataUrl } });
+      renderMyCard();
+      toast('Cartão de visitas salvo.');
+    } catch (err) { toast(err.message); }
+  }, { maxSize: 1800, quality: 0.9 });
+
+  const show = () => openLightbox(user.card_photo, { rotateToFit: true });
+  document.getElementById('my-card-show')?.addEventListener('click', show);
+  document.getElementById('my-card-full')?.addEventListener('click', show);
+  document.getElementById('my-card-share')?.addEventListener('click', () => shareImage(user.card_photo, {
+    fileName: `cartao-${user.name}.jpg`, title: 'Cartão de visitas', text: `${user.name}${company.name ? ' — ' + company.name : ''}`,
+  }));
+  document.getElementById('my-card-del')?.addEventListener('click', async () => {
+    if (!confirm('Remover o seu cartão de visitas?')) return;
+    try {
+      state.me = await api('/api/me/card', { method: 'DELETE' });
+      renderMyCard();
+      toast('Cartão removido.');
+    } catch (err) { toast(err.message); }
+  });
+}
+
+// Compartilha uma imagem pelo menu do celular (WhatsApp, WeChat, e-mail...);
+// onde isso não existe (ex.: computador), baixa o arquivo.
+async function shareImage(url, { fileName, title, text }) {
+  try {
+    const blob = await fetch(url, { credentials: 'same-origin' }).then((r) => {
+      if (!r.ok) throw new Error('Não foi possível carregar a imagem.');
+      return r.blob();
+    });
+    const safeName = fileName.normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w.-]+/g, '-');
+    const file = new File([blob], safeName, { type: blob.type || 'image/jpeg' });
+    if (navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ files: [file], title, text });
+      return;
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = safeName;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10_000);
+    toast('Imagem baixada. Envie pelo app de sua preferência.');
+  } catch (err) {
+    if (err.name !== 'AbortError') toast(err.message || 'Não foi possível compartilhar.');
+  }
+}
+
 // ===================== frete 40HQ =====================
 
 const freight40hq = () => state.me?.settings?.freight_40hq_usd ?? null;
@@ -1398,6 +1482,7 @@ async function viewAccount() {
   const { user, company } = state.me;
   $app.innerHTML = `
     <div class="card stack">
+      <div id="my-card"></div>
       <div><div class="item-sub">Usuário</div><div class="item-title">${esc(user.name)} ${user.is_admin ? '<span class="badge admin">ADMINISTRADOR</span>' : ''}</div><div class="item-sub">${esc(user.email)}</div></div>
       ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
@@ -1410,6 +1495,7 @@ async function viewAccount() {
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
     <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Canton Fair Buyer by BR Trading</span></div>`;
+  renderMyCard();
   renderRateCard();
   renderFreightCard();
   if (location.hash.includes('cambio')) document.getElementById('cambio').scrollIntoView();

@@ -379,3 +379,16 @@ body.map-mode main { display: none; }
 
 /* tipos de atividade: a cor da planilha aparece como faixa lateral */
 .trip-item.tinted { border-left: 4px solid var(--cat); padding-left: 8px; margin-left: -12px; }
+
+/* meu cartão de visitas (aba Conta) */
+.my-card-img { display: block; width: 100%; padding: 0; border: 1px solid var(--border); border-radius: var(--radius);
+  background: #fff; overflow: hidden; cursor: zoom-in; }
+.my-card-img img { width: 100%; max-height: 260px; object-fit: contain; }
+.photo-input.compact { min-height: 90px; font-size: .9rem; }
+.my-card-more { margin-top: 10px; font-size: .9rem; }
+.my-card-more summary { cursor: pointer; color: var(--muted); }
+
+.lightbox.rotated { background: #000; }
+.lightbox.rotated img { max-width: none; max-height: none; width: calc(100vh - 24px); height: calc(100vw - 24px);
+  transform: rotate(90deg); }
+#lightbox:not(.rotated) { background: rgb(0 0 0 / .96); }

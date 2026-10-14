@@ -298,7 +298,10 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       ? await db.all('SELECT cnpj, name, exchange_rate FROM companies ORDER BY lower(coalesce(name, cnpj))')
       : undefined;
     return {
-      user: { id: user.id, name: user.name, email: user.email, role: user.role || 'user', is_admin: isAdmin(user) },
+      user: {
+        id: user.id, name: user.name, email: user.email, role: user.role || 'user', is_admin: isAdmin(user),
+        card_photo: photoUrl(user.card_photo),
+      },
       company: {
         cnpj: company.cnpj, cnpj_formatted: cnpjUtil.format(company.cnpj),
         name: company.name, exchange_rate: company.exchange_rate, members,
@@ -423,6 +426,28 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
                   ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
       [freight === null ? null : String(freight), user.id, now()]);
     return meOut(user);
+  });
+
+  // Cartão de visitas do próprio usuário (para mostrar/compartilhar com fornecedores).
+  route('PUT', '/api/me/card', async ({ user, body }) => {
+    const img = parseImage(body.image);
+    const old = (await db.get('SELECT card_photo FROM users WHERE id = ?', [user.id]))?.card_photo;
+    const id = await db.tx(async (q) => {
+      const photo = await saveImage(q, img, user.cnpj);
+      await q.run('UPDATE users SET card_photo = ? WHERE id = ?', [photo, user.id]);
+      await removeImage(q, user.cnpj, old);
+      return photo;
+    });
+    return meOut({ ...user, card_photo: id });
+  });
+
+  route('DELETE', '/api/me/card', async ({ user }) => {
+    const old = (await db.get('SELECT card_photo FROM users WHERE id = ?', [user.id]))?.card_photo;
+    await db.tx(async (q) => {
+      await q.run('UPDATE users SET card_photo = NULL WHERE id = ?', [user.id]);
+      await removeImage(q, user.cnpj, old);
+    });
+    return meOut({ ...user, card_photo: null });
   });
 
   // Força a busca da cotação agora (botão "Atualizar agora").
