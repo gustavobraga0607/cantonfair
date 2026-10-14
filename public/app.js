@@ -1029,13 +1029,14 @@ const TRIP_FIELDS = [
 ];
 const TRIP_ICONS = { location: '📍', hotel: '🏨', contact: '👤', notes: '📝' };
 // Meios de transporte. A ordem importa: "Transfer para o aeroporto" é 🚐, não ✈️.
+// O texto é comparado sem acentos e em minúsculas ("Vôo", "AÉREA", "Ônibus" também valem).
 const TRANSPORT_RULES = [
-  [/transfer|translado|\bcarro\b|\bvan\b|t[aá]xi|\bdidi\b|\buber\b|motorista|\bcar\b|\btaxi\b|专车|接送|出租/, '🚐'],
-  [/\bvoo\b|\bvoos\b|avi[aã]o|a[eé]reo|aeroporto|\bflight|airport|airline|航班|飞机|\b[a-z]{2}\s?\d{3,4}\b/, '✈️'],
-  [/\btrem\b|\btrens\b|\btrain|trem-bala|alta velocidade|high.?speed|\bcrh\b|\bg\d{1,4}\b|metr[oô]|\bmetro\b|subway|高铁|动车|火车|地铁/, '🚆'],
-  [/[oô]nibus|\bbus\b|\bcoach\b|巴士|大巴/, '🚌'],
+  [/transfer|tra[n]?slado|\bcarro\b|\bvan\b|\btaxi|\bdidi\b|\buber\b|motorista|\bcar\b|专车|接送|出租/, '🚐'],
+  [/\bvoo|\bvoa|aviao|aere[oa]|aeroporto|\bflight|\bfly|airport|airline|航班|飞机/, '✈️'],
+  [/\btre[mn]|alta velocidade|high.?speed|\bcrh\b|\bg\d{1,4}\b|\bmetro\b|subway|高铁|动车|火车|地铁/, '🚆'],
+  [/onibus|\bbus\b|\bcoach\b|巴士|大巴/, '🚌'],
   [/\bbarco\b|balsa|ferry|\bboat\b|轮渡/, '⛴️'],
-  [/a p[eé]\b|caminhada|\bwalk/, '🚶'],
+  [/a pe\b|caminhada|\bwalk/, '🚶'],
 ];
 // Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → 🚆), depois o
 // campo Transporte, e só usa o tipo da legenda de cores quando nada indica — o tipo costuma ser
@@ -1044,14 +1045,17 @@ const ICON_RULES = [
   ...TRANSPORT_RULES,
   [/deslocamento/, '🚐'],
   [/\bfeira\b|\bfair\b|\bexpo\b/, '🏛️'],
-  [/f[aá]brica|factory|visita/, '🏭'],
+  [/fabrica|factory|visita/, '🏭'],
   [/\bhotel\b|check-?in/, '🏨'],
   [/\blivre\b|descanso|\bfree\b/, '☀️'],
 ];
-const matchIcon = (rules, text) => rules.find(([re]) => re.test(String(text || '').toLowerCase()))?.[1] || '';
+const plain = (text) => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
+const matchIcon = (rules, text) => { const t = plain(text); return rules.find(([re]) => re.test(t))?.[1] || ''; };
 const iconFor = (text) => matchIcon(ICON_RULES, text);
 // Ícone da linha "Transporte": conforme o meio informado; 🚗 quando não dá para saber.
-const transportIcon = (text) => matchIcon(TRANSPORT_RULES, text) || '🚗';
+// Número de voo no formato da companhia: "CZ3456", "MU 5102" (em maiúsculas, como no bilhete).
+const FLIGHT_NO = /\b[A-Z][A-Z0-9]\s?\d{3,4}\b/;
+const transportIcon = (text) => matchIcon(TRANSPORT_RULES, text) || (FLIGHT_NO.test(text) ? '✈️' : '🚗');
 const tripIcon = (it) => iconFor(it.activity) || matchIcon(TRANSPORT_RULES, it.transport) || iconFor(it.category);
 const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 
@@ -1717,5 +1721,14 @@ router();
 
 // Service worker: abre o app na hora e mantém os últimos dados disponíveis sem internet.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
+  // Versão nova do app publicada: recarrega uma vez para usá-la (sem esperar o usuário reabrir).
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (hadController && !reloaded) { reloaded = true; location.reload(); }
+  });
+  window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').then((reg) => {
+    // App instalado costuma ficar aberto por dias: procura versão nova sempre que volta à tela.
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {}));
 }
