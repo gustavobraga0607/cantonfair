@@ -1041,7 +1041,7 @@ function dateRange(a, b) {
   return a === b || !b ? f(a) : `${f(a).slice(0, 5)} a ${f(b)}`;
 }
 
-const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Viagem">
+const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Roteiro">
   <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa da feira</a></nav>`;
 
 async function viewTrip(id) {

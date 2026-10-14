@@ -89,6 +89,7 @@ img { display: block; max-width: 100%; }
   padding: 8px 0 10px; font-size: .75rem; color: var(--muted); text-decoration: none;
 }
 .tabbar a span { font-size: 1.25rem; line-height: 1; }
+.tab-icon { width: 1.25rem; height: 1.25rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; display: block; }
 .tabbar a.active { color: var(--text); font-weight: 700; }
 
 /* formulários */

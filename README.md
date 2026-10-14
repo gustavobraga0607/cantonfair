@@ -36,7 +36,7 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   com AwesomeAPI e ExchangeRate-API como reserva, a cada 30 minutos. Se todas falharem, o app mantém o
   último valor, avisa o usuário e permite informar o câmbio manualmente em *Conta* (vale para toda a
   equipe do CNPJ; dá para voltar ao automático a qualquer momento). `FX_AUTO=false` desliga a busca.
-- **Roteiro de viagem** (aba *Viagem*): o administrador envia o roteiro da viagem na China em Excel (.xlsx), por CNPJ;
+- **Roteiro de viagem** (aba *Roteiro*): o administrador envia o roteiro da viagem na China em Excel (.xlsx), por CNPJ;
   o app lê a planilha (colunas reconhecidas pelo título: Data, Hora, Cidade, Atividade, Local, Transporte, Hotel,
   Contato, Observações — em português, inglês ou chinês; colunas extras também aparecem; cores das células com
   legenda viram o tipo de cada atividade; o título no topo da planilha vira o título do roteiro) e mostra dia a dia para
