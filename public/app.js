@@ -962,18 +962,21 @@ const TRIP_FIELDS = [
   ['transport', 'Transporte'], ['hotel', 'Hotel'], ['notes', 'Observações'],
 ];
 const TRIP_ICONS = { location: '📍', transport: '🚆', hotel: '🏨', contact: '👤', notes: '📝' };
-// Ícone pelo tipo da atividade (vindo da legenda de cores da planilha) ou pelo texto.
-function tripIcon(it) {
-  const t = `${it.category || ''} ${it.activity || ''}`.toLowerCase();
-  if (/voo|aeroporto|flight|airport/.test(t)) return '✈️';
-  if (/trem|train|metr[oô]/.test(t)) return '🚆';
-  if (/transfer|deslocamento|carro|van|taxi|táxi/.test(t)) return '🚐';
-  if (/feira|fair|expo/.test(t)) return '🏛️';
-  if (/f[aá]brica|factory|visita/.test(t)) return '🏭';
-  if (/hotel|check-?in/.test(t)) return '🏨';
-  if (/livre|descanso|free/.test(t)) return '☀️';
-  return '';
-}
+// Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → 🚆) e só usa
+// o tipo da legenda de cores quando o texto não indica nada — o tipo costuma ser genérico,
+// ex.: "Deslocamento (voo, trem, transfer)".
+const ICON_RULES = [
+  [/transfer|translado|\bcarro\b|\bvan\b|t[aá]xi/, '🚐'], // antes do voo: "Transfer para o aeroporto" é 🚐
+  [/\bvoo\b|\bvoos\b|aeroporto|\bflight|airport/, '✈️'],
+  [/\btrem\b|\btrens\b|\btrain|metr[oô]/, '🚆'],
+  [/deslocamento/, '🚐'],
+  [/\bfeira\b|\bfair\b|\bexpo\b/, '🏛️'],
+  [/f[aá]brica|factory|visita/, '🏭'],
+  [/\bhotel\b|check-?in/, '🏨'],
+  [/\blivre\b|descanso|\bfree\b/, '☀️'],
+];
+const iconFor = (text) => ICON_RULES.find(([re]) => re.test(String(text || '').toLowerCase()))?.[1] || '';
+const tripIcon = (it) => iconFor(it.activity) || iconFor(it.category);
 const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 
 const isoToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
