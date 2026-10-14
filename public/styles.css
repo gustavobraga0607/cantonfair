@@ -393,3 +393,8 @@ body.map-mode main { display: none; }
 .lightbox.rotated img { max-width: none; max-height: none; width: calc(100vh - 24px); height: calc(100vw - 24px);
   transform: rotate(90deg); }
 #lightbox:not(.rotated) { background: rgb(0 0 0 / .96); }
+.lightbox-close {
+  position: fixed; top: calc(12px + env(safe-area-inset-top)); right: 12px; z-index: 61;
+  width: 44px; height: 44px; border-radius: 50%; border: 0; cursor: pointer;
+  background: rgb(255 255 255 / .18); color: #fff; font-size: 1.3rem; line-height: 1;
+}

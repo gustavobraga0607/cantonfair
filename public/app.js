@@ -87,20 +87,36 @@ function toast(msg) {
 }
 document.getElementById('toast').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
 
+// Foto em tela cheia (cartões, fotos de produto).
 // rotateToFit: com o celular em pé e a imagem deitada (ex.: cartão de visitas),
 // gira a imagem 90° para ela ocupar a tela inteira.
+// O botão "voltar" do celular/navegador fecha a tela cheia em vez de trocar a página
+// por baixo dela: ao abrir, uma entrada é adicionada ao histórico.
+const lightbox = document.getElementById('lightbox');
+
 function openLightbox(src, { rotateToFit = false } = {}) {
-  const lb = document.getElementById('lightbox');
-  const img = lb.querySelector('img');
-  lb.classList.remove('rotated');
+  const img = lightbox.querySelector('img');
+  lightbox.classList.remove('rotated');
   img.onload = () => {
     const portrait = window.innerHeight > window.innerWidth;
-    lb.classList.toggle('rotated', rotateToFit && portrait && img.naturalWidth > img.naturalHeight);
+    lightbox.classList.toggle('rotated', rotateToFit && portrait && img.naturalWidth > img.naturalHeight);
   };
   img.src = src;
-  lb.hidden = false;
+  if (!lightbox.hidden) return;
+  lightbox.hidden = false;
+  history.pushState({ lightbox: true }, '');
 }
-document.getElementById('lightbox').addEventListener('click', (e) => { e.currentTarget.hidden = true; });
+
+// fromHistory: fechamento causado pelo "voltar" (a entrada do histórico já saiu).
+function closeLightbox({ fromHistory = false } = {}) {
+  if (lightbox.hidden) return;
+  lightbox.hidden = true;
+  if (!fromHistory && history.state?.lightbox) history.back();
+}
+
+lightbox.addEventListener('click', () => closeLightbox());
+window.addEventListener('popstate', () => closeLightbox({ fromHistory: true }));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeLightbox(); });
 
 // Reduz a foto no navegador antes do envio (economiza dados móveis na feira).
 function resizeImage(file, maxSize = 1280, quality = 0.8) {
@@ -1574,6 +1590,7 @@ const routes = [
 
 async function router() {
   const nav = ++navSeq;
+  closeLightbox({ fromHistory: true }); // trocou de tela: a foto em tela cheia não pode ficar por cima
   const raw = location.hash.slice(1) || '/ranking';
   const [path, qs] = raw.split('?');
   const query = new URLSearchParams(qs || '');
