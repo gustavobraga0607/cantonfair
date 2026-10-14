@@ -768,8 +768,8 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     }
   }
 
-  function requireAdmin(user) {
-    if (!isAdmin(user)) throw new HttpError(403, 'Apenas administradores podem alterar roteiros.');
+  function requireAdmin(user, message = 'Apenas administradores podem alterar roteiros.') {
+    if (!isAdmin(user)) throw new HttpError(403, message);
   }
 
   function itineraryOut(r, { full = false } = {}) {
@@ -849,8 +849,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return { ok: true };
   });
 
-  // Download da planilha original.
+  // Download da planilha original — só administradores; usuários veem apenas o roteiro visual.
   route('GET', '/api/itineraries/:id/file', async ({ user, params, res }) => {
+    requireAdmin(user, 'Apenas administradores podem baixar a planilha original.');
     const it = await loadItinerary(user, params.id);
     const row = await db.get('SELECT file_data FROM itineraries WHERE id = ?', [it.id]);
     if (!row?.file_data) throw new HttpError(404, 'Planilha não encontrada.');

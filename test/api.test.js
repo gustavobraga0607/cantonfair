@@ -414,12 +414,13 @@ test('roteiro: administrador envia Excel por CNPJ, edita e exclui; usuários só
   assert.equal((await a('GET', `/api/itineraries/${id}`)).body.days[0].items[0].time, '07:30');
   assert.equal((await b('GET', '/api/itineraries')).body.length, 0);
   assert.equal((await b('GET', `/api/itineraries/${id}`)).status, 404);
-  assert.equal((await b('GET', `/api/itineraries/${id}/file`)).status, 404);
 
-  // download do original
+  // planilha original: só o administrador baixa; usuários veem apenas o roteiro visual
   const dl = await fetch(`${base}/api/itineraries/${id}/file`, { headers: { Cookie: '' } });
   assert.equal(dl.status, 401);
-  r = await a('GET', `/api/itineraries/${id}/file`);
+  assert.equal((await a('GET', `/api/itineraries/${id}/file`)).status, 403);
+  assert.equal((await b('GET', `/api/itineraries/${id}/file`)).status, 403);
+  r = await admin('GET', `/api/itineraries/${id}/file`);
   assert.equal(r.status, 200);
 
   // A não edita nem exclui

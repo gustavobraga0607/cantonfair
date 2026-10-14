@@ -44,7 +44,7 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   Contato, Observações — em português, inglês ou chinês; colunas extras também aparecem; cores das células com
   legenda viram o tipo de cada atividade; o título no topo da planilha vira o título do roteiro) e mostra dia a dia para
   os usuários daquela empresa, destacando o dia de hoje. O administrador pode editar na tela, substituir a planilha
-  ou excluir; a planilha original fica disponível para download.
+  ou excluir; só ele baixa a planilha original — os usuários veem apenas o roteiro visual.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

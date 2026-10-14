@@ -1115,10 +1115,10 @@ function renderTrip(it, { back }) {
       <div class="item-title">${esc(it.title)}</div>
       <div class="item-sub">${it.start_date ? esc(dateRange(it.start_date, it.end_date)) + ' · ' : ''}${it.day_count} dia(s)</div>
       ${isAdmin() ? `<div>${companyTag(it.company_cnpj)}</div>` : ''}
-      <div class="actions" style="margin-top:10px">
+      ${isAdmin() ? `<div class="actions" style="margin-top:10px">
         <a class="btn small" href="/api/itineraries/${it.id}/file" download>⬇ Planilha original</a>
-        ${isAdmin() ? `<a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>` : ''}
-      </div>
+        <a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>
+      </div>` : ''}
     </div>
     <div class="trip-days">${it.days.map((d, i) => {
       const cities = [...new Set(d.items.map((x) => x.city).filter(Boolean))];
