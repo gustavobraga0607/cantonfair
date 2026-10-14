@@ -47,6 +47,23 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at  TEXT
 );
 
+-- Roteiros de viagem (enviados em Excel pelo administrador, um ou mais por CNPJ).
+CREATE TABLE IF NOT EXISTS itineraries (
+  id          {{ID}},
+  cnpj        TEXT NOT NULL REFERENCES companies(cnpj),
+  title       TEXT NOT NULL,
+  days        TEXT NOT NULL,                    -- JSON com os dias e atividades
+  start_date  TEXT,
+  end_date    TEXT,
+  file_name   TEXT,
+  file_data   {{BLOB}},                          -- planilha original
+  created_by  INTEGER REFERENCES users(id),
+  updated_by  INTEGER REFERENCES users(id),
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_itineraries_cnpj ON itineraries(cnpj);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token_hash  TEXT PRIMARY KEY,
   user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

@@ -349,3 +349,30 @@ body.map-mode main { display: none; }
 .price-line { display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
 .price-line + .price-line { margin-top: 2px; }
 .compare .flag { margin-right: 2px; }
+
+/* viagem: subnavegação Roteiro | Mapa */
+.subnav { display: flex; background: var(--neutral-bg); border-radius: 10px; padding: 3px; gap: 2px; }
+.subnav a { flex: 1; text-align: center; padding: 7px 10px; border-radius: 8px; font-size: .9rem; color: var(--muted); text-decoration: none; white-space: nowrap; }
+.subnav a.active { background: var(--surface); color: var(--text); font-weight: 600; box-shadow: var(--shadow); }
+.subnav-page { margin-bottom: 14px; }
+.map-toolbar .subnav { flex: 1; min-width: 0; }
+
+/* roteiro */
+.trip-head { margin-bottom: 14px; }
+.trip-days { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.trip-day.today { outline: 2px solid var(--good); }
+.trip-day.past { opacity: .7; }
+.trip-day-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 8px; }
+.trip-day-num { font-weight: 800; font-size: 1.05rem; }
+.trip-day-title { flex: 1; color: var(--muted); min-width: 0; }
+.trip-day-title span { color: var(--text); }
+.badge.city { background: var(--neutral-bg); color: var(--text); }
+.trip-items { list-style: none; margin: 0; padding: 0; }
+.trip-item { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 10px; padding: 10px 0; border-top: 1px solid var(--border); }
+.trip-item:first-child { border-top: 0; }
+.trip-time { font-weight: 700; font-variant-numeric: tabular-nums; }
+.trip-activity { font-weight: 600; margin: 2px 0 4px; overflow-wrap: anywhere; }
+.trip-line { display: flex; gap: 6px; align-items: baseline; font-size: .9rem; margin-top: 3px; overflow-wrap: anywhere; }
+.trip-line > span:nth-child(2) { flex: 1; min-width: 0; white-space: pre-wrap; }
+.copy-btn { flex: none; border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 6px; font-size: .75rem; padding: 2px 8px; cursor: pointer; }
+.trip-edit-day + .trip-edit-day { margin-top: 12px; }

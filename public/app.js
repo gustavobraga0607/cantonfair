@@ -953,12 +953,281 @@ function renderRankSuppliers(r) {
     <p class="hint">Fornecedores ordenados pelo número de produtos em que oferecem o melhor preço estimado abaixo do preço no Brasil.</p>`;
 }
 
+// ===================== roteiro de viagem =====================
+
+const TRIP_FIELDS = [
+  ['time', 'Hora'], ['city', 'Cidade'], ['activity', 'Atividade'], ['location', 'Local / endereço'],
+  ['transport', 'Transporte'], ['hotel', 'Hotel'], ['contact', 'Contato'], ['notes', 'Observações'],
+];
+const TRIP_ICONS = { location: '📍', transport: '🚆', hotel: '🏨', contact: '👤', notes: '📝' };
+const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
+
+const isoToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
+function dayTitle(iso) {
+  if (!iso) return '';
+  const [y, m, d] = iso.split('-').map(Number);
+  return `${WEEKDAYS[new Date(y, m - 1, d).getDay()]} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`;
+}
+function dateRange(a, b) {
+  if (!a) return '';
+  const f = (iso) => iso.split('-').reverse().join('/');
+  return a === b || !b ? f(a) : `${f(a).slice(0, 5)} a ${f(b)}`;
+}
+
+const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Viagem">
+  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa da feira</a></nav>`;
+
+async function viewTrip(id) {
+  setChrome({ title: 'Roteiro de viagem', tab: 'trip', back: id && isAdmin() ? '#/trip' : null });
+  loading();
+  if (id) return renderTrip(await api(`/api/itineraries/${id}`), { back: '#/trip' });
+  const list = await api('/api/itineraries' + scopeQS());
+  // Usuário com um único roteiro vê o roteiro direto.
+  if (!isAdmin() && list.length === 1) return renderTrip(await api(`/api/itineraries/${list[0].id}`), { back: null });
+  $app.innerHTML = `
+    ${subnavHtml('trip')}
+    ${scopeBarHtml()}
+    ${isAdmin() ? '<a class="btn primary block" href="#/trip/new" style="margin-bottom:14px">⬆ Enviar roteiro (Excel)</a>' : ''}
+    <div class="list">${list.length ? list.map((it) => `
+      <a class="item" href="#/trip/${it.id}">
+        <div class="thumb">✈️</div>
+        <div class="item-body">
+          <div class="item-title">${esc(it.title)}</div>
+          <div class="item-sub">${it.start_date ? esc(dateRange(it.start_date, it.end_date)) + ' · ' : ''}${it.day_count} dia(s) · ${it.item_count} atividade(s)</div>
+          ${companyTag(it.company_cnpj)}
+        </div>
+      </a>`).join('') : `<div class="empty">${isAdmin()
+        ? 'Nenhum roteiro enviado para esta seleção.<br>Use “Enviar roteiro” para subir a planilha Excel de uma empresa.'
+        : 'Seu roteiro de viagem ainda não foi publicado.<br>Ele aparecerá aqui assim que a BR Trading enviar.'}</div>`}
+    </div>`;
+  bindScopeBar();
+}
+
+function tripItemHtml(it, dayCity) {
+  const lines = ['location', 'transport', 'hotel', 'contact', 'notes'].filter((f) => it[f]).map((f) => `
+    <div class="trip-line"><span aria-hidden="true">${TRIP_ICONS[f]}</span><span>${esc(it[f])}</span>${f === 'location'
+      ? `<button type="button" class="copy-btn" data-copy="${esc(it[f])}" title="Copiar endereço">Copiar</button>` : ''}</div>`).join('');
+  const extras = (it.extra || []).map((e) => `<div class="trip-line"><span class="item-sub">${esc(e.label)}:</span><span>${esc(e.value)}</span></div>`).join('');
+  return `
+    <li class="trip-item">
+      <div class="trip-time">${esc(it.time || '')}</div>
+      <div class="trip-body">
+        ${it.city && it.city !== dayCity ? `<span class="badge">${esc(it.city)}</span>` : ''}
+        ${it.activity ? `<div class="trip-activity">${esc(it.activity)}</div>` : ''}
+        ${lines}${extras}
+      </div>
+    </li>`;
+}
+
+function renderTrip(it, { back }) {
+  setChrome({ title: it.title, tab: 'trip', back });
+  const today = isoToday();
+  const first = it.start_date;
+  const dayNumber = (d, i) => (first && d.date
+    ? Math.round((Date.parse(d.date) - Date.parse(first)) / 86400_000) + 1 : i + 1);
+  $app.innerHTML = `
+    ${subnavHtml('trip')}
+    <div class="card trip-head">
+      <div class="item-title">${esc(it.title)}</div>
+      <div class="item-sub">${it.start_date ? esc(dateRange(it.start_date, it.end_date)) + ' · ' : ''}${it.day_count} dia(s)</div>
+      ${isAdmin() ? `<div>${companyTag(it.company_cnpj)}</div>` : ''}
+      <div class="actions" style="margin-top:10px">
+        <a class="btn small" href="/api/itineraries/${it.id}/file" download>⬇ Planilha original</a>
+        ${isAdmin() ? `<a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>` : ''}
+      </div>
+    </div>
+    <div class="trip-days">${it.days.map((d, i) => {
+      const cities = [...new Set(d.items.map((x) => x.city).filter(Boolean))];
+      const isToday = d.date === today;
+      return `
+      <section class="card trip-day ${isToday ? 'today' : ''} ${d.date && d.date < today ? 'past' : ''}" ${isToday ? 'id="trip-today"' : ''}>
+        <header class="trip-day-head">
+          <div class="trip-day-num">Dia ${dayNumber(d, i)}</div>
+          <div class="trip-day-title">${esc(d.date ? dayTitle(d.date) : '')}${d.label ? ` <span>${esc(d.label)}</span>` : ''}</div>
+          ${isToday ? '<span class="badge good">Hoje</span>' : ''}
+        </header>
+        ${cities.length || d.sheet ? `<div class="badges" style="margin:0 0 6px">${cities.map((c) => `<span class="badge city">📍 ${esc(c)}</span>`).join('')}</div>` : ''}
+        <ul class="trip-items">${d.items.map((x) => tripItemHtml(x, cities.length === 1 ? cities[0] : null)).join('')}</ul>
+      </section>`;
+    }).join('')}</div>
+    <p class="hint">Atualizado ${dateBr(it.updated_at)}${it.updated_by_name ? ' por ' + esc(it.updated_by_name) : ''}.</p>`;
+  $app.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast('Endereço copiado.'); } catch { toast('Não foi possível copiar.'); }
+  }));
+  document.getElementById('trip-today')?.scrollIntoView({ block: 'start' });
+}
+
+// Lê o arquivo escolhido como data URL (para enviar ao servidor).
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('Não foi possível ler o arquivo.'));
+    r.readAsDataURL(file);
+  });
+}
+const XLSX_ACCEPT = '.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+const MAX_XLSX = 3 * 1024 * 1024;
+
+async function viewTripUpload() {
+  if (!isAdmin()) { location.hash = '#/trip'; return; }
+  setChrome({ title: 'Enviar roteiro', tab: 'trip', back: '#/trip', form: true });
+  $app.innerHTML = `
+    <form class="card stack" id="f" novalidate>
+      <div><label for="company">Empresa (CNPJ) <span class="req">*</span></label><select id="company">${companyOptions(defaultCompany())}</select>
+        <div class="hint">Todos os usuários deste CNPJ verão o roteiro.</div></div>
+      <div><label for="title">Título</label><input id="title" placeholder="ex.: Viagem China – Outubro 2026"></div>
+      <div><label for="file">Planilha do roteiro (.xlsx) <span class="req">*</span></label>
+        <input id="file" type="file" accept="${XLSX_ACCEPT}">
+        <div class="hint">A primeira linha da tabela deve ter os títulos das colunas, por exemplo: Data, Hora, Cidade,
+          Atividade, Local, Transporte, Hotel, Contato, Observações. Datas em branco continuam o dia de cima.</div></div>
+      <div class="error-box" id="err" hidden></div>
+      <div class="actions form-actions"><button class="btn primary" type="submit">Enviar roteiro</button></div>
+    </form>`;
+  const form = document.getElementById('f');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const box = document.getElementById('err');
+    box.hidden = true;
+    const file = form.querySelector('#file').files[0];
+    const fail = (m) => { box.textContent = m; box.hidden = false; };
+    if (!file) return fail('Escolha a planilha do roteiro.');
+    if (file.size > MAX_XLSX) return fail('Planilha muito grande (máximo 3 MB).');
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    btn.textContent = 'Lendo planilha…';
+    try {
+      const saved = await api('/api/itineraries', { method: 'POST', body: {
+        company: form.querySelector('#company').value, title: form.querySelector('#title').value,
+        file_name: file.name, file: await readFileAsDataUrl(file),
+      } });
+      toast(`Roteiro enviado: ${saved.day_count} dia(s), ${saved.item_count} atividade(s).`);
+      location.hash = `#/trip/${saved.id}`;
+    } catch (err) {
+      fail(err.message);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Enviar roteiro';
+    }
+  });
+}
+
+async function viewTripEdit(id) {
+  if (!isAdmin()) { location.hash = `#/trip/${id}`; return; }
+  setChrome({ title: 'Editar roteiro', tab: 'trip', back: `#/trip/${id}`, form: true });
+  loading();
+  const it = await api(`/api/itineraries/${id}`);
+  const days = structuredClone(it.days);
+  $app.innerHTML = `
+    <form class="stack" id="f" novalidate>
+      <div class="card stack">
+        <div><label for="title">Título</label><input id="title" value="${esc(it.title)}"></div>
+        <div class="item-sub">Empresa: ${esc(it.company_name || companyLabel(it.company_cnpj))}</div>
+        <div><label for="file">Substituir pela nova planilha (.xlsx)</label><input id="file" type="file" accept="${XLSX_ACCEPT}">
+          <div class="hint">Ao enviar uma nova planilha, o roteiro inteiro é substituído pelo conteúdo dela.</div></div>
+      </div>
+      <div id="days"></div>
+      <button type="button" class="btn block" id="add-day">+ Adicionar dia</button>
+      <div class="error-box" id="err" hidden></div>
+      <div class="actions form-actions">
+        <button type="button" class="btn danger" id="del">Excluir</button>
+        <button class="btn primary" type="submit">Salvar</button>
+      </div>
+    </form>`;
+  const daysEl = document.getElementById('days');
+
+  const renderDays = () => {
+    daysEl.innerHTML = days.map((d, di) => `
+      <div class="card stack trip-edit-day" data-day="${di}">
+        <div class="offer-head" style="margin:0"><h3>Dia ${di + 1}</h3>
+          <button type="button" class="icon-btn" data-rm-day="${di}" aria-label="Remover dia">✕</button></div>
+        <div class="row">
+          <div><label>Data</label><input type="date" data-day-k="date" value="${esc(d.date || '')}"></div>
+          <div><label>Descrição do dia</label><input data-day-k="label" value="${esc(d.label || '')}" placeholder="opcional"></div>
+        </div>
+        ${d.items.map((x, ii) => `
+          <div class="offer" data-item="${ii}">
+            <div class="offer-head"><b>Atividade ${ii + 1}</b>
+              <button type="button" class="icon-btn" data-rm-item="${ii}" aria-label="Remover atividade">✕</button></div>
+            <div class="row">
+              ${TRIP_FIELDS.slice(0, 2).map(([k, l]) => `<div><label>${l}</label><input data-k="${k}" value="${esc(x[k] || '')}"></div>`).join('')}
+            </div>
+            ${TRIP_FIELDS.slice(2).map(([k, l]) => `<div style="margin-top:10px"><label>${l}</label>${k === 'activity' || k === 'notes'
+              ? `<textarea data-k="${k}" rows="2">${esc(x[k] || '')}</textarea>` : `<input data-k="${k}" value="${esc(x[k] || '')}">`}</div>`).join('')}
+            ${(x.extra || []).length ? `<div class="hint">Outras colunas: ${x.extra.map((e) => `${esc(e.label)}: ${esc(e.value)}`).join(' · ')}</div>` : ''}
+          </div>`).join('')}
+        <button type="button" class="btn small" data-add-item="${di}">+ Atividade</button>
+      </div>`).join('');
+  };
+  renderDays();
+
+  daysEl.addEventListener('input', (e) => {
+    const dayEl = e.target.closest('[data-day]');
+    if (!dayEl) return;
+    const d = days[Number(dayEl.dataset.day)];
+    if (e.target.dataset.dayK) { d[e.target.dataset.dayK] = e.target.value || null; return; }
+    const itemEl = e.target.closest('[data-item]');
+    if (itemEl && e.target.dataset.k) d.items[Number(itemEl.dataset.item)][e.target.dataset.k] = e.target.value;
+  });
+  daysEl.addEventListener('click', (e) => {
+    const t = e.target;
+    if (t.dataset.rmDay !== undefined) {
+      if (!confirm('Remover este dia e todas as atividades dele?')) return;
+      days.splice(Number(t.dataset.rmDay), 1); renderDays();
+    } else if (t.dataset.rmItem !== undefined) {
+      days[Number(t.closest('[data-day]').dataset.day)].items.splice(Number(t.dataset.rmItem), 1); renderDays();
+    } else if (t.dataset.addItem !== undefined) {
+      days[Number(t.dataset.addItem)].items.push({}); renderDays();
+    }
+  });
+  document.getElementById('add-day').addEventListener('click', () => {
+    const last = days[days.length - 1]?.date;
+    const next = last ? new Date(Date.parse(last) + 86400_000).toISOString().slice(0, 10) : null;
+    days.push({ date: next, label: '', items: [{}] });
+    renderDays();
+    daysEl.lastElementChild.scrollIntoView({ block: 'start', behavior: 'smooth' });
+  });
+
+  const form = document.getElementById('f');
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const box = document.getElementById('err');
+    box.hidden = true;
+    const file = form.querySelector('#file').files[0];
+    if (file && file.size > MAX_XLSX) { box.textContent = 'Planilha muito grande (máximo 3 MB).'; box.hidden = false; return; }
+    if (file && !confirm('Substituir o roteiro inteiro pelo conteúdo da nova planilha?')) return;
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const body = { title: form.querySelector('#title').value };
+      if (file) Object.assign(body, { file: await readFileAsDataUrl(file), file_name: file.name });
+      else body.days = days;
+      await api(`/api/itineraries/${id}`, { method: 'PUT', body });
+      toast('Roteiro salvo.');
+      location.hash = `#/trip/${id}`;
+    } catch (err) {
+      box.textContent = err.message;
+      box.hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  document.getElementById('del').addEventListener('click', async () => {
+    if (!confirm('Excluir este roteiro? Os usuários da empresa deixarão de vê-lo.')) return;
+    try {
+      await api(`/api/itineraries/${id}`, { method: 'DELETE' });
+      toast('Roteiro excluído.');
+      location.hash = '#/trip';
+    } catch (err) { toast(err.message); }
+  });
+}
+
 // ===================== mapa da feira =====================
 
 const FAIR_MAP_URL = 'https://365.cantonfair.org.cn/en-US/exhibition-hall-map?phase=first';
 
 function viewMap() {
-  setChrome({ title: 'Mapa da feira', tab: 'map', map: true });
+  setChrome({ title: 'Mapa da feira', tab: 'trip', map: true });
   $app.innerHTML = '';
   const frame = document.getElementById('map-frame');
   document.getElementById('map-open').href = FAIR_MAP_URL;
@@ -1148,6 +1417,10 @@ const routes = [
   [/^\/products\/(\d+)$/, (m) => viewProduct(m[1])],
   [/^\/products\/(\d+)\/edit$/, (m, q) => viewProductForm(m[1], q)],
   [/^\/map$/, viewMap],
+  [/^\/trip$/, () => viewTrip()],
+  [/^\/trip\/new$/, () => viewTripUpload()],
+  [/^\/trip\/(\d+)$/, (m) => viewTrip(m[1])],
+  [/^\/trip\/(\d+)\/edit$/, (m) => viewTripEdit(m[1])],
   [/^\/account$/, viewAccount],
 ];
 

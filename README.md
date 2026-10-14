@@ -36,6 +36,11 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   com AwesomeAPI e ExchangeRate-API como reserva, a cada 30 minutos. Se todas falharem, o app mantém o
   último valor, avisa o usuário e permite informar o câmbio manualmente em *Conta* (vale para toda a
   equipe do CNPJ; dá para voltar ao automático a qualquer momento). `FX_AUTO=false` desliga a busca.
+- **Roteiro de viagem** (aba *Viagem*): o administrador envia o roteiro da viagem na China em Excel (.xlsx), por CNPJ;
+  o app lê a planilha (colunas reconhecidas pelo título: Data, Hora, Cidade, Atividade, Local, Transporte, Hotel,
+  Contato, Observações — em português, inglês ou chinês; colunas extras também aparecem) e mostra dia a dia para
+  os usuários daquela empresa, destacando o dia de hoje. O administrador pode editar na tela, substituir a planilha
+  ou excluir; a planilha original fica disponível para download.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

@@ -8,6 +8,7 @@ const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
 const { OcrError } = require('./ocr');
+const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 
 // A Vercel limita o corpo da requisição a 4,5 MB; as fotos são reduzidas no navegador.
 const MAX_BODY = 4 * 1024 * 1024;
@@ -22,6 +23,9 @@ const STATIC_TYPES = {
   '.json': 'application/json',
   '.png': 'image/png',
 };
+
+// Valor devolvido por rotas que já escreveram a resposta (ex.: download de arquivo).
+const RAW = Symbol('raw-response');
 
 class HttpError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -590,6 +594,124 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return { ok: true };
   });
 
+  // --- roteiros de viagem ---
+
+  const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  function parseXlsxUpload(dataUrl) {
+    const m = /^data:([\w./+-]*);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
+    if (!m) throw new HttpError(400, 'Envie a planilha do roteiro (.xlsx).');
+    const buf = Buffer.from(m[2], 'base64');
+    // Todo .xlsx é um arquivo ZIP (começa com "PK").
+    if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new HttpError(400, 'Arquivo inválido: envie uma planilha Excel .xlsx (não .xls nem .csv).');
+    return buf;
+  }
+
+  async function readItinerary(buf) {
+    try {
+      return await parseItineraryXlsx(buf);
+    } catch (err) {
+      if (err.status) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  }
+
+  function requireAdmin(user) {
+    if (!isAdmin(user)) throw new HttpError(403, 'Apenas administradores podem alterar roteiros.');
+  }
+
+  function itineraryOut(r, { full = false } = {}) {
+    const days = JSON.parse(r.days);
+    return {
+      id: r.id, title: r.title, company_cnpj: r.cnpj, company_name: r.company_name ?? null,
+      start_date: r.start_date, end_date: r.end_date, file_name: r.file_name,
+      day_count: days.length, item_count: days.reduce((n, d) => n + d.items.length, 0),
+      updated_at: r.updated_at, updated_by_name: r.updated_by_name ?? null,
+      ...(full ? { days } : {}),
+    };
+  }
+
+  async function loadItinerary(user, id) {
+    const cnpj = accessCnpj(user);
+    const r = await db.get(`
+      SELECT i.id, i.cnpj, i.title, i.days, i.start_date, i.end_date, i.file_name, i.updated_at,
+             c.name AS company_name, u.name AS updated_by_name
+      FROM itineraries i JOIN companies c ON c.cnpj = i.cnpj LEFT JOIN users u ON u.id = i.updated_by
+      WHERE i.id = ?${companyFilter('i', cnpj)}`, [toId(id), ...companyParam(cnpj)]);
+    if (!r) throw new HttpError(404, 'Roteiro não encontrado.');
+    return r;
+  }
+
+  route('GET', '/api/itineraries', async ({ user, query }) => {
+    const cnpj = listCnpj(user, query);
+    const rows = await db.all(`
+      SELECT i.id, i.cnpj, i.title, i.days, i.start_date, i.end_date, i.file_name, i.updated_at,
+             c.name AS company_name, u.name AS updated_by_name
+      FROM itineraries i JOIN companies c ON c.cnpj = i.cnpj LEFT JOIN users u ON u.id = i.updated_by
+      WHERE 1 = 1${companyFilter('i', cnpj)}
+      ORDER BY coalesce(i.start_date, i.created_at) DESC, i.id DESC`, companyParam(cnpj));
+    return rows.map((r) => itineraryOut(r));
+  });
+
+  route('GET', '/api/itineraries/:id', async ({ user, params }) => itineraryOut(await loadItinerary(user, params.id), { full: true }));
+
+  route('POST', '/api/itineraries', async ({ user, body }) => {
+    requireAdmin(user);
+    const cnpj = await targetCnpj(user, body);
+    const buf = parseXlsxUpload(body.file);
+    const parsed = await readItinerary(buf);
+    const title = str(body.title, 120) || str(body.file_name, 120).replace(/\.xlsx$/i, '') || 'Roteiro de viagem';
+    const t = now();
+    const row = await db.get(`INSERT INTO itineraries (cnpj, title, days, start_date, end_date, file_name, file_data, created_by, updated_by, created_at, updated_at)
+                              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+      [cnpj, title, JSON.stringify(parsed.days), parsed.start_date, parsed.end_date, str(body.file_name, 200) || 'roteiro.xlsx', buf, user.id, user.id, t, t]);
+    return { status: 201, body: itineraryOut(await loadItinerary(user, row.id), { full: true }) };
+  });
+
+  // Edição: título, nova planilha (substitui tudo) e/ou dias editados na tela.
+  route('PUT', '/api/itineraries/:id', async ({ user, params, body }) => {
+    requireAdmin(user);
+    const it = await loadItinerary(user, params.id);
+    let days = JSON.parse(it.days);
+    let fileName = it.file_name;
+    let fileData = null;
+    if (body.file) {
+      fileData = parseXlsxUpload(body.file);
+      days = (await readItinerary(fileData)).days;
+      fileName = str(body.file_name, 200) || fileName;
+    } else if (body.days !== undefined) {
+      try { days = normalizeDays(body.days).days; } catch (err) { throw new HttpError(400, err.message); }
+    }
+    const norm = normalizeDays(days);
+    const title = str(body.title, 120) || it.title;
+    await db.run(`UPDATE itineraries SET title = ?, days = ?, start_date = ?, end_date = ?, file_name = ?,
+                    file_data = coalesce(?, file_data), updated_by = ?, updated_at = ? WHERE id = ?`,
+      [title, JSON.stringify(norm.days), norm.start_date, norm.end_date, fileName, fileData, user.id, now(), it.id]);
+    return itineraryOut(await loadItinerary(user, it.id), { full: true });
+  });
+
+  route('DELETE', '/api/itineraries/:id', async ({ user, params }) => {
+    requireAdmin(user);
+    const it = await loadItinerary(user, params.id);
+    await db.run('DELETE FROM itineraries WHERE id = ?', [it.id]);
+    return { ok: true };
+  });
+
+  // Download da planilha original.
+  route('GET', '/api/itineraries/:id/file', async ({ user, params, res }) => {
+    const it = await loadItinerary(user, params.id);
+    const row = await db.get('SELECT file_data FROM itineraries WHERE id = ?', [it.id]);
+    if (!row?.file_data) throw new HttpError(404, 'Planilha não encontrada.');
+    const data = Buffer.from(row.file_data);
+    const name = (it.file_name || 'roteiro.xlsx').replace(/[^\w.\- ]/g, '_');
+    res.writeHead(200, {
+      'Content-Type': XLSX_MIME, 'Content-Length': data.length, 'Cache-Control': 'private, no-store',
+      'Content-Disposition': `attachment; filename="${name}"`,
+    });
+    res.end(data);
+    return RAW;
+  });
+
   // --- relatório / ranking ---
 
   route('GET', '/api/ranking', async ({ user, query }) => {
@@ -725,6 +847,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         }
         const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readJson(req);
         const out = await r.handler({ req, res, user, params, body, query: url.searchParams });
+        if (out === RAW) return;
         if (out && out.status && out.body) return send(res, out.status, out.body);
         return send(res, 200, out);
       }

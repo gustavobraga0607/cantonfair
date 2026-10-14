@@ -17,7 +17,7 @@ async function setup({ adminEmails = [], readCard = null, fxQuote = null } = {})
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, app_settings, users, companies, fx_quotes CASCADE')
+    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -381,4 +381,68 @@ test('frete 40HQ entra no preço estimado dos produtos e no ranking', async (t) 
   assert.equal(r.body.products[0].estimated_brl, 120);
   r = await a('GET', '/api/products');
   assert.equal(r.body[0].offers[1].estimated_brl, 120);
+});
+
+test('roteiro: administrador envia Excel por CNPJ, edita e exclui; usuários só veem o da sua empresa', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const xlsx = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' +
+    fs.readFileSync(path.join(__dirname, 'fixtures', 'roteiro-exemplo.xlsx')).toString('base64');
+  const a = client(base);
+  const b = client(base);
+  const admin = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
+
+  // só admin envia
+  assert.equal((await a('POST', '/api/itineraries', { file: xlsx })).status, 403);
+  let r = await admin('POST', '/api/itineraries', { file: 'data:text/csv;base64,YSxi', company: '11222333000181' });
+  assert.equal(r.status, 400);
+  r = await admin('POST', '/api/itineraries', { file: xlsx, file_name: 'Roteiro Out 2026.xlsx', company: '11222333000181' });
+  assert.equal(r.status, 201);
+  const id = r.body.id;
+  assert.equal(r.body.title, 'Roteiro Out 2026');
+  assert.equal(r.body.company_cnpj, '11222333000181');
+  assert.equal(r.body.days.length, 4);
+  assert.equal(r.body.start_date, '2026-10-15');
+
+  // A vê; B não
+  r = await a('GET', '/api/itineraries');
+  assert.equal(r.body.length, 1);
+  assert.equal(r.body[0].item_count, 5);
+  assert.equal((await a('GET', `/api/itineraries/${id}`)).body.days[0].items[0].time, '07:30');
+  assert.equal((await b('GET', '/api/itineraries')).body.length, 0);
+  assert.equal((await b('GET', `/api/itineraries/${id}`)).status, 404);
+  assert.equal((await b('GET', `/api/itineraries/${id}/file`)).status, 404);
+
+  // download do original
+  const dl = await fetch(`${base}/api/itineraries/${id}/file`, { headers: { Cookie: '' } });
+  assert.equal(dl.status, 401);
+  r = await a('GET', `/api/itineraries/${id}/file`);
+  assert.equal(r.status, 200);
+
+  // A não edita nem exclui
+  assert.equal((await a('PUT', `/api/itineraries/${id}`, { title: 'x' })).status, 403);
+  assert.equal((await a('DELETE', `/api/itineraries/${id}`)).status, 403);
+
+  // admin edita título e uma atividade
+  const full = (await admin('GET', `/api/itineraries/${id}`)).body;
+  full.days[0].items[0].activity = 'Chegada – voo EK362 (atrasado)';
+  full.days.push({ date: '2026-10-19', items: [{ time: '18:00', activity: 'Voo de volta' }] });
+  r = await admin('PUT', `/api/itineraries/${id}`, { title: 'Viagem China', days: full.days });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.title, 'Viagem China');
+  assert.equal(r.body.end_date, '2026-10-19');
+  assert.equal((await a('GET', `/api/itineraries/${id}`)).body.days[0].items[0].activity, 'Chegada – voo EK362 (atrasado)');
+
+  // admin substitui pela planilha e filtra por empresa
+  r = await admin('PUT', `/api/itineraries/${id}`, { file: xlsx, file_name: 'novo.xlsx' });
+  assert.equal(r.body.days.length, 4);
+  assert.equal((await admin('GET', '/api/itineraries?company=11444777000161')).body.length, 0);
+  assert.equal((await admin('GET', '/api/itineraries?company=all')).body.length, 1);
+
+  // admin exclui
+  assert.equal((await admin('DELETE', `/api/itineraries/${id}`)).status, 200);
+  assert.equal((await a('GET', '/api/itineraries')).body.length, 0);
 });
