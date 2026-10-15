@@ -94,6 +94,13 @@ test('fluxo completo: cadastro, CNPJ compartilhado, fornecedores, produtos e ran
   assert.equal(r.body.card_photo, null);
   r = await ana('PUT', `/api/suppliers/${r.body.id}`, { name: 'Sem foto', card_photo: PNG });
   assert.match(r.body.card_photo, /^\/uploads\//, 'foto pode ser adicionada depois');
+  const oldPhoto = r.body.card_photo;
+  r = await ana('PUT', `/api/suppliers/${r.body.id}`, { name: 'Sem foto', booth: '1.1 A1', remove_card_photo: true });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.card_photo, null, 'foto excluída');
+  assert.equal(r.body.name, 'Sem foto', 'dados continuam');
+  assert.equal(r.body.booth, '1.1 A1');
+  assert.equal((await ana('GET', oldPhoto)).status, 404, 'imagem apagada do banco');
   assert.equal((await ana('DELETE', `/api/suppliers/${r.body.id}`)).status, 200);
   r = await ana('POST', '/api/suppliers', { name: 'Shenzhen A', booth: '11.2 C23', card_photo: PNG });
   assert.equal(r.status, 201);

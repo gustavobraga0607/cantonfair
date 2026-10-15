@@ -477,7 +477,8 @@ const provinceLabel = (name) => {
 const provinceOptions = (selected) => `<option value="">Selecione…</option>${(self.PROVINCES || []).map((p) =>
   `<option value="${esc(p.name)}"${p.name === selected ? ' selected' : ''}>${esc(p.name)} (${esc(p.local)})</option>`).join('')}`;
 
-// Lê o cartão de visita pela API e preenche os campos que ainda estão vazios.
+// Lê o cartão de visita pela API e atualiza o cadastro com o que foi lido: campos que o cartão
+// traz são substituídos (foto nova = dados novos); os que ele não traz ficam como estão.
 let ocrSeq = 0;
 async function readBusinessCard(form, dataUrl) {
   const box = document.getElementById('ocr-status');
@@ -494,25 +495,31 @@ async function readBusinessCard(form, dataUrl) {
     const filled = [];
     const fill = (field, value, label) => {
       const el = form[field];
-      if (!value || el.value.trim()) return;
+      if (!value || el.value.trim() === value.trim()) return;
+      if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === value)) return; // fora da lista
       el.value = value;
       el.classList.add('autofilled');
       filled.push(label);
     };
     fill('name', card.company_name || card.company_name_local, 'nome');
     fill('contact_name', card.contact_name, 'contato');
+    const phoneBefore = form.phone.value;
     fill('phone', card.phone || card.whatsapp, 'telefone');
-    // Marca WhatsApp/WeChat quando o telefone do formulário é o que o cartão indicou.
-    const sameNumber = card.phone && form.phone.value.replace(/\D/g, '').slice(-8) === card.phone.replace(/\D/g, '').slice(-8);
-    if (sameNumber) {
-      if (card.phone_whatsapp && !form.phone_whatsapp.checked) { form.phone_whatsapp.checked = true; filled.push('WhatsApp'); }
-      if (card.phone_wechat && !form.phone_wechat.checked) { form.phone_wechat.checked = true; filled.push('WeChat'); }
+    // WhatsApp/WeChat seguem o que o cartão indica para o telefone lido.
+    if (card.phone && form.phone.value === card.phone) {
+      const changed = phoneBefore !== form.phone.value
+        || form.phone_whatsapp.checked !== !!card.phone_whatsapp || form.phone_wechat.checked !== !!card.phone_wechat;
+      form.phone_whatsapp.checked = !!card.phone_whatsapp;
+      form.phone_wechat.checked = !!card.phone_wechat;
+      if (changed && card.phone_whatsapp) filled.push('WhatsApp');
+      if (changed && card.phone_wechat) filled.push('WeChat');
     }
     fill('booth', card.booth, 'stand');
     fill('address', card.address, 'endereço');
     fill('province', card.province, 'província');
 
-    // Demais informações do cartão vão para as observações.
+    // Demais informações do cartão vão para as observações: a linha do mesmo tipo
+    // ("E-mail: …") é atualizada; o que o usuário escreveu fica.
     const extras = [
       ['Empresa (nome local)', card.company_name && card.company_name_local],
       ['E-mail', card.email],
@@ -521,17 +528,25 @@ async function readBusinessCard(form, dataUrl) {
       ['Outros telefones', card.other_phones],
       ['Site', card.website],
       ['Produtos', card.products],
-    ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`)
-      .filter((line) => !form.notes.value.includes(line));
-    if (extras.length) {
-      form.notes.value = [form.notes.value.trim(), ...extras].filter(Boolean).join('\n');
+    ].filter(([, v]) => v);
+    const lines = form.notes.value.trim() ? form.notes.value.trim().split('\n') : [];
+    let notesChanged = false;
+    for (const [k, v] of extras) {
+      const line = `${k}: ${v}`;
+      const i = lines.findIndex((l) => l.startsWith(`${k}: `));
+      if (i >= 0 && lines[i] === line) continue;
+      if (i >= 0) lines[i] = line; else lines.push(line);
+      notesChanged = true;
+    }
+    if (notesChanged) {
+      form.notes.value = lines.join('\n');
       form.notes.classList.add('autofilled');
       filled.push('observações');
     }
     box.className = 'ocr-status ok';
     box.textContent = filled.length
-      ? `✓ Cartão lido: ${filled.join(', ')} preenchido(s). Confira antes de salvar.`
-      : 'Cartão lido, mas nenhum campo vazio para preencher.';
+      ? `✓ Cartão lido: ${filled.join(', ')} atualizado(s). Confira antes de salvar.`
+      : 'Cartão lido: os dados já estavam iguais aos do cartão.';
   } catch (err) {
     if (seq !== ocrSeq) return;
     box.className = 'ocr-status err';
@@ -547,6 +562,8 @@ async function viewSupplierForm(id) {
   loading();
   const s = editing ? await api(`/api/suppliers/${id}`) : {};
   let cardPhoto = null;
+  const photoHint = state.me?.features?.card_ocr
+    ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria';
   const companyField = !isAdmin() ? ''
     : editing
       ? `<div><label>Empresa</label><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>`
@@ -556,7 +573,7 @@ async function viewSupplierForm(id) {
     <form class="card stack" id="f" novalidate>
       ${companyField}
       <div><label>Foto do cartão de visitas</label>
-        <div id="photo">${photoInputHtml(s.card_photo, state.me?.features?.card_ocr ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria')}</div></div>
+        <div id="photo">${photoInputHtml(s.card_photo, photoHint)}</div></div>
       <div class="ocr-status" id="ocr-status" hidden></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
       <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
@@ -578,7 +595,26 @@ async function viewSupplierForm(id) {
       </div>
     </form>`;
   const form = document.getElementById('f');
-  bindPhotoInput(document.getElementById('photo'), (d) => { cardPhoto = d; readBusinessCard(form, d); });
+  const photoBox = document.getElementById('photo');
+  let removePhoto = false;
+  // Excluir a foto tira só a imagem; os dados do fornecedor continuam.
+  const delPhoto = document.createElement('button');
+  delPhoto.type = 'button';
+  delPhoto.className = 'btn small danger photo-remove';
+  delPhoto.textContent = '🗑 Excluir foto do cartão';
+  delPhoto.hidden = !s.card_photo;
+  photoBox.append(delPhoto);
+  delPhoto.addEventListener('click', () => {
+    if (!confirm('Excluir a foto do cartão? Os dados do fornecedor continuam salvos.')) return;
+    ocrSeq++; // descarta leitura em andamento
+    cardPhoto = null;
+    removePhoto = Boolean(s.card_photo);
+    photoBox.querySelector('.photo-preview').innerHTML = `<div style="padding:24px">📷<br>${esc(photoHint)}</div>`;
+    document.getElementById('ocr-status').hidden = true;
+    form.querySelector('button[type=submit]').disabled = false;
+    delPhoto.hidden = true;
+  });
+  bindPhotoInput(photoBox, (d) => { cardPhoto = d; removePhoto = false; delPhoto.hidden = false; readBusinessCard(form, d); });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const box = document.getElementById('err');
@@ -593,6 +629,7 @@ async function viewSupplierForm(id) {
         booth: form.booth.value, address: form.address.value, province: form.province.value, notes: form.notes.value,
       };
       if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
+      else if (removePhoto) body.remove_card_photo = true;
       if (form.company) body.company = form.company.value;
       const saved = await api(editing ? `/api/suppliers/${id}` : '/api/suppliers', { method: editing ? 'PUT' : 'POST', body });
       toast('Fornecedor salvo.');

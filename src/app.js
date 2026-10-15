@@ -676,12 +676,15 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const img = body.card_photo && String(body.card_photo).startsWith('data:') ? parseImage(body.card_photo) : null;
     await db.tx(async (q) => {
       let photo = s.card_photo;
+      // Foto nova substitui a antiga; remove_card_photo só tira a foto (os dados ficam).
+      const removing = img || body.remove_card_photo === true;
       if (img) photo = await saveImage(q, img, s.cnpj, parseThumb(body.card_photo_thumb));
+      else if (removing) photo = null;
       const f = supplierFields(body);
       await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, phone_whatsapp = ?, phone_wechat = ?,
                    address = ?, province = ?, notes = ?, updated_by = ?, updated_at = ? WHERE id = ?`,
         [name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, user.id, now(), s.id]);
-      if (img) await removeImage(q, s.cnpj, s.card_photo);
+      if (removing) await removeImage(q, s.cnpj, s.card_photo);
     });
     return supplierOut(await loadSupplier(db, s.cnpj, s.id));
   });
