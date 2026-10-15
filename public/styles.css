@@ -277,7 +277,7 @@ tr.best td { font-weight: 600; }
 .ocr-status.ok { background: var(--good-bg); color: var(--good); }
 .ocr-status.err { background: var(--bad-bg); color: var(--bad); }
 @keyframes spin { to { transform: rotate(360deg); } }
-input.autofilled, textarea.autofilled { background: var(--good-bg); }
+input.autofilled, textarea.autofilled, select.autofilled { background: var(--good-bg); }
 .phone-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
 /* ---------- celular ---------- */

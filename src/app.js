@@ -9,6 +9,7 @@ const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
 const { OcrError } = require('./ocr');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
+const PROVINCES = require('../public/provinces');
 
 // A Vercel limita o corpo da requisição a 4,5 MB; as fotos são reduzidas no navegador.
 const MAX_BODY = 4 * 1024 * 1024;
@@ -176,6 +177,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return {
       id: s.id, name: s.name, booth: s.booth, notes: s.notes,
       contact_name: s.contact_name ?? null, phone: s.phone ?? null,
+      address: s.address ?? null, province: s.province ?? null,
       company_cnpj: s.cnpj, company_name: s.company_name ?? null,
       card_photo: photoUrl(s.card_photo), created_at: s.created_at, updated_at: s.updated_at,
       updated_by_name: s.updated_by_name ?? null,
@@ -610,12 +612,23 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return { ...supplierOut(s), products };
   });
 
+  // Província: só aceita as da lista (sem diferenciar maiúsculas); vazio = não informada.
+  function provinceName(v) {
+    const t = str(v, 50);
+    if (!t) return null;
+    const p = PROVINCES.find((x) => x.name.toLowerCase() === t.toLowerCase() || x.local === t);
+    if (!p) throw new HttpError(400, 'Província inválida.');
+    return p.name;
+  }
+
   // Campos opcionais do fornecedor.
   function supplierFields(body) {
     return {
       booth: str(body.booth, 50) || null,
       contact_name: str(body.contact_name, 150) || null,
       phone: str(body.phone, 60) || null,
+      address: str(body.address, 500) || null,
+      province: provinceName(body.province),
       notes: str(body.notes, 2000) || null,
     };
   }
@@ -644,9 +657,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       const photo = await saveImage(q, img, cnpj, thumb);
       const t = now();
       const f = supplierFields(body);
-      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, notes, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.notes, user.id, user.id, t, t]);
+      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, address, province, notes, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.address, f.province, f.notes, user.id, user.id, t, t]);
       return row.id;
     });
     return { status: 201, body: supplierOut(await loadSupplier(db, cnpj, id)) };
@@ -661,8 +674,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       let photo = s.card_photo;
       if (img) photo = await saveImage(q, img, s.cnpj, parseThumb(body.card_photo_thumb));
       const f = supplierFields(body);
-      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, notes = ?, updated_by = ?, updated_at = ?
-                   WHERE id = ?`, [name, photo, f.booth, f.contact_name, f.phone, f.notes, user.id, now(), s.id]);
+      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, address = ?, province = ?, notes = ?,
+                   updated_by = ?, updated_at = ? WHERE id = ?`,
+        [name, photo, f.booth, f.contact_name, f.phone, f.address, f.province, f.notes, user.id, now(), s.id]);
       if (img) await removeImage(q, s.cnpj, s.card_photo);
     });
     return supplierOut(await loadSupplier(db, s.cnpj, s.id));

@@ -387,12 +387,12 @@ async function viewSuppliers() {
   const list = await getSuppliers();
   $app.innerHTML = `
     ${scopeBarHtml()}
-    <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand"></div>
+    <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand, província"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/suppliers/new" aria-label="Novo fornecedor">+</a>`;
   const render = (q = '') => {
     const term = q.trim().toLowerCase();
-    const rows = list.filter((s) => !term || [s.name, s.booth, s.contact_name, s.phone]
+    const rows = list.filter((s) => !term || [s.name, s.booth, s.contact_name, s.phone, s.province, s.address]
       .some((v) => (v || '').toLowerCase().includes(term)));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
@@ -426,6 +426,10 @@ async function viewSupplier(id) {
         ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/${esc(s.phone.replace(/\D/g, ''))}">WhatsApp</a>` : ''}
       </div></div>` : ''}
       <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
+      ${s.address || s.province ? `<div><div class="item-sub">Endereço</div><div class="trip-line">
+        <span style="flex:1;min-width:0;white-space:pre-wrap">${esc([s.address, provinceLabel(s.province)].filter(Boolean).join('\n'))}</span>
+        ${s.address ? `<button type="button" class="copy-btn" data-copy="${esc(s.address)}" title="Copiar endereço">Copiar</button>` : ''}
+      </div></div>` : ''}
       ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>` : ''}
       ${s.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(s.notes)}</div></div>` : ''}
       <div class="actions">
@@ -446,7 +450,23 @@ async function viewSupplier(id) {
       </a>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
     </div>`;
   document.getElementById('card-photo').addEventListener('click', () => openLightbox(s.card_photo));
+  bindCopyButtons();
 }
+
+// Botões "Copiar" de endereços (útil para mostrar ao taxista).
+function bindCopyButtons() {
+  $app.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(b.dataset.copy); toast('Endereço copiado.'); } catch { toast('Não foi possível copiar.'); }
+  }));
+}
+
+// Províncias da China (lista em /provinces.js).
+const provinceLabel = (name) => {
+  const p = (self.PROVINCES || []).find((x) => x.name === name);
+  return p ? `${p.name} (${p.local})` : name || '';
+};
+const provinceOptions = (selected) => `<option value="">Selecione…</option>${(self.PROVINCES || []).map((p) =>
+  `<option value="${esc(p.name)}"${p.name === selected ? ' selected' : ''}>${esc(p.name)} (${esc(p.local)})</option>`).join('')}`;
 
 // Lê o cartão de visita pela API e preenche os campos que ainda estão vazios.
 let ocrSeq = 0;
@@ -474,6 +494,8 @@ async function readBusinessCard(form, dataUrl) {
     fill('contact_name', card.contact_name, 'contato');
     fill('phone', card.phone || card.whatsapp, 'telefone');
     fill('booth', card.booth, 'stand');
+    fill('address', card.address, 'endereço');
+    fill('province', card.province, 'província');
 
     // Demais informações do cartão vão para as observações.
     const extras = [
@@ -483,7 +505,6 @@ async function readBusinessCard(form, dataUrl) {
       ['WhatsApp', card.whatsapp && card.whatsapp !== form.phone.value ? card.whatsapp : ''],
       ['Outros telefones', card.other_phones],
       ['Site', card.website],
-      ['Endereço', card.address],
       ['Produtos', card.products],
     ].filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`)
       .filter((line) => !form.notes.value.includes(line));
@@ -528,6 +549,8 @@ async function viewSupplierForm(id) {
         <div><label for="phone">Telefone</label><input id="phone" name="phone" type="tel" value="${esc(s.phone)}" placeholder="+86 …"></div>
         <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
       </div>
+      <div><label for="address">Endereço</label><textarea id="address" name="address" rows="2" placeholder="Rua, número, distrito, cidade">${esc(s.address)}</textarea></div>
+      <div><label for="province">Província</label><select id="province" name="province">${provinceOptions(s.province)}</select></div>
       <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(s.notes)}</textarea></div>
       <div class="error-box" id="err" hidden></div>
       <div class="actions form-actions">
@@ -548,7 +571,7 @@ async function viewSupplierForm(id) {
     try {
       const body = {
         name: form.name.value, contact_name: form.contact_name.value, phone: form.phone.value,
-        booth: form.booth.value, notes: form.notes.value,
+        booth: form.booth.value, address: form.address.value, province: form.province.value, notes: form.notes.value,
       };
       if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
       if (form.company) body.company = form.company.value;
@@ -1149,9 +1172,7 @@ function renderTrip(it, { back }) {
       </section>`;
     }).join('')}</div>
     <p class="hint">Atualizado ${dateBr(it.updated_at)}${it.updated_by_name ? ' por ' + esc(it.updated_by_name) : ''}.</p>`;
-  $app.querySelectorAll('[data-copy]').forEach((b) => b.addEventListener('click', async () => {
-    try { await navigator.clipboard.writeText(b.dataset.copy); toast('Endereço copiado.'); } catch { toast('Não foi possível copiar.'); }
-  }));
+  bindCopyButtons();
   document.getElementById('trip-today')?.scrollIntoView({ block: 'start' });
 }
 

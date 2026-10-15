@@ -5,6 +5,7 @@
 // separados para preencher o cadastro do fornecedor.
 
 const MODEL = 'claude-opus-5-5';
+const PROVINCES = require('../public/provinces');
 
 const FIELDS = {
   company_name: 'Nome da empresa, preferencialmente em inglês/alfabeto latino como aparece no cartão.',
@@ -17,13 +18,16 @@ const FIELDS = {
   wechat: 'WeChat ID, se houver.',
   whatsapp: 'WhatsApp, se diferente do telefone principal.',
   booth: 'Número do stand na Feira de Cantão, se aparecer (ex.: "11.2 C23").',
-  address: 'Endereço da empresa/fábrica.',
+  address: 'Endereço da empresa/fábrica, completo, como aparece no cartão (prefira a versão em inglês/pinyin; se só houver em chinês, transcreva em chinês).',
+  province: 'Província chinesa do endereço, escolhida da lista. Pode deduzir pela cidade do endereço (ex.: Ningbo → Zhejiang, Foshan → Guangdong). Sem endereço ou cidade = string vazia.',
   products: 'Produtos ou ramo de atuação mencionados no cartão.',
 };
 
 const SCHEMA = {
   type: 'object',
-  properties: Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, { type: 'string', description: d }])),
+  properties: Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, k === 'province'
+    ? { type: 'string', description: d, enum: ['', ...PROVINCES.map((p) => p.name)] }
+    : { type: 'string', description: d }])),
   required: Object.keys(FIELDS),
   additionalProperties: false,
 };
@@ -75,6 +79,7 @@ function createCardReader({ client, model = MODEL } = {}) {
     }
     const out = {};
     for (const k of Object.keys(FIELDS)) out[k] = typeof data[k] === 'string' ? data[k].trim().slice(0, 500) : '';
+    if (!PROVINCES.some((p) => p.name === out.province)) out.province = '';
     return out;
   };
 }

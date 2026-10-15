@@ -6,11 +6,11 @@
 // - Dados (/api/...): sempre busca na rede; sem conexão (comum na feira), mostra a última
 //   versão salva. O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v9';
+const VERSION = 'v10';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';
-const SHELL_FILES = ['/', '/app.js', '/styles.css', '/manifest.webmanifest',
+const SHELL_FILES = ['/', '/app.js', '/provinces.js', '/styles.css', '/manifest.webmanifest',
   '/brand/logo.png', '/brand/icon-192.png', '/brand/favicon.png'];
 const MAX_IMAGES = 400;
 

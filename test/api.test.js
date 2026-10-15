@@ -269,9 +269,18 @@ test('fornecedor com telefone e contato; leitura de cartão', async (t) => {
   assert.equal(r.status, 201);
   assert.equal(r.body.contact_name, 'Lily Chen');
   assert.equal(r.body.phone, '+86 138 0000 1111');
-  r = await a('PUT', `/api/suppliers/${r.body.id}`, { name: 'ACME', phone: '' });
+  const supId = r.body.id;
+  assert.equal(r.body.address, null);
+  assert.equal(r.body.province, null);
+  r = await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', address: ' No. 88 Jiangnan Rd, Ningbo ', province: 'zhejiang' });
+  assert.equal(r.body.address, 'No. 88 Jiangnan Rd, Ningbo');
+  assert.equal(r.body.province, 'Zhejiang', 'província normalizada pelo nome da lista');
+  assert.equal((await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', province: 'São Paulo' })).status, 400);
+  assert.equal((await a('GET', `/api/suppliers/${supId}`)).body.province, 'Zhejiang', 'erro não altera o cadastro');
+  r = await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', phone: '' });
   assert.equal(r.body.phone, null);
   assert.equal(r.body.contact_name, null);
+  assert.equal(r.body.province, null);
 });
 
 test('leitor de cartões desligado sem chave de API', async (t) => {

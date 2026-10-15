@@ -22,10 +22,12 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   usuários e empresas, permite mudar a empresa de um usuário e excluir usuários (exceto a si mesmo). Uma empresa só
   pode ser excluída quando não tiver mais usuários; a exclusão apaga fornecedores, produtos, roteiros e fotos dela.
 - **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nome de contato, telefone
-  (com atalhos para ligar e WhatsApp), nº do stand e observações.
+  (com atalhos para ligar e WhatsApp), nº do stand, endereço (texto livre, com botão Copiar), província (lista das
+  províncias e regiões da China) e observações.
 - **Leitor de cartões de visita (OCR)**: ao fotografar o cartão, o app usa o Claude (visão) para ler o cartão
-  — inclusive em chinês — e preenche automaticamente nome da empresa, contato, telefone e stand; e-mail,
-  WeChat, site, endereço e outros dados vão para as observações. Só campos vazios são preenchidos.
+  — inclusive em chinês — e preenche automaticamente nome da empresa, contato, telefone, stand, endereço e
+  província (deduzida pela cidade quando o cartão não a traz); e-mail, WeChat, site e outros dados vão para as
+  observações. Só campos vazios são preenchidos.
   Requer a variável `ANTHROPIC_API_KEY`; sem ela, o cadastro funciona normalmente sem a leitura automática.
 - **Produtos**: nome, foto, preço no Brasil (R$), unidades por container 40HQ e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.

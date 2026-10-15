@@ -10,7 +10,8 @@ function fakeClient(response, calls = []) {
 
 test('envia a imagem com saída estruturada e devolve os campos do cartão', async () => {
   const calls = [];
-  const json = { company_name: ' Ningbo Home Co., Ltd. ', contact_name: 'Lily Chen (Sales)', phone: '+86 138 0000 1111' };
+  const json = { company_name: ' Ningbo Home Co., Ltd. ', contact_name: 'Lily Chen (Sales)', phone: '+86 138 0000 1111',
+    address: 'No. 88 Jiangnan Rd, Ningbo', province: 'Zhejiang' };
   const read = createCardReader({
     client: fakeClient({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(json) }] }, calls),
   });
@@ -18,6 +19,8 @@ test('envia a imagem com saída estruturada e devolve os campos do cartão', asy
   assert.equal(out.company_name, 'Ningbo Home Co., Ltd.');
   assert.equal(out.phone, '+86 138 0000 1111');
   assert.equal(out.wechat, '', 'campos ausentes viram string vazia');
+  assert.equal(out.address, 'No. 88 Jiangnan Rd, Ningbo');
+  assert.equal(out.province, 'Zhejiang');
   assert.deepEqual(Object.keys(out).sort(), Object.keys(FIELDS).sort());
 
   const p = calls[0];
@@ -25,6 +28,8 @@ test('envia a imagem com saída estruturada e devolve os campos do cartão', asy
   assert.equal(p.output_config.format.type, 'json_schema');
   assert.equal(p.output_config.format.schema.additionalProperties, false);
   assert.equal(p.fallbacks, 'default');
+  const prov = p.output_config.format.schema.properties.province;
+  assert.ok(prov.enum.includes('') && prov.enum.includes('Guangdong'), 'província vem de uma lista fechada');
   assert.deepEqual(p.messages[0].content[0].source, { type: 'base64', media_type: 'image/jpeg', data: 'QUJD' });
 });
 
