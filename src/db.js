@@ -163,6 +163,7 @@ const DROPPED_NOT_NULL = [
 const ADDED_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_users_cnpj ON users(cnpj)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
+  'CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_client_ref ON suppliers(cnpj, client_ref)',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_products_client_ref ON products(cnpj, client_ref)',
 ];
@@ -222,6 +223,7 @@ function sqlite(dataDir) {
   }
   for (const sql of ADDED_INDEXES) conn.exec(sql);
 
+  let txQueue = Promise.resolve();
   const q = {
     driver: 'sqlite',
     async all(sql, params = []) { return conn.prepare(sql).all(...clean(params)); },
@@ -230,18 +232,21 @@ function sqlite(dataDir) {
   };
   return {
     ...q,
-    // As chamadas ao SQLite são síncronas, então nenhuma outra requisição
-    // consegue intercalar comandos dentro da transação.
-    async tx(fn) {
-      conn.exec('BEGIN');
-      try {
-        const out = await fn(q);
-        conn.exec('COMMIT');
-        return out;
-      } catch (err) {
-        conn.exec('ROLLBACK');
-        throw err;
-      }
+    // Uma conexão só: transações em fila, para duas requisições não abrirem BEGIN ao mesmo tempo.
+    tx(fn) {
+      const run = txQueue.then(async () => {
+        conn.exec('BEGIN');
+        try {
+          const out = await fn(q);
+          conn.exec('COMMIT');
+          return out;
+        } catch (err) {
+          conn.exec('ROLLBACK');
+          throw err;
+        }
+      });
+      txQueue = run.catch(() => {});
+      return run;
     },
     async close() { conn.close(); },
   };
@@ -252,7 +257,7 @@ function postgres(connectionString) {
   const local = /@(localhost|127\.0\.0\.1)[:/]/.test(connectionString) || /host=\//.test(connectionString);
   const pool = new Pool({
     connectionString,
-    max: Number(process.env.PG_POOL_MAX) || 3,
+    max: Number(process.env.PG_POOL_MAX) || 6,
     ssl: local || /sslmode=disable/.test(connectionString) ? false : { rejectUnauthorized: false },
   });
   const toPg = (sql) => { let i = 0; return sql.replace(/\?/g, () => `$${++i}`); };

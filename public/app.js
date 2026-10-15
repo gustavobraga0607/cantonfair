@@ -12,10 +12,12 @@ const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 const brl = (n) => (n == null ? '—' : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 const usd = (n) => (n == null ? '—' : 'US$ ' + n.toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 }));
 const pct = (n) => (n == null ? '—' : n.toLocaleString('pt-BR', { maximumFractionDigits: 2 }) + '%');
-const parseNum = (v) => {
+// thousands: campos de quantidade/valor em reais, onde "12.000" é doze mil (não 12).
+const parseNum = (v, { thousands = false } = {}) => {
   if (v == null || String(v).trim() === '') return null;
   let t = String(v).trim().replace(/\s/g, '');
   if (t.includes(',')) t = t.replace(/\./g, '').replace(',', '.'); // formato brasileiro 1.234,56
+  else if (thousands && /^[1-9]\d{0,2}(\.\d{3})+$/.test(t)) t = t.replace(/\./g, '');
   const n = Number(t);
   return Number.isFinite(n) ? n : NaN;
 };
@@ -43,6 +45,8 @@ function formatCnpj(v) {
 }
 
 let offlineNoticeShown = false;
+// Apaga os dados e fotos salvos pelo service worker (ao sair, entrar ou expirar a sessão).
+const clearOfflineData = () => navigator.serviceWorker?.controller?.postMessage('logout');
 // Falha de rede (sem sinal): o cadastro pode ir para a fila do celular.
 class OfflineError extends Error {}
 // Navegação atual: se o usuário trocar de tela enquanto uma consulta (GET) está a caminho,
@@ -52,7 +56,8 @@ class StaleNavigation extends Error {}
 
 // timeout (ms): sinal fraco na feira costuma deixar o envio "pendurado"; passado o tempo,
 // a chamada falha como sem internet (o cadastro vai para a fila e o client_ref evita duplicar).
-async function api(path, { method = 'GET', body, background = false, timeout = 0 } = {}) {
+// fresh: recusa a cópia salva pelo service worker (dado velho não pode virar base de uma gravação).
+async function api(path, { method = 'GET', body, background = false, timeout = 0, fresh = false } = {}) {
   const nav = navSeq;
   let res;
   const ctrl = timeout ? new AbortController() : null;
@@ -71,7 +76,7 @@ async function api(path, { method = 'GET', body, background = false, timeout = 0
     clearTimeout(timer);
   }
   // Sem internet e nada salvo no celular para esta consulta (resposta do service worker).
-  if (res.headers.get('X-Offline') && !res.ok) {
+  if (res.headers.get('X-Offline') && (!res.ok || fresh)) {
     throw new OfflineError('Sem conexão com a internet e sem dados salvos neste celular.');
   }
   // Resposta salva pelo service worker (sem internet): avisa uma vez.
@@ -83,6 +88,7 @@ async function api(path, { method = 'GET', body, background = false, timeout = 0
   }
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith('/api/login')) {
+    if (state.me) clearOfflineData(); // sessão expirou: dados da empresa não ficam no celular
     state.me = null;
     if (background) throw new Error(data.error || 'Sessão expirada.');
     location.hash = '#/login';
@@ -124,8 +130,24 @@ async function outboxAll() {
   if (!state.me) return [];
   try {
     const items = await outboxTx('readonly', (st) => st.getAll());
-    return items.filter((i) => i.user_id === state.me.user.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+    return items.filter((i) => i.user_id === state.me.user.id && i.kind !== 'map').sort((a, b) => a.created_at.localeCompare(b.created_at));
   } catch { return []; }
+}
+// Id provisório (negativo) de fornecedor da fila → id real, guardado depois do envio. Assim um
+// produto salvo depois (com o formulário ainda aberto com o id antigo) também é resolvido.
+async function tempIdMap() {
+  try {
+    const items = await outboxTx('readonly', (st) => st.getAll());
+    return new Map(items.filter((i) => i.kind === 'map').map((i) => [i.temp_id, i.real_id]));
+  } catch { return new Map(); }
+}
+// Troca ids provisórios pelos reais; devolve true se ainda sobrar algum provisório.
+function resolveTempIds(kind, body, map) {
+  const fix = (o) => (o.supplier_id < 0 && map.has(o.supplier_id) ? { ...o, supplier_id: map.get(o.supplier_id) } : o);
+  if (kind === 'product') body.offers = (body.offers || []).map(fix);
+  if (kind === 'offer') body.offer = fix(body.offer);
+  const offers = kind === 'product' ? body.offers : kind === 'offer' ? [body.offer] : [];
+  return offers.some((o) => o.supplier_id < 0);
 }
 const outboxPut = (item) => outboxTx('readwrite', (st) => st.put(item));
 const outboxDelete = (ref) => outboxTx('readwrite', (st) => st.delete(ref));
@@ -136,7 +158,7 @@ const OUTBOX_KIND = { supplier: 'Fornecedor', product: 'Produto', offer: 'Oferta
 // Cria no servidor; sem internet, guarda na fila e devolve { queued }.
 async function createOrQueue(kind, body, label) {
   // Produto de um fornecedor que ainda está na fila: vai para a fila logo atrás dele.
-  if (kind === 'product' && body.offers?.some((o) => o.supplier_id < 0)) {
+  if (resolveTempIds(kind, body, await tempIdMap())) {
     const queued = await queueItem({ kind, body, label }, new Error('Não foi possível guardar o cadastro neste celular.'));
     if (navigator.onLine) flushOutbox();
     return { queued };
@@ -150,17 +172,24 @@ async function createOrQueue(kind, body, label) {
 }
 // Acrescenta a oferta de um fornecedor a um produto que já existe (substitui a oferta anterior dele).
 async function addOfferToProduct(productId, offer, { units, background = false } = {}) {
-  const p = await api(`/api/products/${productId}`, { background: true });
+  const p = await api(`/api/products/${productId}`, { background: true, fresh: true, timeout: 25_000 });
   const offers = p.offers.filter((o) => o.supplier_id !== offer.supplier_id).map((o) => ({
     supplier_id: o.supplier_id, price_usd: o.price_usd, moq: o.moq, incoterm: o.incoterm, nationalization_pct: o.nationalization_pct,
   }));
   offers.push(offer);
   return api(`/api/products/${productId}`, {
-    method: 'PUT', background,
+    method: 'PUT', background, timeout: 25_000,
     body: { name: p.name, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? units ?? null, notes: p.notes, offers },
   });
 }
 async function addOfferOrQueue(productId, offer, label, opts = {}) {
+  const body = { product_id: productId, offer, units: opts.units ?? null };
+  if (resolveTempIds('offer', body, await tempIdMap())) {
+    const queued = await queueItem({ kind: 'offer', body, label }, new Error('Não foi possível guardar o cadastro neste celular.'));
+    if (navigator.onLine) flushOutbox();
+    return { queued };
+  }
+  offer = body.offer;
   try {
     return { saved: await addOfferToProduct(productId, offer, opts) };
   } catch (err) {
@@ -199,25 +228,23 @@ async function flushOutbox() {
   let sent = 0;
   try {
     for (const { ref } of await outboxAll()) {
-      // Relê o item: o envio de um fornecedor pode ter atualizado os produtos que dependem dele.
+      // Relê o item: o envio de um fornecedor pode ter atualizado os itens que dependem dele.
       const item = await outboxTx('readonly', (st) => st.get(ref)).catch(() => null);
       if (!item) continue;
       try {
+        if (resolveTempIds(item.kind, item.body, await tempIdMap())) {
+          const waiting = (await outboxAll()).some((i) => i.kind === 'supplier'
+            && (item.kind === 'offer' ? [item.body.offer] : item.body.offers).some((o) => o.supplier_id === i.temp_id));
+          throw new Error(waiting ? 'O fornecedor deste cadastro ainda não foi enviado.'
+            : 'O fornecedor deste cadastro foi descartado da fila. Descarte este item e cadastre de novo.');
+        }
         if (item.kind === 'offer') {
           await addOfferToProduct(item.body.product_id, item.body.offer, { units: item.body.units, background: true });
         } else {
-          if (item.kind === 'product' && item.body.offers?.some((o) => o.supplier_id < 0)) {
-            throw new Error('O fornecedor deste produto ainda não foi enviado.');
-          }
-          const saved = await api(OUTBOX_PATHS[item.kind], { method: 'POST', body: item.body, background: true });
-          // Produtos na fila que usam este fornecedor passam a apontar para o id real.
+          const saved = await api(OUTBOX_PATHS[item.kind], { method: 'POST', body: item.body, background: true, timeout: 25_000 });
           if (item.kind === 'supplier') {
-            for (const other of await outboxAll()) {
-              if (other.kind !== 'product' || !other.body.offers?.some((o) => o.supplier_id === item.temp_id)) continue;
-              other.body.offers = other.body.offers.map((o) => (o.supplier_id === item.temp_id ? { ...o, supplier_id: saved.id } : o));
-              delete other.error;
-              await outboxPut(other);
-            }
+            await outboxPut({ ref: `map:${item.temp_id}`, kind: 'map', temp_id: item.temp_id, real_id: saved.id,
+              user_id: item.user_id, created_at: new Date().toISOString() });
           }
         }
         await outboxDelete(item.ref);
@@ -227,6 +254,10 @@ async function flushOutbox() {
         await outboxPut({ ...item, error: err.message });
       }
     }
+    // Mapas de ids com mais de 30 dias não servem mais.
+    const old = Date.now() - 30 * 86400_000;
+    const items = await outboxTx('readonly', (st) => st.getAll()).catch(() => []);
+    for (const i of items) if (i.kind === 'map' && Date.parse(i.created_at) < old) await outboxDelete(i.ref).catch(() => {});
   } finally {
     flushing = false;
   }
@@ -488,6 +519,7 @@ function viewLogin() {
     const btn = form.querySelector('button');
     btn.disabled = true;
     try {
+      clearOfflineData(); // outra conta pode ter usado este celular
       state.me = await api('/api/login', { method: 'POST', body: { email: form.email.value, password: form.password.value } });
       location.hash = '#/ranking';
     } catch (err) {
@@ -552,6 +584,7 @@ function viewRegister() {
     box.hidden = true;
     btn.disabled = true;
     try {
+      clearOfflineData();
       state.me = await api('/api/register', {
         method: 'POST',
         body: { name: form.name.value, email: form.email.value, password: form.password.value, cnpj: form.cnpj.value },
@@ -997,6 +1030,12 @@ function similarProducts(name, products, { exclude = null, min = 0.6 } = {}) {
     .map((x) => ({ ...x, strong: x.score >= 0.8 && sameNumbers(name, x.p.name) }));
 }
 
+// Nomes dos produtos da empresa (e os da fila), em versão leve, para o aviso de repetido.
+const existingProductNames = (company) => Promise.all([
+  api(`/api/products?fields=names${isAdmin() ? `&company=${encodeURIComponent(company)}` : ''}`).catch(() => []),
+  pendingProducts(isAdmin() ? company : null),
+]).then(([a, b]) => [...b, ...a]);
+
 async function viewProductForm(id, query) {
   const editing = id != null;
   setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products', form: true });
@@ -1004,15 +1043,14 @@ async function viewProductForm(id, query) {
   const p = editing ? await api(`/api/products/${id}`) : { offers: [] };
   // O produto pertence a uma empresa; os fornecedores das ofertas precisam ser dela.
   const company = editing ? p.company_cnpj : isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
-  const suppliers = await getSuppliers(isAdmin() ? company : null);
+  // Fornecedores e produtos já cadastrados (só nomes, para o aviso de repetido) ao mesmo tempo.
+  const [suppliers, existing] = await Promise.all([
+    getSuppliers(isAdmin() ? company : null),
+    editing ? [] : existingProductNames(company),
+  ]);
   const rate = editing ? p.exchange_rate : companyInfo(company)?.exchange_rate ?? state.me.company.exchange_rate;
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
-  // Produtos já cadastrados (e os da fila), para avisar quando o novo parecer repetido.
-  const existing = editing ? [] : await Promise.all([
-    api('/api/products' + (isAdmin() ? `?company=${encodeURIComponent(company)}` : '')).catch(() => []),
-    pendingProducts(isAdmin() ? company : null),
-  ]).then(([a, b]) => [...b, ...a]);
 
   const companyField = !isAdmin() ? ''
     : editing
@@ -1094,10 +1132,10 @@ async function viewProductForm(id, query) {
     const usdV = parseNum(o.price_usd);
     const natV = parseNum(o.nationalization_pct) || 0;
     if (usdV == null || Number.isNaN(usdV)) return '<span class="item-sub">Informe o preço em US$</span>';
-    const perUnit = freightPerUnit(parseNum(form.units_per_40hq.value)) || 0;
+    const perUnit = freightPerUnit(parseNum(form.units_per_40hq.value, { thousands: true })) || 0;
     const freight = offerFreight(o.incoterm, perUnit);
     const est = estimate(usdV, natV, rate, freight);
-    const br = parseNum(form.price_brl.value);
+    const br = parseNum(form.price_brl.value, { thousands: true });
     const note = freight > 0
       ? `<span class="item-sub">inclui frete ${usd(freight)}/un.</span>`
       : perUnit > 0 ? `<span class="item-sub">frete já incluso no ${esc(o.incoterm)}</span>` : '';
@@ -1151,7 +1189,7 @@ async function viewProductForm(id, query) {
       incoterm: o.incoterm || '', nat: o.nationalization_pct || '',
     });
     dupBox.innerHTML = `<div class="dup-title">⚠ Parecido com produto já cadastrado:</div>${found.map(({ p: x }) => `
-      <div class="dup-item"><span>${esc(x.name)}${x.pending ? ' <small>(aguardando envio)</small>' : ` <small>· ${x.offers.length} fornecedor(es)</small>`}</span>
+      <div class="dup-item"><span>${esc(x.name)}${x.pending ? ' <small>(aguardando envio)</small>' : ` <small>· ${x.offer_count ?? x.offers?.length ?? 0} fornecedor(es)</small>`}</span>
         ${x.pending || !x.id ? '' : `<a class="btn small" href="#/products/${x.id}/edit?${qs}">${Number(o.supplier_id) > 0 ? 'Adicionar a oferta neste' : 'Abrir este'}</a>`}
       </div>`).join('')}
       <div class="hint">Se for o mesmo produto, adicione a oferta nele em vez de criar outro — assim a comparação entre fornecedores funciona.</div>`;
@@ -1218,7 +1256,7 @@ async function viewProductForm(id, query) {
       filled.push('observações');
     }
     renderOffers();
-    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value), rate);
+    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value, { thousands: true }), rate);
     checkDuplicates();
     box.className = 'ocr-status ok';
     box.textContent = filled.length ? `✓ Foto lida: ${filled.join(', ')} preenchido(s). Confira antes de salvar.` : 'Foto lida, mas os campos já estavam preenchidos.';
@@ -1321,7 +1359,7 @@ async function viewProductForm(id, query) {
     renderOffers();
   });
   form.units_per_40hq.addEventListener('input', () => {
-    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value), rate);
+    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value, { thousands: true }), rate);
     offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
   });
   form.price_brl.addEventListener('input', () => {
@@ -1340,7 +1378,7 @@ async function viewProductForm(id, query) {
     const fail = (m) => { box.textContent = m; box.hidden = false; };
 
     if (!form.name.value.trim()) return fail('Informe o nome do produto.');
-    const priceBrl = parseNum(form.price_brl.value);
+    const priceBrl = parseNum(form.price_brl.value, { thousands: true });
     if (Number.isNaN(priceBrl)) return fail('Preço no Brasil inválido.');
     const payloadOffers = [];
     for (const [i, o] of offers.entries()) {
@@ -1349,13 +1387,13 @@ async function viewProductForm(id, query) {
       if (!o.supplier_id) return fail(`Selecione o fornecedor da linha ${i + 1}.`);
       const priceUsd = parseNum(o.price_usd);
       if (priceUsd == null || Number.isNaN(priceUsd)) return fail(`Informe o preço em US$ da linha ${i + 1}.`);
-      const moq = parseNum(o.moq);
+      const moq = parseNum(o.moq, { thousands: true });
       const nat = parseNum(o.nationalization_pct);
       if (Number.isNaN(moq) || Number.isNaN(nat)) return fail(`Verifique MOQ e % da linha ${i + 1}.`);
       payloadOffers.push({ supplier_id: Number(o.supplier_id), price_usd: priceUsd, moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
     }
 
-    const units = parseNum(form.units_per_40hq.value);
+    const units = parseNum(form.units_per_40hq.value, { thousands: true });
     if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('Unidades por container 40HQ deve ser um número inteiro.');
     const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, notes: form.notes.value, offers: payloadOffers };
     if (photo !== undefined) body.photo = photo;
@@ -1403,13 +1441,7 @@ async function viewProductScan(query) {
   setChrome({ title: 'Cadastrar pela foto', back: fromSupplier ? `#/suppliers/${fromSupplier}` : '#/products', tab: 'products', form: true });
   loading();
   const company = isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
-  const [suppliers, existing] = await Promise.all([
-    getSuppliers(isAdmin() ? company : null),
-    Promise.all([
-      api('/api/products' + (isAdmin() ? `?company=${encodeURIComponent(company)}` : '')).catch(() => []),
-      pendingProducts(isAdmin() ? company : null),
-    ]).then(([a, b]) => [...b, ...a]),
-  ]);
+  const [suppliers, existing] = await Promise.all([getSuppliers(isAdmin() ? company : null), existingProductNames(company)]);
   const handoff = scanHandoff?.company === company ? scanHandoff : null;
   scanHandoff = null;
   let supplierId = Number(query.get('supplier')) || handoff?.supplier || '';
@@ -1569,8 +1601,8 @@ async function viewProductScan(query) {
       const fail = (m) => { err.textContent = `Produto ${i + 1} (${it.name || 'sem nome'}): ${m}`; err.hidden = false; itemsEl.children[i]?.scrollIntoView({ block: 'center' }); };
       if (!String(it.name).trim()) return fail('informe o nome.');
       const price = parseNum(it.price_usd);
-      const moq = parseNum(it.moq);
-      const units = parseNum(it.units_per_40hq);
+      const moq = parseNum(it.moq, { thousands: true });
+      const units = parseNum(it.units_per_40hq, { thousands: true });
       if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units)) return fail('verifique preço, MOQ e unidades.');
       if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
       const offer = sid && price != null
@@ -2243,7 +2275,7 @@ function renderFreightCard() {
     </form>`;
   box.querySelector('#freight-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const v = parseNum(e.target.freight.value);
+    const v = parseNum(e.target.freight.value, { thousands: true });
     if (Number.isNaN(v) || (v !== null && v < 0)) return toast('Valor do frete inválido.');
     try {
       state.me = await api('/api/admin/settings', { method: 'PUT', body: { freight_40hq_usd: v } });

@@ -222,11 +222,18 @@ function createProductReader({ client, model = MODEL } = {}) {
 }
 
 // Cria o leitor a partir do ambiente (ANTHROPIC_API_KEY). Sem chave, o recurso fica desligado.
+// O SDK só é carregado na primeira leitura (deixa a inicialização do servidor mais rápida).
 let envClient;
 function clientFromEnv() {
   if (!process.env.ANTHROPIC_API_KEY) return null;
-  const { Anthropic } = require('@anthropic-ai/sdk');
-  return (envClient ??= new Anthropic({ timeout: 90_000, maxRetries: 1 }));
+  const real = () => {
+    if (!envClient) {
+      const { Anthropic } = require('@anthropic-ai/sdk');
+      envClient = new Anthropic({ timeout: 90_000, maxRetries: 1 });
+    }
+    return envClient;
+  };
+  return { beta: { messages: { create: (...args) => real().beta.messages.create(...args) } } };
 }
 const envModel = () => process.env.OCR_MODEL || MODEL;
 const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv(), model: envModel() });

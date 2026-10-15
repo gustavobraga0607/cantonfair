@@ -91,7 +91,10 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     const out = {};
     for (const part of (req.headers.cookie || '').split(';')) {
       const i = part.indexOf('=');
-      if (i > 0) out[part.slice(0, i).trim()] = decodeURIComponent(part.slice(i + 1).trim());
+      if (i <= 0) continue;
+      const raw = part.slice(i + 1).trim();
+      // Um cookie malformado (ex.: "%E0") de outro site não pode derrubar todas as requisições.
+      try { out[part.slice(0, i).trim()] = decodeURIComponent(raw); } catch { out[part.slice(0, i).trim()] = raw; }
     }
     return out;
   }
@@ -226,9 +229,13 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   }
 
   // Frete internacional do container 40HQ (US$), definido pelo administrador.
+  // Frete 40HQ (configuração global, muda raramente): guardado por 60 s em cada instância.
+  let freightCache = null;
   async function freight40hq() {
+    if (freightCache && Date.now() - freightCache.at < 60_000) return freightCache.value;
     const row = await db.get("SELECT value FROM app_settings WHERE key = 'freight_40hq_usd'");
-    return row?.value != null ? Number(row.value) : 0;
+    freightCache = { value: row?.value != null ? Number(row.value) : 0, at: Date.now() };
+    return freightCache.value;
   }
 
   function productOut(p, offers, rate, freight = 0) {
@@ -271,7 +278,6 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       const supplierId = num(o.supplier_id, `fornecedor da oferta ${i + 1}`, { required: true, integer: true });
       if (seen.has(supplierId)) throw new HttpError(400, 'O mesmo fornecedor foi informado mais de uma vez.');
       seen.add(supplierId);
-      await loadSupplier(db, cnpj, supplierId);
       const incoterm = str(o.incoterm, 10).toUpperCase() || null;
       if (incoterm && !INCOTERMS.includes(incoterm)) throw new HttpError(400, `Incoterm inválido: ${incoterm}.`);
       out.push({
@@ -282,20 +288,27 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         nationalization_pct: num(o.nationalization_pct, `% de nacionalização da oferta ${i + 1}`) ?? 0,
       });
     }
+    // Todos os fornecedores das ofertas precisam ser da empresa do produto (uma consulta só).
+    if (seen.size) {
+      const ids = [...seen];
+      const found = await db.all(`SELECT id FROM suppliers WHERE cnpj = ? AND id IN (${ids.map(() => '?').join(', ')})`, [cnpj, ...ids]);
+      if (found.length !== ids.length) throw new HttpError(404, 'Fornecedor não encontrado.');
+    }
     return out;
   }
 
   async function replaceOffers(q, productId, offers) {
     await q.run('DELETE FROM offers WHERE product_id = ?', [productId]);
-    for (const o of offers) {
-      await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, moq, incoterm, nationalization_pct)
-                   VALUES (?, ?, ?, ?, ?, ?)`, [productId, o.supplier_id, o.price_usd, o.moq, o.incoterm, o.nationalization_pct]);
-    }
+    if (!offers.length) return;
+    await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, moq, incoterm, nationalization_pct)
+                 VALUES ${offers.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
+      offers.flatMap((o) => [productId, o.supplier_id, o.price_usd, o.moq, o.incoterm, o.nationalization_pct]));
   }
 
   // ---------- rotas ----------
 
   const routes = [];
+  let lastFxCheck = 0;
   const route = (method, pattern, handler, { pub = false } = {}) => {
     const keys = [];
     const re = new RegExp('^' + pattern.replace(/:(\w+)/g, (_, k) => { keys.push(k); return '([^/]+)'; }) + '$');
@@ -457,6 +470,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('PUT', '/api/admin/settings', async ({ user, body }) => {
     if (!isAdmin(user)) throw new HttpError(403, 'Apenas administradores podem alterar esta configuração.');
     const freight = num(body.freight_40hq_usd, 'Valor do frete internacional 40HQ');
+    freightCache = null;
     if (freight !== null && freight > 1_000_000) throw new HttpError(400, 'Valor do frete internacional 40HQ inválido.');
     await db.run(`INSERT INTO app_settings (key, value, updated_by, updated_at) VALUES ('freight_40hq_usd', ?, ?, ?)
                   ON CONFLICT (key) DO UPDATE SET value = excluded.value, updated_by = excluded.updated_by, updated_at = excluded.updated_at`,
@@ -757,6 +771,12 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
 
   route('GET', '/api/products', async ({ user, query }) => {
     const cnpj = listCnpj(user, query);
+    // Versão leve (só nomes), usada pelos formulários para avisar de produto repetido.
+    if (query.get('fields') === 'names') {
+      const rows = await db.all(`SELECT p.id, p.name, p.cnpj, (SELECT COUNT(*) FROM offers o WHERE o.product_id = p.id) AS offer_count
+        FROM products p WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
+      return rows.map((r) => ({ id: r.id, name: r.name, company_cnpj: r.cnpj, offer_count: Number(r.offer_count) }));
+    }
     const products = await db.all(`
       SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate
       FROM products p LEFT JOIN users u ON u.id = p.updated_by
@@ -1083,7 +1103,11 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
         const user = sessionUser && withRole(sessionUser);
         // Mantém a cotação do dia atualizada sem atrasar a resposta (busca em segundo plano;
         // usa cache de 30 min). Só espera se ainda não existe nenhuma cotação.
-        if (user && fx && req.method === 'GET') await fx.refreshInBackground(background).catch((err) => console.error(err));
+        // Confere no máximo uma vez por minuto por instância e sem segurar a resposta.
+        if (user && fx && req.method === 'GET' && Date.now() - lastFxCheck > 60_000) {
+          lastFxCheck = Date.now();
+          background(fx.refreshInBackground(background).catch((err) => console.error(err)));
+        }
         // Exigir JSON em POST/PUT também protege contra CSRF via formulários de outros sites.
         if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '')) {
           throw new HttpError(415, 'Envie os dados em JSON.');

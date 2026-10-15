@@ -370,6 +370,30 @@ test('teste de modelos de leitura: só administrador; roda as fotos em todos os 
   assert.equal((await a('POST', '/api/admin/ocr-compare', { kind: 'card', image: PNG })).status, 403);
 });
 
+test('revisão 2: cookie malformado, lista leve de nomes e fornecedor de outra empresa na oferta', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  // cookie inválido de outro site não derruba a API
+  const bad = await fetch(`${base}/api/me`, { headers: { Cookie: 'x=%E0%A4%A; sid=nada' } });
+  assert.equal(bad.status, 401);
+  const sA = (await a('POST', '/api/suppliers', { name: 'SA' })).body;
+  const sA2 = (await a('POST', '/api/suppliers', { name: 'SA2' })).body;
+  const sB = (await b('POST', '/api/suppliers', { name: 'SB' })).body;
+  // oferta com fornecedor de outra empresa é recusada
+  assert.equal((await a('POST', '/api/products', { name: 'X', offers: [{ supplier_id: sB.id, price_usd: 1 }] })).status, 404);
+  let r = await a('POST', '/api/products', { name: 'Garrafa', offers: [{ supplier_id: sA.id, price_usd: 2 }, { supplier_id: sA2.id, price_usd: 1.5, moq: 100 }] });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.offers.length, 2, 'várias ofertas gravadas de uma vez');
+  assert.equal(r.body.offers[0].supplier_id, sA2.id, 'melhor preço primeiro');
+  r = await a('GET', '/api/products?fields=names');
+  assert.deepEqual(r.body, [{ id: r.body[0].id, name: 'Garrafa', company_cnpj: '11222333000181', offer_count: 2 }]);
+  assert.equal((await b('GET', '/api/products?fields=names')).body.length, 0, 'só os da própria empresa');
+});
+
 test('leitor de cartões desligado sem chave de API', async (t) => {
   const { base, close } = await setup();
   t.after(close);

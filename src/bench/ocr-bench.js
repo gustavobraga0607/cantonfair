@@ -3,7 +3,9 @@
 // Teste de modelos de leitura: roda fotos sintéticas com gabarito em cada modelo e mede
 // acerto, custo e tempo. Só o administrador usa (área Administração).
 
-const { samples } = require('./ocr-samples.json');
+// Fotos com gabarito (~270 KB): carregadas só quando o administrador abre o teste.
+let cached;
+const allSamples = () => (cached ??= require('./ocr-samples.json').samples);
 
 const norm = (v) => String(v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 const digits = (v) => String(v ?? '').replace(/\D/g, '');
@@ -57,7 +59,7 @@ function tally(checks) {
   return { points, total: Object.keys(checks).length, misses };
 }
 
-const sampleList = () => samples.map(({ id, kind, label, mime, data }) => ({ id, kind, label, image: `data:${mime};base64,${data}` }));
+const sampleList = () => allSamples().map(({ id, kind, label, mime, data }) => ({ id, kind, label, image: `data:${mime};base64,${data}` }));
 
 // Roda uma foto em todos os modelos ao mesmo tempo.
 async function runModels(readers, kind, mime, base64, score) {
@@ -73,7 +75,7 @@ async function runModels(readers, kind, mime, base64, score) {
 }
 
 async function runSample(readers, id) {
-  const s = samples.find((x) => x.id === id);
+  const s = allSamples().find((x) => x.id === id);
   if (!s) return null;
   const score = (out) => (s.kind === 'card' ? scoreCard(s.expected, out) : scoreProducts(s.expected, out));
   const results = await runModels(readers, s.kind, s.mime, s.data, score);
@@ -83,4 +85,4 @@ async function runSample(readers, id) {
   return { id: s.id, label: s.label, kind: s.kind, results };
 }
 
-module.exports = { sampleList, runSample, runModels, scoreCard, scoreProducts, samples };
+module.exports = { sampleList, runSample, runModels, scoreCard, scoreProducts, get samples() { return allSamples(); } };
