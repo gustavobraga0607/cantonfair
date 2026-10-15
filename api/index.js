@@ -5,6 +5,14 @@
 const { appFromEnv } = require('../src/config');
 
 const { db, handler, fx, dbVar } = appFromEnv({ requirePostgres: true });
+// Região do Neon tirada do endereço do banco (ex.: ep-xxx.sa-east-1.aws.neon.tech → sa-east-1).
+const dbRegion = (() => {
+  try {
+    const { findDatabaseUrl } = require('../src/config');
+    const host = new URL(findDatabaseUrl()?.url || '').hostname;
+    return host.match(/\.([a-z]{2}-[a-z]+-\d)\./)?.[1] || null;
+  } catch { return null; }
+})();
 
 function json(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -32,8 +40,15 @@ module.exports = async (req, res) => {
   if (pathname === '/api/health') {
     try {
       await db.get('SELECT 1 AS ok');
+      // Tempo de uma consulta já com a conexão aberta e região do banco (sem expor o endereço).
+      const t0 = Date.now();
+      await db.get('SELECT 1 AS ok');
+      const dbMs = Date.now() - t0;
       const quote = fx ? await fx.ensureFresh().catch((err) => ({ ok: false, error: err.message })) : null;
-      return json(res, 200, { ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: quote });
+      return json(res, 200, {
+        ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: quote,
+        db_ms: dbMs, db_region: dbRegion, fn_region: process.env.VERCEL_REGION || null,
+      });
     } catch (err) {
       console.error(err);
       return json(res, 503, { ok: false, database: 'postgres', env: dbVar, error: err.code || err.message });
