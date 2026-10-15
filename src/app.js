@@ -177,6 +177,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     return {
       id: s.id, name: s.name, booth: s.booth, notes: s.notes,
       contact_name: s.contact_name ?? null, phone: s.phone ?? null,
+      phone_whatsapp: !!Number(s.phone_whatsapp), phone_wechat: !!Number(s.phone_wechat),
       address: s.address ?? null, province: s.province ?? null,
       company_cnpj: s.cnpj, company_name: s.company_name ?? null,
       card_photo: photoUrl(s.card_photo), created_at: s.created_at, updated_at: s.updated_at,
@@ -627,6 +628,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       booth: str(body.booth, 50) || null,
       contact_name: str(body.contact_name, 150) || null,
       phone: str(body.phone, 60) || null,
+      // WhatsApp/WeChat só valem com telefone preenchido.
+      phone_whatsapp: str(body.phone, 60) && body.phone_whatsapp === true ? 1 : 0,
+      phone_wechat: str(body.phone, 60) && body.phone_wechat === true ? 1 : 0,
       address: str(body.address, 500) || null,
       province: provinceName(body.province),
       notes: str(body.notes, 2000) || null,
@@ -657,9 +661,10 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       const photo = await saveImage(q, img, cnpj, thumb);
       const t = now();
       const f = supplierFields(body);
-      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, address, province, notes, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.address, f.province, f.notes, user.id, user.id, t, t]);
+      const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, phone_whatsapp, phone_wechat, address, province, notes,
+                                                     created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, user.id, user.id, t, t]);
       return row.id;
     });
     return { status: 201, body: supplierOut(await loadSupplier(db, cnpj, id)) };
@@ -674,9 +679,9 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       let photo = s.card_photo;
       if (img) photo = await saveImage(q, img, s.cnpj, parseThumb(body.card_photo_thumb));
       const f = supplierFields(body);
-      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, address = ?, province = ?, notes = ?,
-                   updated_by = ?, updated_at = ? WHERE id = ?`,
-        [name, photo, f.booth, f.contact_name, f.phone, f.address, f.province, f.notes, user.id, now(), s.id]);
+      await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, phone_whatsapp = ?, phone_wechat = ?,
+                   address = ?, province = ?, notes = ?, updated_by = ?, updated_at = ? WHERE id = ?`,
+        [name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, user.id, now(), s.id]);
       if (img) await removeImage(q, s.cnpj, s.card_photo);
     });
     return supplierOut(await loadSupplier(db, s.cnpj, s.id));

@@ -400,7 +400,7 @@ async function viewSuppliers() {
           ${thumbImg(s.card_photo, '📇')}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
-            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone_whatsapp || s.phone_wechat ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -422,8 +422,8 @@ async function viewSupplier(id) {
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
       ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
       ${s.phone ? `<div><div class="item-sub">Telefone</div><div class="phone-line">
-        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>
-        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small" target="_blank" rel="noopener" href="https://wa.me/${esc(s.phone.replace(/\D/g, ''))}">WhatsApp</a>` : ''}
+        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>${msgBadges({ phone_wechat: s.phone_wechat })}
+        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small${s.phone_whatsapp ? ' wa-btn' : ''}" target="_blank" rel="noopener" href="https://wa.me/${esc(s.phone.replace(/\D/g, ''))}">${s.phone_whatsapp ? MSG_ICONS.whatsapp : ''}WhatsApp</a>` : ''}
       </div></div>` : ''}
       <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
       ${s.address || s.province ? `<div><div class="item-sub">Endereço</div><div class="trip-line">
@@ -452,6 +452,14 @@ async function viewSupplier(id) {
   document.getElementById('card-photo').addEventListener('click', () => openLightbox(s.card_photo));
   bindCopyButtons();
 }
+
+// Ícones de WhatsApp e WeChat ao lado do telefone.
+const MSG_ICONS = {
+  whatsapp: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm0 18.2c-1.5 0-3-.4-4.3-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.2-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.4.1-.7.3-.2.3-.9.9-.9 2.2s.9 2.5 1 2.7c.1.2 1.8 2.8 4.4 3.9 1.6.7 2.3.8 3.1.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3Z"/></svg>',
+  wechat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3.5C4.9 3.5 1.5 6.3 1.5 9.8c0 2 1.1 3.8 2.9 4.9l-.7 2.2 2.6-1.4c.9.3 1.8.4 2.7.4h.6a5.7 5.7 0 0 1-.2-1.6c0-3.4 3.2-6.1 7.2-6.1h.6C16.5 5.5 13.1 3.5 9 3.5Zm-2.6 4.4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm5.2 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm10.9 6.3c0-2.9-2.9-5.3-6.4-5.3s-6.4 2.4-6.4 5.3 2.9 5.3 6.4 5.3c.7 0 1.4-.1 2.1-.3l2 1.1-.5-1.8a5 5 0 0 0 2.8-4.3Zm-8.5-.9a.9.9 0 1 1 0-1.7.9.9 0 0 1 0 1.7Zm4.3 0a.9.9 0 1 1 0-1.7.9.9 0 0 1 0 1.7Z"/></svg>',
+};
+const msgBadges = (s) => [s.phone_whatsapp && ['whatsapp', 'WhatsApp'], s.phone_wechat && ['wechat', 'WeChat']]
+  .filter(Boolean).map(([k, label]) => `<span class="msg-badge ${k}" title="${label}">${MSG_ICONS[k]}<span>${label}</span></span>`).join('');
 
 // Botões "Copiar" de endereços (útil para mostrar ao taxista).
 function bindCopyButtons() {
@@ -493,6 +501,12 @@ async function readBusinessCard(form, dataUrl) {
     fill('name', card.company_name || card.company_name_local, 'nome');
     fill('contact_name', card.contact_name, 'contato');
     fill('phone', card.phone || card.whatsapp, 'telefone');
+    // Marca WhatsApp/WeChat quando o telefone do formulário é o que o cartão indicou.
+    const sameNumber = card.phone && form.phone.value.replace(/\D/g, '').slice(-8) === card.phone.replace(/\D/g, '').slice(-8);
+    if (sameNumber) {
+      if (card.phone_whatsapp && !form.phone_whatsapp.checked) { form.phone_whatsapp.checked = true; filled.push('WhatsApp'); }
+      if (card.phone_wechat && !form.phone_wechat.checked) { form.phone_wechat.checked = true; filled.push('WeChat'); }
+    }
     fill('booth', card.booth, 'stand');
     fill('address', card.address, 'endereço');
     fill('province', card.province, 'província');
@@ -502,7 +516,7 @@ async function readBusinessCard(form, dataUrl) {
       ['Empresa (nome local)', card.company_name && card.company_name_local],
       ['E-mail', card.email],
       ['WeChat', card.wechat],
-      ['WhatsApp', card.whatsapp && card.whatsapp !== form.phone.value ? card.whatsapp : ''],
+      ['WhatsApp', card.whatsapp && card.whatsapp.replace(/\D/g, '').slice(-8) !== form.phone.value.replace(/\D/g, '').slice(-8) ? card.whatsapp : ''],
       ['Outros telefones', card.other_phones],
       ['Site', card.website],
       ['Produtos', card.products],
@@ -546,7 +560,11 @@ async function viewSupplierForm(id) {
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
       <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
       <div class="row stack-sm">
-        <div><label for="phone">Telefone</label><input id="phone" name="phone" type="tel" value="${esc(s.phone)}" placeholder="+86 …"></div>
+        <div><label for="phone">Telefone</label><input id="phone" name="phone" type="tel" value="${esc(s.phone)}" placeholder="+86 …">
+          <div class="msg-toggles" role="group" aria-label="Este telefone é">
+            <label class="msg-toggle whatsapp"><input type="checkbox" name="phone_whatsapp"${s.phone_whatsapp ? ' checked' : ''}>${MSG_ICONS.whatsapp}WhatsApp</label>
+            <label class="msg-toggle wechat"><input type="checkbox" name="phone_wechat"${s.phone_wechat ? ' checked' : ''}>${MSG_ICONS.wechat}WeChat</label>
+          </div></div>
         <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
       </div>
       <div><label for="address">Endereço</label><textarea id="address" name="address" rows="2" placeholder="Rua, número, distrito, cidade">${esc(s.address)}</textarea></div>
@@ -571,6 +589,7 @@ async function viewSupplierForm(id) {
     try {
       const body = {
         name: form.name.value, contact_name: form.contact_name.value, phone: form.phone.value,
+        phone_whatsapp: form.phone_whatsapp.checked, phone_wechat: form.phone_wechat.checked,
         booth: form.booth.value, address: form.address.value, province: form.province.value, notes: form.notes.value,
       };
       if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });

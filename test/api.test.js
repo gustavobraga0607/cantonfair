@@ -270,6 +270,12 @@ test('fornecedor com telefone e contato; leitura de cartão', async (t) => {
   assert.equal(r.body.contact_name, 'Lily Chen');
   assert.equal(r.body.phone, '+86 138 0000 1111');
   const supId = r.body.id;
+  assert.equal(r.body.phone_whatsapp, false);
+  r = await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', phone: '+86 138 0000 1111', phone_whatsapp: true, phone_wechat: true });
+  assert.equal(r.body.phone_whatsapp, true);
+  assert.equal(r.body.phone_wechat, true);
+  r = await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', phone: '', phone_whatsapp: true });
+  assert.equal(r.body.phone_whatsapp, false, 'sem telefone não há WhatsApp');
   assert.equal(r.body.address, null);
   assert.equal(r.body.province, null);
   r = await a('PUT', `/api/suppliers/${supId}`, { name: 'ACME', address: ' No. 88 Jiangnan Rd, Ningbo ', province: 'zhejiang' });

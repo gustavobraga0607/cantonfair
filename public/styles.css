@@ -279,6 +279,22 @@ tr.best td { font-weight: 600; }
 @keyframes spin { to { transform: rotate(360deg); } }
 input.autofilled, textarea.autofilled, select.autofilled { background: var(--good-bg); }
 .phone-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+/* WhatsApp / WeChat */
+.msg-badge { display: inline-flex; align-items: center; gap: 4px; font-size: .78rem; font-weight: 600; border-radius: 999px; padding: 2px 8px 2px 5px; color: #fff; }
+.msg-badge svg, .msg-toggle svg { width: 16px; height: 16px; flex: none; }
+.msg-badge.whatsapp { background: #25d366; color: #063b1c; }
+.msg-badge.wechat { background: #07c160; color: #fff; }
+.btn.wa-btn { background: #25d366; border-color: #25d366; color: #063b1c; gap: 6px; }
+.btn.wa-btn svg { width: 16px; height: 16px; }
+.msg-icons { display: inline-flex; gap: 4px; vertical-align: middle; }
+.msg-icons .msg-badge { padding: 2px; }
+.msg-icons .msg-badge svg { width: 13px; height: 13px; }
+.msg-toggles { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.msg-toggle { position: relative; display: inline-flex; align-items: center; gap: 6px; margin: 0; font-weight: 500; font-size: .85rem; border: 1px solid var(--border); border-radius: 999px; padding: 6px 12px; cursor: pointer; color: var(--muted); }
+.msg-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+.msg-toggle:has(input:focus-visible) { outline: 2px solid var(--accent, #1a56db); outline-offset: 2px; }
+.msg-toggle.whatsapp:has(input:checked) { background: #25d366; border-color: #25d366; color: #063b1c; }
+.msg-toggle.wechat:has(input:checked) { background: #07c160; border-color: #07c160; color: #fff; }
 
 /* ---------- celular ---------- */
 .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }

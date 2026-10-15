@@ -89,6 +89,8 @@ CREATE TABLE IF NOT EXISTS suppliers (
   booth       TEXT,
   contact_name TEXT,
   phone       TEXT,
+  phone_whatsapp INTEGER NOT NULL DEFAULT 0,   -- o telefone é WhatsApp
+  phone_wechat   INTEGER NOT NULL DEFAULT 0,   -- o telefone é WeChat
   address     TEXT,
   province    TEXT,
   notes       TEXT,
@@ -142,6 +144,8 @@ const ADDED_COLUMNS = [
   ['companies', 'rate_updated_at', 'TEXT'],
   ['suppliers', 'contact_name', 'TEXT'],
   ['suppliers', 'phone', 'TEXT'],
+  ['suppliers', 'phone_whatsapp', 'INTEGER NOT NULL DEFAULT 0'],
+  ['suppliers', 'phone_wechat', 'INTEGER NOT NULL DEFAULT 0'],
   ['suppliers', 'address', 'TEXT'],
   ['suppliers', 'province', 'TEXT'],
   ['products', 'units_per_40hq', 'INTEGER'],
