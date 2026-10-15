@@ -7,7 +7,8 @@ const crypto = require('node:crypto');
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
-const { OcrError } = require('./ocr');
+const { OcrError, PRICES, MODEL: OCR_DEFAULT_MODEL } = require('./ocr');
+const ocrBench = require('./bench/ocr-bench');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 const PROVINCES = require('../public/provinces');
 
@@ -51,7 +52,7 @@ class HttpError extends Error {
 const now = () => new Date().toISOString();
 
 // background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, fx = null, background = (p) => p.catch(() => {}) }) {
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
@@ -661,6 +662,34 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       if (err instanceof OcrError) throw new HttpError(err.status, err.message);
       throw err;
     }
+  });
+
+  // --- teste de modelos de leitura (administrador) ---
+  function requireBench(user) {
+    requireAdminUser(user);
+    if (!benchReaders) throw new HttpError(503, 'Leitor de fotos não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+  }
+  const benchModels = () => Object.keys(benchReaders || {}).map((id) => ({
+    id, label: PRICES[id]?.label || id, input: PRICES[id]?.input, output: PRICES[id]?.output,
+    current: id === (process.env.OCR_MODEL || OCR_DEFAULT_MODEL),
+  }));
+  route('GET', '/api/admin/ocr-bench', async ({ user }) => {
+    requireBench(user);
+    return { models: benchModels(), samples: ocrBench.sampleList() };
+  });
+  // Uma foto de teste por vez (cada uma roda em todos os modelos ao mesmo tempo).
+  route('POST', '/api/admin/ocr-bench/:id', async ({ user, params }) => {
+    requireBench(user);
+    const r = await ocrBench.runSample(benchReaders, params.id);
+    if (!r) throw new HttpError(404, 'Foto de teste não encontrada.');
+    return r;
+  });
+  // Foto do próprio administrador (cartão ou produto), lida por todos os modelos, lado a lado.
+  route('POST', '/api/admin/ocr-compare', async ({ user, body }) => {
+    requireBench(user);
+    const kind = body.kind === 'product' ? 'product' : 'card';
+    const img = parseImage(body.image);
+    return { kind, results: await ocrBench.runModels(benchReaders, kind, img.mime, img.data.toString('base64')) };
   });
 
   // Identificador do cadastro gerado no celular (reenvio sem internet não duplica).

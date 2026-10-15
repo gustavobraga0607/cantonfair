@@ -452,3 +452,10 @@ body.map-mode main { display: none; }
   .outbox-bar, .badge.pending { background: #3a2f12; color: #f5d98b; border-color: #5c4a1c; }
 }
 .outbox-bar[hidden] { display: none; }
+
+/* Teste de modelos */
+.bench-table { width: 100%; border-collapse: collapse; font-size: .88rem; }
+.bench-table th, .bench-table td { text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+.bench-sample { display: grid; gap: 8px; }
+.bench-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 10px; padding-top: 6px; border-top: 1px solid var(--border); }
+.bench-row > div { flex-basis: 100%; }

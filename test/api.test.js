@@ -13,7 +13,7 @@ const { createFxService } = require('../src/fx');
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup({ adminEmails = [], readCard = null, readProducts = null, fxQuote = null } = {}) {
+async function setup({ adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fxQuote = null } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -25,7 +25,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, f
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts,
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts, benchReaders,
     fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -339,6 +339,35 @@ test('produtos pela foto e reenvio sem duplicar (client_ref)', async (t) => {
   // identificador inválido é ignorado (cadastra normalmente)
   assert.equal((await a('POST', '/api/suppliers', { name: 'T', client_ref: 'x' })).status, 201);
   assert.equal((await a('POST', '/api/suppliers', { name: 'T', client_ref: 'x' })).status, 201);
+});
+
+test('teste de modelos de leitura: só administrador; roda as fotos em todos os modelos', async (t) => {
+  const fake = (good) => ({
+    readCard: async (m, b, meta) => { Object.assign(meta, { ms: 5, cost_usd: good ? 0.04 : 0.001 }); return good ? { company_name: 'Hairun', contact_name: 'Lily Chen', phone: '+86 138 0574 2266', phone_whatsapp: true, phone_wechat: false, booth: '11.2 C23', province: 'Zhejiang', email: 'lily@hairun-hw.com', wechat: 'lilychen_nb' } : { company_name: 'Hairun' }; },
+    readProducts: async () => { throw new Error('falhou'); },
+  });
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'], benchReaders: { 'claude-opus-5-5': fake(true), 'claude-haiku-5-5': fake(false) } });
+  t.after(close);
+  const a = client(base);
+  const admin = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
+  assert.equal((await a('GET', '/api/admin/ocr-bench')).status, 403);
+  let r = await admin('GET', '/api/admin/ocr-bench');
+  assert.equal(r.body.models.length, 2);
+  assert.ok(r.body.models.find((m) => m.id === 'claude-opus-5-5').current);
+  assert.equal(r.body.samples.length, 6);
+  r = await admin('POST', '/api/admin/ocr-bench/card-bilingual', {});
+  const [opus, haiku] = r.body.results;
+  assert.equal(opus.points, opus.total);
+  assert.ok(haiku.points < haiku.total);
+  assert.equal(haiku.cost_usd, 0.001);
+  r = await admin('POST', '/api/admin/ocr-bench/price-table', {});
+  assert.ok(r.body.results.every((x) => x.error && x.points === 0 && x.total > 0));
+  assert.equal((await admin('POST', '/api/admin/ocr-bench/nao-existe', {})).status, 404);
+  r = await admin('POST', '/api/admin/ocr-compare', { kind: 'card', image: PNG });
+  assert.equal(r.body.results.length, 2);
+  assert.equal((await a('POST', '/api/admin/ocr-compare', { kind: 'card', image: PNG })).status, 403);
 });
 
 test('leitor de cartões desligado sem chave de API', async (t) => {

@@ -3,7 +3,7 @@
 const path = require('node:path');
 const { open } = require('./db');
 const { createApp } = require('./app');
-const { cardReaderFromEnv, productReaderFromEnv } = require('./ocr');
+const { cardReaderFromEnv, productReaderFromEnv, benchReadersFromEnv } = require('./ocr');
 const { createFxService } = require('./fx');
 
 // Administradores: veem e editam fornecedores e produtos de todas as empresas.
@@ -42,6 +42,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
     readCard: cardReaderFromEnv(),
     readProducts: productReaderFromEnv(),
+    benchReaders: benchReadersFromEnv(),
     fx,
     background,
   });

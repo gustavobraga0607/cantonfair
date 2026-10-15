@@ -1589,6 +1589,104 @@ async function viewProductScan(query) {
   });
 }
 
+// ===================== teste de modelos de leitura (administrador) =====================
+
+async function viewModelTest() {
+  if (!isAdmin()) { location.hash = '#/account'; return; }
+  setChrome({ title: 'Teste de modelos', tab: 'account', back: '#/account' });
+  loading();
+  const { models, samples } = await api('/api/admin/ocr-bench');
+  const label = (id) => models.find((m) => m.id === id)?.label || id;
+  const money = (v) => (v == null ? '—' : `US$ ${v < 0.01 ? v.toFixed(4) : v.toFixed(3)}`);
+  const secs = (ms) => (ms == null ? '—' : `${(ms / 1000).toFixed(1)} s`);
+  $app.innerHTML = `
+    <p class="hint" style="margin-top:0">Roda as mesmas fotos em cada modelo e confere com o gabarito. As fotos de teste são fictícias
+      (cartões em inglês e chinês, etiqueta, tabela em US$ e tabela em yuan). Custo do teste completo: cerca de US$ 0,60.</p>
+    <div class="card">
+      <div class="item-sub">Modelos comparados</div>
+      <div>${models.map((m) => `<b>${esc(m.label)}</b>${m.current ? ' <span class="badge good">em uso</span>' : ''} <small class="item-sub">US$ ${m.input} / ${m.output} por milhão de tokens</small>`).join('<br>')}</div>
+      <button class="btn primary block" id="run" style="margin-top:12px">▶ Rodar teste com as ${samples.length} fotos</button>
+    </div>
+    <div id="summary"></div>
+    <div id="details" class="stack"></div>
+    <h2>Testar com uma foto sua</h2>
+    <div class="card stack">
+      <div class="row"><label class="scan-check"><input type="radio" name="kind" value="card" checked> Cartão de visita</label>
+        <label class="scan-check"><input type="radio" name="kind" value="product"> Produto / tabela</label></div>
+      <div id="own-photo">${photoInputHtml(null, 'Tire a foto ou escolha da galeria')}</div>
+      <div id="own-result"></div>
+    </div>`;
+
+  const totals = Object.fromEntries(models.map((m) => [m.id, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0 }]));
+  function renderSummary(done) {
+    document.getElementById('summary').innerHTML = `
+      <h2>Resultado ${done < samples.length ? `(${done} de ${samples.length}…)` : ''}</h2>
+      <div class="card"><table class="bench-table"><tr><th>Modelo</th><th>Acerto</th><th>Custo médio por foto</th><th>Tempo médio</th></tr>
+      ${models.map((m) => {
+        const t = totals[m.id];
+        const pct = t.total ? Math.round((100 * t.points) / t.total) : null;
+        return `<tr><td><b>${esc(m.label)}</b>${t.errors ? `<br><small class="item-sub">${t.errors} erro(s)</small>` : ''}</td>
+          <td><b>${pct == null ? '—' : pct + '%'}</b><br><small class="item-sub">${t.points}/${t.total}</small></td>
+          <td>${t.n ? money(t.cost / t.n) : '—'}</td><td>${t.n ? secs(t.ms / t.n) : '—'}</td></tr>`;
+      }).join('')}</table></div>`;
+  }
+
+  document.getElementById('run').addEventListener('click', async (e) => {
+    e.target.disabled = true;
+    for (const t of Object.values(totals)) Object.assign(t, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0 });
+    const details = document.getElementById('details');
+    details.innerHTML = '';
+    renderSummary(0);
+    let done = 0;
+    for (const s of samples) {
+      e.target.textContent = `Lendo foto ${done + 1} de ${samples.length}…`;
+      let r;
+      try { r = await api(`/api/admin/ocr-bench/${s.id}`, { method: 'POST', body: {}, background: true }); } catch (err) { toast(err.message); break; }
+      for (const x of r.results) {
+        const t = totals[x.model];
+        t.points += x.points || 0; t.total += x.total || 0;
+        if (x.cost_usd != null) { t.cost += x.cost_usd; t.ms += x.ms || 0; t.n++; }
+        if (x.error) t.errors++;
+      }
+      done++;
+      renderSummary(done);
+      details.insertAdjacentHTML('beforeend', `
+        <div class="card bench-sample">
+          <div class="scan-head"><img class="scan-src" src="${s.image}" alt=""><b style="flex:1">${esc(s.label)}</b></div>
+          ${r.results.map((x) => `<div class="bench-row"><span><b>${esc(label(x.model))}</b> · ${x.points}/${x.total}</span>
+            <small class="item-sub">${money(x.cost_usd)} · ${secs(x.ms)}</small>
+            ${x.error ? `<div class="error-box">${esc(x.error)}</div>` : x.misses?.length ? `<div class="item-sub">Errou: ${esc(x.misses.join(', '))}</div>` : '<div class="item-sub">✓ tudo certo</div>'}</div>`).join('')}
+        </div>`);
+    }
+    e.target.disabled = false;
+    e.target.textContent = `▶ Rodar de novo`;
+  });
+
+  bindPhotoInput(document.getElementById('own-photo'), async (dataUrl) => {
+    const out = document.getElementById('own-result');
+    const kind = $app.querySelector('input[name=kind]:checked').value;
+    out.innerHTML = '<div class="ocr-status busy">Lendo com todos os modelos…</div>';
+    try {
+      const r = await api('/api/admin/ocr-compare', { method: 'POST', body: { kind, image: dataUrl }, background: true });
+      const fields = kind === 'card'
+        ? [['company_name', 'Empresa'], ['contact_name', 'Contato'], ['phone', 'Telefone'], ['phone_whatsapp', 'WhatsApp'], ['phone_wechat', 'WeChat'],
+          ['booth', 'Stand'], ['address', 'Endereço'], ['province', 'Província'], ['email', 'E-mail'], ['wechat', 'WeChat ID']]
+        : null;
+      const show = (v) => (v === true ? 'sim' : v === false ? 'não' : v == null || v === '' ? '—' : String(v));
+      out.innerHTML = r.results.map((x) => `
+        <div class="card bench-sample"><div class="bench-row"><b>${esc(label(x.model))}</b>
+          <small class="item-sub">${money(x.cost_usd)} · ${secs(x.ms)}</small></div>
+          ${x.error ? `<div class="error-box">${esc(x.error)}</div>` : fields
+            ? `<table class="bench-table">${fields.map(([k, l]) => `<tr><td>${l}</td><td>${esc(show(x.output[k]))}</td></tr>`).join('')}</table>`
+            : `<table class="bench-table"><tr><th>Produto</th><th>US$</th><th>MOQ</th></tr>${(x.output.products || []).map((p) =>
+              `<tr><td>${esc(p.name)}${p.price_note ? `<br><small class="item-sub">${esc(p.price_note)}</small>` : ''}</td><td>${esc(show(p.price_usd))}</td><td>${esc(show(p.moq))}</td></tr>`).join('')}</table>`}
+        </div>`).join('');
+    } catch (err) {
+      out.innerHTML = `<div class="error-box">${esc(err.message)}</div>`;
+    }
+  });
+}
+
 // ===================== fila de envio (sem internet) =====================
 
 async function viewOutbox() {
@@ -2320,7 +2418,10 @@ async function viewAccount() {
     ${user.is_admin ? `<h2>Administração</h2>
       <a class="item" href="#/admin"><div class="thumb">👥</div><div class="item-body">
         <div class="item-title">Usuários e empresas</div>
-        <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>` : ''}
+        <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>
+      <a class="item" href="#/admin/models"><div class="thumb">🧪</div><div class="item-body">
+        <div class="item-title">Teste de modelos de leitura</div>
+        <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
@@ -2365,6 +2466,7 @@ const routes = [
   [/^\/trip\/(\d+)\/edit$/, (m) => viewTripEdit(m[1])],
   [/^\/account$/, viewAccount],
   [/^\/admin$/, (m, q) => viewAdmin(q)],
+  [/^\/admin\/models$/, viewModelTest],
 ];
 
 async function router() {

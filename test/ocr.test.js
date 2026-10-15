@@ -105,3 +105,31 @@ test('toNumber entende formatos brasileiro e americano', () => {
   assert.equal(toNumber(''), null);
   assert.equal(toNumber('0'), null);
 });
+
+test('teste de modelos: gabarito pontua leitura perfeita com 100% e aponta os erros', () => {
+  const { samples, scoreCard, scoreProducts } = require('../src/bench/ocr-bench');
+  const card = samples.find((s) => s.id === 'card-bilingual');
+  const perfect = {
+    company_name: 'NINGBO HAIRUN HOUSEWARE CO., LTD.', company_name_local: '宁波海润家居用品有限公司', contact_name: 'Lily Chen (Sales Manager)',
+    phone: '+86 138 0574 2266', phone_whatsapp: true, phone_wechat: false, booth: 'Booth 11.2 C23', province: 'Zhejiang',
+    email: 'lily@hairun-hw.com', wechat: 'lilychen_nb',
+  };
+  let r = scoreCard(card.expected, perfect);
+  assert.equal(r.points, r.total);
+  r = scoreCard(card.expected, { ...perfect, phone: '+86 574 8765 4321', phone_whatsapp: false, province: '' });
+  assert.deepEqual(r.misses, ['telefone (WhatsApp/WeChat)', 'marca WhatsApp', 'província']);
+
+  const rmb = samples.find((s) => s.id === 'price-rmb');
+  const good = { products: [
+    { name: 'Copo térmico inox 350 ml', price_usd: null, price_note: '¥16.80', moq: 500 },
+    { name: 'Garrafa térmica 1 L', price_usd: null, price_note: '¥32.00', moq: 300 },
+    { name: 'Marmita inox', price_usd: null, price_note: '¥22.00', moq: 500 },
+    { name: 'Copo infantil 200 ml', price_usd: null, price_note: '¥9.50', moq: 1000 },
+  ] };
+  r = scoreProducts(rmb.expected, good);
+  assert.equal(r.points, r.total);
+  // converter yuan em dólar é erro
+  r = scoreProducts(rmb.expected, { products: good.products.map((p) => ({ ...p, price_usd: 2.3 })) });
+  assert.equal(r.misses.filter((m) => m.includes('preço US$')).length, 4);
+  for (const s of samples) assert.ok(s.data.length > 1000 && s.expected, s.id);
+});

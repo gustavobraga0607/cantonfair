@@ -4,7 +4,20 @@
 // Entende cartões em inglês, chinês e outros idiomas e devolve os campos já
 // separados para preencher o cadastro do fornecedor.
 
+// Modelo usado nas leituras; pode ser trocado pela variável OCR_MODEL (ex.: claude-haiku-5-5).
 const MODEL = 'claude-opus-5-5';
+// Preço por milhão de tokens (US$, entrada/saída) — usado para estimar o custo de cada leitura.
+const PRICES = {
+  'claude-opus-5-5': { input: 4, output: 20, label: 'Opus 5.5' },
+  'claude-sonnet-5-5': { input: 2, output: 10, label: 'Sonnet 5.5' },
+  'claude-haiku-5-5': { input: 0.10, output: 0.50, label: 'Haiku 5.5' },
+};
+// A troca automática de modelo em caso de recusa não existe no Haiku.
+const supportsFallback = (model) => /^claude-(opus|sonnet|fable)-/.test(model);
+const costUsd = (model, usage) => {
+  const p = PRICES[model];
+  return p && usage ? ((usage.input_tokens || 0) * p.input + (usage.output_tokens || 0) * p.output) / 1e6 : null;
+};
 const PROVINCES = require('../public/provinces');
 
 const FIELDS = {
@@ -68,16 +81,17 @@ class OcrError extends Error {
 }
 
 // Envia a foto ao Claude com saída estruturada e devolve o JSON lido.
-async function askVision(client, model, { system, schema, prompt, mime, base64, what }) {
+// meta (opcional) recebe modelo, tempo, tokens e custo estimado da leitura.
+async function askVision(client, model, { system, schema, prompt, mime, base64, what, meta }) {
   let response;
+  const started = Date.now();
   try {
     response = await client.beta.messages.create({
       model,
       max_tokens: 8000,
       output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
       // Se o modelo recusar por política, a API tenta automaticamente o modelo recomendado.
-      betas: ['server-side-fallback-2026-07-01'],
-      fallbacks: 'default',
+      ...(supportsFallback(model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
       system,
       messages: [{
         role: 'user',
@@ -93,6 +107,13 @@ async function askVision(client, model, { system, schema, prompt, mime, base64, 
     if (err.status === 429) throw new OcrError(429, 'Leitor de fotos ocupado. Tente novamente em instantes.');
     throw new OcrError(502, 'Não foi possível ler a foto agora. Preencha manualmente ou tente de novo.');
   }
+  if (meta) {
+    Object.assign(meta, {
+      model: response.model || model, ms: Date.now() - started,
+      input_tokens: response.usage?.input_tokens ?? null, output_tokens: response.usage?.output_tokens ?? null,
+      cost_usd: costUsd(model, response.usage),
+    });
+  }
   if (response.stop_reason === 'refusal') {
     throw new OcrError(422, 'Não foi possível ler esta foto. Preencha os campos manualmente.');
   }
@@ -105,9 +126,9 @@ async function askVision(client, model, { system, schema, prompt, mime, base64, 
 function createCardReader({ client, model = MODEL } = {}) {
   if (!client) return null;
 
-  return async function readCard(mime, base64) {
+  return async function readCard(mime, base64, meta) {
     const data = await askVision(client, model, {
-      system: SYSTEM, schema: SCHEMA, prompt: 'Extraia os dados deste cartão de visita.', mime, base64, what: 'cartão',
+      system: SYSTEM, schema: SCHEMA, prompt: 'Extraia os dados deste cartão de visita.', mime, base64, what: 'cartão', meta,
     });
     const out = {};
     for (const k of Object.keys(FIELDS)) {
@@ -176,9 +197,9 @@ function toNumber(v, { integer = false } = {}) {
 function createProductReader({ client, model = MODEL } = {}) {
   if (!client) return null;
 
-  return async function readProducts(mime, base64) {
+  return async function readProducts(mime, base64, meta) {
     const data = await askVision(client, model, {
-      system: PRODUCT_SYSTEM, schema: PRODUCT_SCHEMA, mime, base64, what: 'produto',
+      system: PRODUCT_SYSTEM, schema: PRODUCT_SCHEMA, mime, base64, what: 'produto', meta,
       prompt: 'Liste os produtos desta foto com os dados para o cadastro.',
     });
     const list = Array.isArray(data.products) ? data.products : [];
@@ -207,9 +228,19 @@ function clientFromEnv() {
   const { Anthropic } = require('@anthropic-ai/sdk');
   return (envClient ??= new Anthropic({ timeout: 90_000, maxRetries: 1 }));
 }
-const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv() });
-const productReaderFromEnv = () => createProductReader({ client: clientFromEnv() });
+const envModel = () => process.env.OCR_MODEL || MODEL;
+const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv(), model: envModel() });
+const productReaderFromEnv = () => createProductReader({ client: clientFromEnv(), model: envModel() });
+// Leitores de cada modelo, para o administrador comparar (teste de modelos).
+function benchReadersFromEnv() {
+  const client = clientFromEnv();
+  if (!client) return null;
+  return Object.fromEntries(Object.keys(PRICES).map((model) => [model, {
+    readCard: createCardReader({ client, model }), readProducts: createProductReader({ client, model }),
+  }]));
+}
 
 module.exports = {
-  createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, OcrError, FIELDS, preferMessagingPhone, toNumber,
+  createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
+  preferMessagingPhone, toNumber, PRICES, MODEL,
 };
