@@ -4,6 +4,8 @@
 
 const $app = document.getElementById('app');
 const state = { me: null, suppliers: null };
+// Fotos já lidas no formulário de produto, passadas à tela de cadastro em lote.
+let scanHandoff = null;
 const INCOTERMS = ['EXW', 'FCA', 'FAS', 'FOB', 'CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
 
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -41,12 +43,14 @@ function formatCnpj(v) {
 }
 
 let offlineNoticeShown = false;
+// Falha de rede (sem sinal): o cadastro pode ir para a fila do celular.
+class OfflineError extends Error {}
 // Navegação atual: se o usuário trocar de tela enquanto uma consulta (GET) está a caminho,
 // a resposta atrasada é descartada em vez de sobrescrever a tela nova.
 let navSeq = 0;
 class StaleNavigation extends Error {}
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, background = false } = {}) {
   const nav = navSeq;
   let res;
   try {
@@ -57,7 +61,7 @@ async function api(path, { method = 'GET', body } = {}) {
       credentials: 'same-origin',
     });
   } catch {
-    throw new Error('Sem conexão com a internet. Tente de novo quando o sinal voltar.');
+    throw new OfflineError('Sem conexão com a internet. Tente de novo quando o sinal voltar.');
   }
   // Resposta salva pelo service worker (sem internet): avisa uma vez.
   if (res.headers.get('X-Offline') && res.ok && !offlineNoticeShown) {
@@ -69,13 +73,176 @@ async function api(path, { method = 'GET', body } = {}) {
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !path.startsWith('/api/login')) {
     state.me = null;
+    if (background) throw new Error(data.error || 'Sessão expirada.');
     location.hash = '#/login';
     throw new Error(data.error || 'Sessão expirada.');
   }
   if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
-  if (method === 'GET' && nav !== navSeq) throw new StaleNavigation();
+  if (method === 'GET' && !background && nav !== navSeq) throw new StaleNavigation();
   return data;
 }
+
+// ===================== cadastros sem internet =====================
+// Sem sinal na feira, fornecedores e produtos novos ficam guardados no celular (IndexedDB) e são
+// enviados sozinhos quando a conexão volta. Cada cadastro leva um client_ref: se o envio chegar
+// duas vezes ao servidor, ele não duplica.
+
+const newRef = () => (crypto.randomUUID?.() || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`);
+const OUTBOX_STORE = 'outbox';
+let outboxConn;
+function outboxDb() {
+  return (outboxConn ??= new Promise((resolve, reject) => {
+    const req = indexedDB.open('missao-china', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore(OUTBOX_STORE, { keyPath: 'ref' });
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }).catch((err) => { outboxConn = null; throw err; }));
+}
+async function outboxTx(mode, fn) {
+  const db = await outboxDb();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(OUTBOX_STORE, mode);
+    const req = fn(tx.objectStore(OUTBOX_STORE));
+    tx.oncomplete = () => resolve(req?.result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+// Itens do usuário logado, na ordem em que foram criados.
+async function outboxAll() {
+  if (!state.me) return [];
+  try {
+    const items = await outboxTx('readonly', (st) => st.getAll());
+    return items.filter((i) => i.user_id === state.me.user.id).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  } catch { return []; }
+}
+const outboxPut = (item) => outboxTx('readwrite', (st) => st.put(item));
+const outboxDelete = (ref) => outboxTx('readwrite', (st) => st.delete(ref));
+
+const OUTBOX_PATHS = { supplier: '/api/suppliers', product: '/api/products' };
+const OUTBOX_KIND = { supplier: 'Fornecedor', product: 'Produto', offer: 'Oferta' };
+
+// Cria no servidor; sem internet, guarda na fila e devolve { queued }.
+async function createOrQueue(kind, body, label) {
+  // Produto de um fornecedor que ainda está na fila: vai para a fila logo atrás dele.
+  if (kind === 'product' && body.offers?.some((o) => o.supplier_id < 0)) {
+    const queued = await queueItem({ kind, body, label }, new Error('Não foi possível guardar o cadastro neste celular.'));
+    if (navigator.onLine) flushOutbox();
+    return { queued };
+  }
+  try {
+    return { saved: await api(OUTBOX_PATHS[kind], { method: 'POST', body }) };
+  } catch (err) {
+    if (!(err instanceof OfflineError)) throw err;
+    return { queued: await queueItem({ kind, body, label }, err) };
+  }
+}
+// Acrescenta a oferta de um fornecedor a um produto que já existe (substitui a oferta anterior dele).
+async function addOfferToProduct(productId, offer, { units, background = false } = {}) {
+  const p = await api(`/api/products/${productId}`, { background: true });
+  const offers = p.offers.filter((o) => o.supplier_id !== offer.supplier_id).map((o) => ({
+    supplier_id: o.supplier_id, price_usd: o.price_usd, moq: o.moq, incoterm: o.incoterm, nationalization_pct: o.nationalization_pct,
+  }));
+  offers.push(offer);
+  return api(`/api/products/${productId}`, {
+    method: 'PUT', background,
+    body: { name: p.name, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? units ?? null, notes: p.notes, offers },
+  });
+}
+async function addOfferOrQueue(productId, offer, label, opts = {}) {
+  try {
+    return { saved: await addOfferToProduct(productId, offer, opts) };
+  } catch (err) {
+    if (!(err instanceof OfflineError)) throw err;
+    return { queued: await queueItem({ kind: 'offer', body: { product_id: productId, offer, units: opts.units ?? null }, label }, err) };
+  }
+}
+async function queueItem({ kind, body, label }, originalError) {
+  const item = {
+    ref: body.client_ref || newRef(), kind, body, label, user_id: state.me.user.id, created_at: new Date().toISOString(),
+  };
+  if (kind === 'supplier') item.temp_id = -Date.now(); // id provisório (negativo) para usar nos produtos
+  try { await outboxPut(item); } catch { throw originalError; } // sem armazenamento: mantém o erro de rede
+  refreshOutboxBar();
+  return item;
+}
+
+// Fornecedores e produtos ainda na fila, no formato das listas do app.
+async function pendingSuppliers(company) {
+  return (await outboxAll()).filter((i) => i.kind === 'supplier' && (!company || company === 'all' || (i.body.company || ownCnpj()) === company))
+    .map((i) => ({
+      id: i.temp_id, name: i.body.name, booth: i.body.booth || null, contact_name: i.body.contact_name || null, phone: i.body.phone || null,
+      province: i.body.province || null, address: i.body.address || null, card_photo: null, product_count: 0,
+      company_cnpj: i.body.company || ownCnpj(), pending: true, error: i.error || null,
+    }));
+}
+async function pendingProducts(company) {
+  return (await outboxAll()).filter((i) => i.kind === 'product' && (!company || company === 'all' || (i.body.company || ownCnpj()) === company))
+    .map((i) => ({ id: null, ref: i.ref, name: i.body.name, offers: [], company_cnpj: i.body.company || ownCnpj(), pending: true, error: i.error || null }));
+}
+
+let flushing = false;
+async function flushOutbox() {
+  if (flushing || !state.me) return;
+  flushing = true;
+  let sent = 0;
+  try {
+    for (const { ref } of await outboxAll()) {
+      // Relê o item: o envio de um fornecedor pode ter atualizado os produtos que dependem dele.
+      const item = await outboxTx('readonly', (st) => st.get(ref)).catch(() => null);
+      if (!item) continue;
+      try {
+        if (item.kind === 'offer') {
+          await addOfferToProduct(item.body.product_id, item.body.offer, { units: item.body.units, background: true });
+        } else {
+          if (item.kind === 'product' && item.body.offers?.some((o) => o.supplier_id < 0)) {
+            throw new Error('O fornecedor deste produto ainda não foi enviado.');
+          }
+          const saved = await api(OUTBOX_PATHS[item.kind], { method: 'POST', body: item.body, background: true });
+          // Produtos na fila que usam este fornecedor passam a apontar para o id real.
+          if (item.kind === 'supplier') {
+            for (const other of await outboxAll()) {
+              if (other.kind !== 'product' || !other.body.offers?.some((o) => o.supplier_id === item.temp_id)) continue;
+              other.body.offers = other.body.offers.map((o) => (o.supplier_id === item.temp_id ? { ...o, supplier_id: saved.id } : o));
+              delete other.error;
+              await outboxPut(other);
+            }
+          }
+        }
+        await outboxDelete(item.ref);
+        sent++;
+      } catch (err) {
+        if (err instanceof OfflineError || !state.me) break; // sem sinal ou sessão expirada: tenta depois
+        await outboxPut({ ...item, error: err.message });
+      }
+    }
+  } finally {
+    flushing = false;
+  }
+  await refreshOutboxBar();
+  if (sent) {
+    state.suppliers = null;
+    toast(`${sent} cadastro(s) feito(s) sem internet foram enviados.`);
+    // Atualiza a tela atual, a não ser que o usuário esteja preenchendo um formulário.
+    if (!/\/(new|edit|scan)\b/.test(location.hash)) router();
+  }
+}
+
+async function refreshOutboxBar() {
+  const bar = document.getElementById('outbox-bar');
+  if (!bar) return;
+  const items = await outboxAll();
+  const errors = items.filter((i) => i.error).length;
+  bar.hidden = !items.length || location.hash.startsWith('#/outbox');
+  bar.classList.toggle('warn', errors > 0);
+  bar.innerHTML = errors
+    ? `⚠ ${errors} cadastro(s) com problema · ${items.length} na fila <b>Ver</b>`
+    : `⏳ ${items.length} cadastro(s) aguardando internet para enviar <b>Ver</b>`;
+}
+
+window.addEventListener('online', () => flushOutbox());
+document.addEventListener('visibilitychange', () => { if (!document.hidden && navigator.onLine) flushOutbox(); });
+setInterval(() => { if (navigator.onLine) outboxAll().then((i) => i.length && flushOutbox()); }, 30_000);
 
 let toastTimer;
 function toast(msg) {
@@ -221,9 +388,15 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
 
 const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</div>'; };
 
+// Inclui os fornecedores cadastrados sem internet (ainda na fila), com id provisório negativo.
 async function getSuppliers(company) {
-  return api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS()));
+  const [list, pending] = await Promise.all([
+    api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS())),
+    pendingSuppliers(company || (isAdmin() ? getScope() : null)),
+  ]);
+  return [...pending, ...list];
 }
+const pendingTag = (x) => (x.pending ? `<span class="badge ${x.error ? 'bad' : 'pending'}">${x.error ? '⚠ erro no envio' : '⏳ aguardando internet'}</span>` : '');
 
 // ===================== administrador =====================
 // O administrador vê fornecedores e produtos de todas as empresas e pode
@@ -396,11 +569,12 @@ async function viewSuppliers() {
       .some((v) => (v || '').toLowerCase().includes(term)));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
-        <a class="item" href="#/suppliers/${s.id}">
+        <a class="item" href="${s.pending ? '#/outbox' : `#/suppliers/${s.id}`}">
           ${thumbImg(s.card_photo, '📇')}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
-            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone_whatsapp || s.phone_wechat ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'} · ${s.product_count} produto(s)</div>
+            ${pendingTag(s)}
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone_whatsapp || s.phone_wechat ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -437,6 +611,7 @@ async function viewSupplier(id) {
         <a class="btn" href="#/suppliers/${s.id}/edit">Editar</a>
         <a class="btn primary" href="#/products/new?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">+ Produto</a>
       </div>
+      ${state.me?.features?.product_ocr ? `<a class="btn block" href="#/products/scan?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">📷 Produtos pela foto (catálogo, tabela de preços)</a>` : ''}
       <div class="meta">Atualizado ${dateBr(s.updated_at)}${s.updated_by_name ? ' por ' + esc(s.updated_by_name) : ''}</div>
     </div>
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
@@ -562,6 +737,7 @@ async function viewSupplierForm(id) {
   loading();
   const s = editing ? await api(`/api/suppliers/${id}`) : {};
   let cardPhoto = null;
+  const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
   const photoHint = state.me?.features?.card_ocr
     ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria';
   const companyField = !isAdmin() ? ''
@@ -631,9 +807,18 @@ async function viewSupplierForm(id) {
       if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
       else if (removePhoto) body.remove_card_photo = true;
       if (form.company) body.company = form.company.value;
-      const saved = await api(editing ? `/api/suppliers/${id}` : '/api/suppliers', { method: editing ? 'PUT' : 'POST', body });
-      toast('Fornecedor salvo.');
-      location.hash = `#/suppliers/${saved.id}`;
+      if (editing) {
+        const saved = await api(`/api/suppliers/${id}`, { method: 'PUT', body });
+        toast('Fornecedor salvo.');
+        location.hash = `#/suppliers/${saved.id}`;
+        return;
+      }
+      body.client_ref = formRef;
+      const { saved } = await createOrQueue('supplier', body, body.name);
+      state.suppliers = null;
+      if (saved) { toast('Fornecedor salvo.'); location.hash = `#/suppliers/${saved.id}`; return; }
+      toast('Sem internet: fornecedor guardado no celular. Ele será enviado quando a conexão voltar.');
+      location.hash = '#/suppliers';
     } catch (err) {
       box.textContent = err.message;
       box.hidden = false;
@@ -668,9 +853,11 @@ function savingBadge(priceBrl, estimated) {
 async function viewProducts() {
   setChrome({ title: 'Produtos', tab: 'products', fab: true });
   loading();
-  const list = await api('/api/products' + scopeQS());
+  const [saved, pending] = await Promise.all([api('/api/products' + scopeQS()), pendingProducts(isAdmin() ? getScope() : null)]);
+  const list = [...pending, ...saved];
   $app.innerHTML = `
     ${scopeBarHtml()}
+    ${state.me?.features?.product_ocr ? '<a class="btn block scan-cta" href="#/products/scan">📷 Cadastrar pela foto <small>produto, etiqueta, catálogo ou tabela de preços</small></a>' : ''}
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/products/new" aria-label="Novo produto">+</a>`;
@@ -680,6 +867,13 @@ async function viewProducts() {
       p.offers.some((o) => o.supplier_name.toLowerCase().includes(term)));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((p) => {
+        if (p.pending) {
+          return `
+        <a class="item" href="#/outbox">
+          <div class="thumb">⏳</div>
+          <div class="item-body"><div class="item-title">${esc(p.name)}</div>${pendingTag(p)}</div>
+        </a>`;
+        }
         const b = bestOffer(p);
         return `
         <a class="item" href="#/products/${p.id}">
@@ -753,6 +947,31 @@ async function viewProduct(id) {
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
 }
 
+// ---- produtos parecidos (evita cadastrar o mesmo produto duas vezes) ----
+const nameTokens = (t) => new Set(String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .replace(/(\d)[.,](\d)/g, '$1$2').replace(/(\d)([a-z])/g, '$1 $2').split(/[^a-z0-9\u4e00-\u9fff]+/)
+  .filter((w) => w.length > 1 || /\d/.test(w)));
+// Coeficiente de Dice entre as palavras dos nomes (0 a 1); números diferentes (500 ml × 750 ml) não contam como iguais.
+function nameSimilarity(a, b) {
+  const A = nameTokens(a);
+  const B = nameTokens(b);
+  if (!A.size || !B.size) return 0;
+  let common = 0;
+  for (const w of A) if (B.has(w)) common++;
+  return (2 * common) / (A.size + B.size);
+}
+const sameNumbers = (a, b) => {
+  const nums = (t) => [...nameTokens(t)].filter((w) => /^\d+$/.test(w)).sort().join(' ');
+  return nums(a) === nums(b);
+};
+function similarProducts(name, products, { exclude = null, min = 0.6 } = {}) {
+  return products.filter((p) => p.id !== exclude)
+    .map((p) => ({ p, score: nameSimilarity(name, p.name) }))
+    .filter((x) => x.score >= min)
+    .sort((x, y) => y.score - x.score).slice(0, 3)
+    .map((x) => ({ ...x, strong: x.score >= 0.8 && sameNumbers(name, x.p.name) }));
+}
+
 async function viewProductForm(id, query) {
   const editing = id != null;
   setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products', form: true });
@@ -763,6 +982,12 @@ async function viewProductForm(id, query) {
   const suppliers = await getSuppliers(isAdmin() ? company : null);
   const rate = editing ? p.exchange_rate : companyInfo(company)?.exchange_rate ?? state.me.company.exchange_rate;
   let photo; // undefined = sem alteração, null = remover, string = nova foto
+  const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
+  // Produtos já cadastrados (e os da fila), para avisar quando o novo parecer repetido.
+  const existing = editing ? [] : await Promise.all([
+    api('/api/products' + (isAdmin() ? `?company=${encodeURIComponent(company)}` : '')).catch(() => []),
+    pendingProducts(isAdmin() ? company : null),
+  ]).then(([a, b]) => [...b, ...a]);
 
   const companyField = !isAdmin() ? ''
     : editing
@@ -783,14 +1008,28 @@ async function viewProductForm(id, query) {
   const offers = p.offers.length
     ? p.offers.map((o) => ({ ...o }))
     : [{ supplier_id: Number(query.get('supplier')) || '', price_usd: '', moq: '', incoterm: 'FOB', nationalization_pct: '' }];
+  // Vindo do aviso de produto repetido: acrescenta (ou atualiza) a oferta do fornecedor neste produto.
+  const addSupplier = Number(query.get('add_supplier'));
+  if (editing && addSupplier) {
+    const incoming = {
+      supplier_id: addSupplier, price_usd: query.get('price') || '', moq: query.get('moq') || '',
+      incoterm: query.get('incoterm') || 'FOB', nationalization_pct: query.get('nat') || '',
+    };
+    const cur = offers.find((o) => Number(o.supplier_id) === addSupplier);
+    if (cur) for (const k of ['price_usd', 'moq', 'incoterm', 'nationalization_pct']) { if (incoming[k] !== '') cur[k] = incoming[k]; }
+    else offers.push(incoming);
+  }
 
   $app.innerHTML = `
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
-        <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
+        <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, state.me?.features?.product_ocr && !editing
+          ? 'Fotografe o produto, a etiqueta ou o catálogo — os dados serão preenchidos automaticamente' : 'Tire uma foto ou escolha da galeria')}</div>
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
-        <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required></div>
+        <div class="ocr-status" id="ocr-status" hidden></div>
+        <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required>
+          <div class="dup-box" id="dup-box" hidden></div></div>
         <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
           <div class="hint">Preço de referência praticado no mercado brasileiro.</div></div>
         <div><label for="units_per_40hq">Unidades por container 40HQ</label>
@@ -811,7 +1050,7 @@ async function viewProductForm(id, query) {
       </div>
     </form>`;
 
-  bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; });
+  bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; if (!editing) readProductPhoto(d); });
   bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
@@ -867,7 +1106,93 @@ async function viewProductForm(id, query) {
   // ---- campo de fornecedor com busca ----
   function supplierLabel(id) {
     const s = suppliers.find((x) => x.id === Number(id));
-    return s ? s.name + (s.booth ? ` — ${s.booth}` : '') : '';
+    return s ? (s.pending ? '⏳ ' : '') + s.name + (s.booth ? ` — ${s.booth}` : '') : '';
+  }
+
+  // ---- aviso de produto parecido já cadastrado ----
+  const dupBox = document.getElementById('dup-box');
+  function checkDuplicates() {
+    if (editing) return;
+    const found = similarProducts(form.name.value, existing);
+    dupBox.hidden = !found.length || form.name.value.trim().length < 3;
+    if (dupBox.hidden) return;
+    const o = offers.find((x) => x.supplier_id) || offers[0];
+    const qs = new URLSearchParams({
+      ...(Number(o.supplier_id) > 0 ? { add_supplier: o.supplier_id } : {}), price: o.price_usd || '', moq: o.moq || '',
+      incoterm: o.incoterm || '', nat: o.nationalization_pct || '',
+    });
+    dupBox.innerHTML = `<div class="dup-title">⚠ Parecido com produto já cadastrado:</div>${found.map(({ p: x }) => `
+      <div class="dup-item"><span>${esc(x.name)}${x.pending ? ' <small>(aguardando envio)</small>' : ` <small>· ${x.offers.length} fornecedor(es)</small>`}</span>
+        ${x.pending || !x.id ? '' : `<a class="btn small" href="#/products/${x.id}/edit?${qs}">${Number(o.supplier_id) > 0 ? 'Adicionar a oferta neste' : 'Abrir este'}</a>`}
+      </div>`).join('')}
+      <div class="hint">Se for o mesmo produto, adicione a oferta nele em vez de criar outro — assim a comparação entre fornecedores funciona.</div>`;
+  }
+  let dupTimer;
+  form.name.addEventListener('input', () => { clearTimeout(dupTimer); dupTimer = setTimeout(checkDuplicates, 250); });
+
+  // ---- leitura da foto do produto ----
+  let ocrSeq = 0;
+  async function readProductPhoto(dataUrl) {
+    if (!state.me?.features?.product_ocr) return;
+    const box = document.getElementById('ocr-status');
+    const submit = form.querySelector('button[type=submit]');
+    const seq = ++ocrSeq;
+    box.hidden = false;
+    box.className = 'ocr-status busy';
+    box.textContent = 'Lendo a foto…';
+    submit.disabled = true;
+    try {
+      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl } });
+      if (seq !== ocrSeq) return;
+      if (!products.length) {
+        box.className = 'ocr-status err';
+        box.textContent = 'Não encontrei dados de produto nesta foto. Preencha os campos à mão.';
+        return;
+      }
+      if (products.length > 1) {
+        box.className = 'ocr-status ok';
+        box.innerHTML = `Encontrei <b>${products.length} produtos</b> nesta foto.
+          <div class="actions" style="margin-top:8px">
+            <button type="button" class="btn small primary" id="scan-all">Cadastrar os ${products.length} de uma vez</button>
+            <button type="button" class="btn small" id="scan-first">Usar só o primeiro</button></div>`;
+        document.getElementById('scan-all').addEventListener('click', () => {
+          const o = offers[0];
+          scanHandoff = { photo: dataUrl, products, company, supplier: Number(o.supplier_id) || null };
+          location.hash = `#/products/scan?company=${encodeURIComponent(company)}${o.supplier_id ? `&supplier=${o.supplier_id}` : ''}`;
+        });
+        document.getElementById('scan-first').addEventListener('click', () => applyRead(products[0], box));
+        return;
+      }
+      applyRead(products[0], box);
+    } catch (err) {
+      if (seq !== ocrSeq) return;
+      box.className = 'ocr-status err';
+      box.textContent = err instanceof OfflineError ? 'Sem internet: a leitura automática da foto não está disponível. Preencha à mão — o cadastro fica guardado e é enviado depois.' : err.message;
+    } finally {
+      if (seq === ocrSeq) submit.disabled = false;
+    }
+  }
+  function applyRead(r, box) {
+    const filled = [];
+    const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
+    set(form.name, r.name, 'nome');
+    set(form.units_per_40hq, r.units_per_40hq, 'unidades/40HQ');
+    const o = offers.find((x) => !String(x.price_usd).trim()) || offers[0];
+    if (r.price_usd != null && !String(o.price_usd).trim()) { o.price_usd = String(r.price_usd).replace('.', ','); filled.push('preço US$'); }
+    if (r.moq != null && !String(o.moq ?? '').trim()) { o.moq = r.moq; filled.push('MOQ'); }
+    if (r.incoterm) { o.incoterm = r.incoterm; filled.push('Incoterm'); }
+    const extra = [r.name_original && `Nome original: ${r.name_original}`, r.price_note && `Preço: ${r.price_note}`, r.specs]
+      .filter((l) => l && !form.notes.value.includes(l));
+    if (extra.length) {
+      form.notes.value = [form.notes.value.trim(), ...extra].filter(Boolean).join('\n');
+      form.notes.classList.add('autofilled');
+      filled.push('observações');
+    }
+    renderOffers();
+    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value), rate);
+    checkDuplicates();
+    box.className = 'ocr-status ok';
+    box.textContent = filled.length ? `✓ Foto lida: ${filled.join(', ')} preenchido(s). Confira antes de salvar.` : 'Foto lida, mas os campos já estavam preenchidos.';
   }
   const norm = (t) => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 
@@ -909,6 +1234,7 @@ async function viewProductForm(id, query) {
     offers[i].supplier_id = id;
     input.value = supplierLabel(id);
     closeCombo(input);
+    checkDuplicates();
   }
 
   offersEl.addEventListener('focusin', (e) => {
@@ -1009,9 +1335,17 @@ async function viewProductForm(id, query) {
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
-      const saved = await api(editing ? `/api/products/${id}` : '/api/products', { method: editing ? 'PUT' : 'POST', body });
-      toast('Produto salvo.');
-      location.hash = `#/products/${saved.id}`;
+      if (editing) {
+        const saved = await api(`/api/products/${id}`, { method: 'PUT', body });
+        toast('Produto salvo.');
+        location.hash = `#/products/${saved.id}`;
+        return;
+      }
+      body.client_ref = formRef;
+      const { saved } = await createOrQueue('product', body, body.name);
+      if (saved) { toast('Produto salvo.'); location.hash = `#/products/${saved.id}`; return; }
+      toast('Sem internet: produto guardado no celular. Ele será enviado quando a conexão voltar.');
+      location.hash = '#/products';
     } catch (err) {
       fail(err.message);
     } finally {
@@ -1029,6 +1363,257 @@ async function viewProductForm(id, query) {
       } catch (err) { toast(err.message); }
     });
   }
+}
+
+// ===================== cadastro pela foto (vários produtos) =====================
+// Foto de produto, etiqueta, catálogo ou tabela de preços → lista de produtos para conferir e salvar
+// de uma vez. Várias fotos podem ser lidas em sequência (os itens vão sendo somados).
+
+async function viewProductScan(query) {
+  const fromSupplier = Number(query.get('supplier')) > 0 ? Number(query.get('supplier')) : null;
+  setChrome({ title: 'Cadastrar pela foto', back: fromSupplier ? `#/suppliers/${fromSupplier}` : '#/products', tab: 'products', form: true });
+  loading();
+  const company = isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
+  const [suppliers, existing] = await Promise.all([
+    getSuppliers(isAdmin() ? company : null),
+    Promise.all([
+      api('/api/products' + (isAdmin() ? `?company=${encodeURIComponent(company)}` : '')).catch(() => []),
+      pendingProducts(isAdmin() ? company : null),
+    ]).then(([a, b]) => [...b, ...a]),
+  ]);
+  const handoff = scanHandoff?.company === company ? scanHandoff : null;
+  scanHandoff = null;
+  let supplierId = Number(query.get('supplier')) || handoff?.supplier || '';
+  const items = [];
+  const ocrOn = state.me?.features?.product_ocr;
+
+  $app.innerHTML = `
+    <form class="stack" id="f" novalidate>
+      ${isAdmin() ? `<div class="card"><label for="company">Empresa</label><select id="company">${companyOptions(company)}</select></div>` : ''}
+      <div class="card stack">
+        <div><label for="supplier">Fornecedor</label>
+          <select id="supplier"><option value="">— escolha o fornecedor —</option>${suppliers.map((s) =>
+            `<option value="${s.id}"${s.id === Number(supplierId) ? ' selected' : ''}>${s.pending ? '⏳ ' : ''}${esc(s.name)}${s.booth ? ` — ${esc(s.booth)}` : ''}</option>`).join('')}</select>
+          <div class="hint">Sem fornecedor, os produtos são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
+        <div class="row">
+          <div><label for="nat">Nacionaliz. (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
+          <div><label for="incoterm-all">Incoterm padrão</label><select id="incoterm-all">${INCOTERMS.map((t) => `<option${t === 'FOB' ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+        </div>
+      </div>
+      <div class="card">
+        <label>Foto</label>
+        <div id="photo">${photoInputHtml(null, ocrOn ? 'Fotografe o produto, a etiqueta, o catálogo ou a tabela de preços' : 'Leitura de fotos indisponível (ANTHROPIC_API_KEY não configurada)')}</div>
+        <div class="hint">Pode ler várias fotos seguidas: os produtos vão sendo somados à lista abaixo.</div>
+        <div class="ocr-status" id="ocr-status" hidden></div>
+      </div>
+      <div id="items" class="stack"></div>
+      <div class="error-box" id="err" hidden></div>
+      <div class="actions form-actions"><button class="btn primary" type="submit" id="save" disabled>Salvar</button></div>
+    </form>`;
+
+  const form = document.getElementById('f');
+  const itemsEl = document.getElementById('items');
+  const box = document.getElementById('ocr-status');
+  const saveBtn = document.getElementById('save');
+  document.getElementById('company')?.addEventListener('change', (e) => {
+    location.hash = `#/products/scan?company=${encodeURIComponent(e.target.value)}`;
+  });
+  document.getElementById('supplier').addEventListener('change', (e) => { supplierId = Number(e.target.value) || ''; });
+
+  const numText = (v) => (v == null ? '' : String(v).replace('.', ','));
+  function addItems(products, photo) {
+    const defaultIncoterm = document.getElementById('incoterm-all').value;
+    for (const r of products) {
+      const match = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
+      items.push({
+        ref: newRef(), include: true, name: r.name, price_usd: numText(r.price_usd), moq: r.moq ?? '',
+        incoterm: r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
+        notes: [r.name_original && `Nome original: ${r.name_original}`, r.price_note && `Preço: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
+        photo, use_photo: products.length === 1, target: match ? match.p.id : '',
+      });
+    }
+    render();
+  }
+
+  function itemHtml(it, i) {
+    const similar = similarProducts(it.name, existing.filter((x) => x.id));
+    return `
+      <div class="card scan-item${it.include ? '' : ' off'}" data-i="${i}">
+        <div class="scan-head">
+          <label class="scan-check"><input type="checkbox" data-k="include"${it.include ? ' checked' : ''}> Cadastrar</label>
+          <img class="scan-src" src="${it.photo}" alt="Foto lida">
+          <button type="button" class="icon-btn" data-rm="${i}" aria-label="Remover da lista">✕</button>
+        </div>
+        <div><label>Nome do produto</label><input data-k="name" value="${esc(it.name)}"></div>
+        <div class="row">
+          <div><label>Preço (US$)</label><input data-k="price_usd" inputmode="decimal" value="${esc(it.price_usd)}" placeholder="0,00"></div>
+          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(it.moq)}" placeholder="unid."></div>
+        </div>
+        <div class="row">
+          <div><label>Incoterm</label><select data-k="incoterm"><option value="">—</option>${INCOTERMS.map((t) => `<option${it.incoterm === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+          <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
+        </div>
+        <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
+        ${similar.length ? `<div class="dup-box"><div class="dup-title">⚠ Parecido com produto já cadastrado</div>
+          <select data-k="target"><option value="">Criar produto novo</option>${similar.map(({ p }) =>
+            `<option value="${p.id}"${Number(it.target) === p.id ? ' selected' : ''}>Adicionar a oferta em: ${esc(p.name)}</option>`).join('')}</select></div>` : ''}
+        ${it.target ? '' : `<label class="scan-check"><input type="checkbox" data-k="use_photo"${it.use_photo ? ' checked' : ''}> Usar esta foto como foto do produto</label>`}
+        <div class="item-error" hidden></div>
+      </div>`;
+  }
+  function render() {
+    itemsEl.innerHTML = items.map(itemHtml).join('');
+    updateSave();
+  }
+  function updateSave() {
+    const n = items.filter((x) => x.include).length;
+    saveBtn.disabled = !n;
+    saveBtn.textContent = n ? `Salvar ${n} produto(s)` : 'Salvar';
+  }
+  itemsEl.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    const card = e.target.closest('.scan-item');
+    const it = items[Number(card.dataset.i)];
+    it[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    if (k === 'include') { card.classList.toggle('off', !it.include); updateSave(); }
+  });
+  itemsEl.addEventListener('change', (e) => {
+    const k = e.target.dataset.k;
+    if (k === 'target') { items[Number(e.target.closest('.scan-item').dataset.i)].target = e.target.value; render(); }
+    if (k === 'name') render(); // atualiza o aviso de parecido
+  });
+  itemsEl.addEventListener('click', (e) => {
+    const rm = e.target.closest('[data-rm]')?.dataset.rm;
+    if (rm === undefined) return;
+    items.splice(Number(rm), 1);
+    render();
+  });
+
+  let reading = 0;
+  async function readPhoto(dataUrl) {
+    if (!ocrOn) { toast('Leitura de fotos indisponível.'); return; }
+    reading++;
+    box.hidden = false;
+    box.className = 'ocr-status busy';
+    box.textContent = 'Lendo a foto…';
+    try {
+      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl } });
+      if (!products.length) {
+        box.className = 'ocr-status err';
+        box.textContent = 'Não encontrei produtos nesta foto. Tente uma foto mais próxima e com boa luz.';
+        return;
+      }
+      addItems(products, dataUrl);
+      box.className = 'ocr-status ok';
+      box.textContent = `✓ ${products.length} produto(s) lido(s). Confira e corrija antes de salvar.`;
+    } catch (err) {
+      box.className = 'ocr-status err';
+      box.textContent = err instanceof OfflineError
+        ? 'Sem internet: a leitura da foto precisa de conexão. Use “Novo produto” para cadastrar à mão — fica guardado e é enviado depois.'
+        : err.message;
+    } finally {
+      reading--;
+    }
+  }
+  bindPhotoInput(document.getElementById('photo'), readPhoto);
+  if (handoff) {
+    addItems(handoff.products, handoff.photo);
+    box.hidden = false;
+    box.className = 'ocr-status ok';
+    box.textContent = `✓ ${handoff.products.length} produto(s) lido(s). Confira e corrija antes de salvar.`;
+  }
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = document.getElementById('err');
+    err.hidden = true;
+    if (reading) { toast('Aguarde terminar a leitura da foto.'); return; }
+    const nat = parseNum(document.getElementById('nat').value);
+    if (Number.isNaN(nat)) { err.textContent = 'Nacionalização (%) inválida.'; err.hidden = false; return; }
+    const sid = Number(supplierId) || null;
+
+    // Confere tudo antes de enviar o primeiro.
+    const jobs = [];
+    for (const [i, it] of items.entries()) {
+      if (!it.include) continue;
+      const fail = (m) => { err.textContent = `Produto ${i + 1} (${it.name || 'sem nome'}): ${m}`; err.hidden = false; itemsEl.children[i]?.scrollIntoView({ block: 'center' }); };
+      if (!String(it.name).trim()) return fail('informe o nome.');
+      const price = parseNum(it.price_usd);
+      const moq = parseNum(it.moq);
+      const units = parseNum(it.units_per_40hq);
+      if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units)) return fail('verifique preço, MOQ e unidades.');
+      if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
+      const offer = sid && price != null
+        ? { supplier_id: sid, price_usd: price, moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
+      if (it.target && !offer) return fail('para adicionar a oferta a um produto existente, escolha o fornecedor e informe o preço.');
+      jobs.push({ it, offer, units });
+    }
+    if (!jobs.length) return;
+
+    saveBtn.disabled = true;
+    let saved = 0;
+    let queued = 0;
+    try {
+      for (const { it, offer, units } of jobs) {
+        saveBtn.textContent = `Salvando ${saved + queued + 1} de ${jobs.length}…`;
+        let r;
+        if (it.target) {
+          r = await addOfferOrQueue(Number(it.target), offer, it.name, { units });
+        } else {
+          const body = { name: it.name.trim(), price_brl: null, units_per_40hq: units, notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
+          if (it.use_photo) Object.assign(body, { photo: it.photo, photo_thumb: await makeThumb(it.photo) });
+          if (isAdmin()) body.company = company;
+          r = await createOrQueue('product', body, body.name);
+        }
+        if (r.saved) saved++; else queued++;
+        items.splice(items.indexOf(it), 1); // já salvo: não envia de novo se outro falhar
+      }
+    } catch (e2) {
+      render();
+      err.textContent = `${saved + queued} produto(s) salvo(s). Erro no próximo: ${e2.message}`;
+      err.hidden = false;
+      return;
+    }
+    toast(queued
+      ? `${saved} produto(s) salvo(s) e ${queued} guardado(s) no celular — serão enviados quando a internet voltar.`
+      : `${saved} produto(s) salvo(s).`);
+    location.hash = fromSupplier ? `#/suppliers/${fromSupplier}` : '#/products';
+  });
+}
+
+// ===================== fila de envio (sem internet) =====================
+
+async function viewOutbox() {
+  setChrome({ title: 'Aguardando envio', back: '#/products', tab: 'products' });
+  const items = await outboxAll();
+  $app.innerHTML = `
+    <p class="hint" style="margin-top:0">Cadastros feitos sem internet ficam guardados neste celular e são enviados sozinhos quando a
+      conexão volta. Não saia da conta antes de enviá-los.</p>
+    <button class="btn primary block" id="send-now" ${items.length ? '' : 'disabled'}>Enviar agora</button>
+    <div class="list" style="margin-top:14px">${items.length ? items.map((i) => `
+      <div class="item">
+        <div class="thumb">${i.error ? '⚠️' : '⏳'}</div>
+        <div class="item-body">
+          <div class="item-title">${esc(OUTBOX_KIND[i.kind])}: ${esc(i.label || i.body.name || '')}</div>
+          <div class="item-sub">Feito em ${dateBr(i.created_at)}</div>
+          ${i.error ? `<div class="error-box" style="margin-top:6px">${esc(i.error)}</div>` : ''}
+        </div>
+        <button type="button" class="btn small danger" data-discard="${esc(i.ref)}">Descartar</button>
+      </div>`).join('') : '<div class="empty">Nada aguardando envio. ✓</div>'}
+    </div>`;
+  document.getElementById('send-now').addEventListener('click', async (e) => {
+    if (!navigator.onLine) { toast('Ainda sem internet.'); return; }
+    e.target.disabled = true;
+    await flushOutbox();
+    if (location.hash.startsWith('#/outbox')) viewOutbox();
+  });
+  $app.querySelectorAll('[data-discard]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Descartar este cadastro? Ele não será enviado.')) return;
+    await outboxDelete(b.dataset.discard);
+    refreshOutboxBar();
+    viewOutbox();
+  }));
 }
 
 // ===================== ranking =====================
@@ -1739,6 +2324,9 @@ async function viewAccount() {
   renderFreightCard();
   if (location.hash.includes('cambio')) document.getElementById('cambio').scrollIntoView();
   document.getElementById('logout').addEventListener('click', async () => {
+    const pending = await outboxAll();
+    if (pending.length && !confirm(`Há ${pending.length} cadastro(s) feitos sem internet que ainda não foram enviados. Se sair agora, eles serão perdidos. Sair mesmo assim?`)) return;
+    for (const i of pending) await outboxDelete(i.ref).catch(() => {});
     await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
     navigator.serviceWorker?.controller?.postMessage('logout'); // apaga dados e fotos salvos offline
     state.me = null;
@@ -1759,6 +2347,8 @@ const routes = [
   [/^\/suppliers\/(\d+)\/edit$/, (m) => viewSupplierForm(m[1])],
   [/^\/products$/, viewProducts],
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
+  [/^\/products\/scan$/, (m, q) => viewProductScan(q)],
+  [/^\/outbox$/, viewOutbox],
   [/^\/products\/(\d+)$/, (m) => viewProduct(m[1])],
   [/^\/products\/(\d+)\/edit$/, (m, q) => viewProductForm(m[1], q)],
   [/^\/map$/, viewMap],
@@ -1785,6 +2375,8 @@ async function router() {
   if (!isPublic && !state.me) { location.hash = '#/login'; return; }
   if (isPublic && state.me) { location.hash = '#/ranking'; return; }
   window.scrollTo(0, 0);
+  refreshOutboxBar();
+  if (state.me && navigator.onLine && !router.flushed) { router.flushed = true; flushOutbox(); }
   try {
     await view(path.match(re), query);
   } catch (err) {

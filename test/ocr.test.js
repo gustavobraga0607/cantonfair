@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCardReader, FIELDS, preferMessagingPhone } = require('../src/ocr');
+const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber } = require('../src/ocr');
 
 function fakeClient(response, calls = []) {
   return { beta: { messages: { create: async (params) => { calls.push(params); if (response instanceof Error) throw response; return response; } } } };
@@ -68,4 +68,40 @@ test('com mais de um telefone, salva sempre o de WhatsApp ou WeChat', () => {
   // sem telefone, sem ícones
   r = preferMessagingPhone({ ...base, phone_whatsapp: true });
   assert.equal(r.phone_whatsapp, false);
+});
+
+test('produtos pela foto: lista fechada de Incoterm, números normalizados e itens sem nome descartados', async () => {
+  const calls = [];
+  const json = { products: [
+    { name: ' Garrafa térmica inox 500 ml ', name_original: 'Vacuum flask 500ml', price_usd: 'US$ 2,35', price_note: '', moq: '1.000', incoterm: 'fob', units_per_40hq: '12000', specs: 'Inox 304' },
+    { name: 'Copo 350 ml', name_original: '', price_usd: '', price_note: '¥16,80', moq: '', incoterm: 'XYZ', units_per_40hq: 'n/a', specs: '' },
+    { name: '', name_original: '', price_usd: '1', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '' },
+  ] };
+  const read = createProductReader({
+    client: fakeClient({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(json) }] }, calls),
+  });
+  const { products } = await read('image/jpeg', 'QUJD');
+  assert.equal(products.length, 2);
+  assert.deepEqual(products[0], {
+    name: 'Garrafa térmica inox 500 ml', name_original: 'Vacuum flask 500ml', price_usd: 2.35, price_note: '', moq: 1000,
+    incoterm: 'FOB', units_per_40hq: 12000, specs: 'Inox 304',
+  });
+  assert.equal(products[1].price_usd, null, 'preço em RMB não vira dólar');
+  assert.equal(products[1].price_note, '¥16,80');
+  assert.equal(products[1].incoterm, '');
+  assert.equal(products[1].units_per_40hq, null);
+  const schema = calls[0].output_config.format.schema;
+  assert.equal(schema.properties.products.type, 'array');
+  assert.ok(schema.properties.products.items.properties.incoterm.enum.includes('FOB'));
+  assert.equal(calls[0].fallbacks, 'default');
+  assert.equal(createProductReader({}), null);
+});
+
+test('toNumber entende formatos brasileiro e americano', () => {
+  assert.equal(toNumber('1.234,50'), 1234.5);
+  assert.equal(toNumber('1,234.50'), 1234.5);
+  assert.equal(toNumber('1,000', { integer: true }), 1000);
+  assert.equal(toNumber('2.5', { integer: true }), null);
+  assert.equal(toNumber(''), null);
+  assert.equal(toNumber('0'), null);
 });

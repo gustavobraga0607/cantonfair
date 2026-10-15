@@ -13,7 +13,7 @@ const { createFxService } = require('../src/fx');
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup({ adminEmails = [], readCard = null, fxQuote = null } = {}) {
+async function setup({ adminEmails = [], readCard = null, readProducts = null, fxQuote = null } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -25,7 +25,7 @@ async function setup({ adminEmails = [], readCard = null, fxQuote = null } = {})
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard,
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts,
     fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -299,6 +299,46 @@ test('fornecedor com telefone e contato; leitura de cartão', async (t) => {
   assert.equal(r.body.phone, null);
   assert.equal(r.body.contact_name, null);
   assert.equal(r.body.province, null);
+});
+
+test('produtos pela foto e reenvio sem duplicar (client_ref)', async (t) => {
+  const readProducts = async () => ({ products: [{ name: 'Garrafa 500 ml', price_usd: 2.35, moq: 1000, incoterm: 'FOB' }] });
+  const { base, close } = await setup({ readProducts });
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.features.product_ocr, true);
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+
+  assert.equal((await client(base)('POST', '/api/ocr/product', { image: PNG })).status, 401);
+  assert.equal((await a('POST', '/api/ocr/product', { image: 'data:text/plain;base64,AAAA' })).status, 400);
+  r = await a('POST', '/api/ocr/product', { image: PNG });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.products[0].name, 'Garrafa 500 ml');
+
+  // fornecedor e produto enviados duas vezes (sem internet, toque duplo) não duplicam
+  const ref = 'ref-abc-12345678';
+  r = await a('POST', '/api/suppliers', { name: 'S', client_ref: ref });
+  assert.equal(r.status, 201);
+  const sup = r.body;
+  r = await a('POST', '/api/suppliers', { name: 'S', client_ref: ref });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.id, sup.id);
+  const prod = { name: 'Garrafa', client_ref: 'prod-ref-1234567', offers: [{ supplier_id: sup.id, price_usd: 2 }] };
+  const p1 = await a('POST', '/api/products', prod);
+  assert.equal(p1.status, 201);
+  const p2 = await a('POST', '/api/products', prod);
+  assert.equal(p2.status, 200);
+  assert.equal(p2.body.id, p1.body.id);
+  assert.equal((await a('GET', '/api/products')).body.length, 1);
+  // o mesmo identificador em outra empresa é outro cadastro
+  r = await b('POST', '/api/suppliers', { name: 'S', client_ref: ref });
+  assert.equal(r.status, 201);
+  assert.notEqual(r.body.id, sup.id);
+  // identificador inválido é ignorado (cadastra normalmente)
+  assert.equal((await a('POST', '/api/suppliers', { name: 'T', client_ref: 'x' })).status, 201);
+  assert.equal((await a('POST', '/api/suppliers', { name: 'T', client_ref: 'x' })).status, 201);
 });
 
 test('leitor de cartões desligado sem chave de API', async (t) => {

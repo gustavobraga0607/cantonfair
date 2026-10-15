@@ -33,6 +33,16 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
 - **Produtos**: nome, foto, preço no Brasil (R$), unidades por container 40HQ e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
+- **Cadastro pela foto**: ao fotografar o produto, a etiqueta, uma página de catálogo ou a tabela de preços, o Claude
+  lê nome (em português), preço em US$, MOQ, Incoterm, unidades por 40HQ e especificações. Uma foto com vários
+  produtos abre a tela *Cadastrar pela foto*, que lista os itens para conferir e salvar de uma vez (fornecedor,
+  % de nacionalização e Incoterm comuns; várias fotos podem ser somadas). Preço em outra moeda vai para as
+  observações, sem conversão.
+- **Produto repetido**: ao digitar o nome (ou na leitura da foto), o app avisa quando já existe um produto parecido
+  na empresa e oferece adicionar a oferta do fornecedor nele, em vez de criar outro.
+- **Sem internet**: fornecedores e produtos novos cadastrados sem sinal ficam guardados no celular e são enviados
+  sozinhos quando a conexão volta (barra "aguardando envio"; tela para enviar agora ou descartar). Um identificador
+  gerado no celular (`client_ref`) impede cadastro duplicado se o envio chegar duas vezes.
 - **Frete 40HQ**: o administrador define em *Conta* o valor do frete internacional de um container 40HQ (USD),
   válido para todas as empresas; o frete por unidade entra no preço estimado (ver Cálculo).
 - **Cálculo**: `preço estimado no Brasil = (preço US$ + frete por unidade) × (1 + % nacionalização) × câmbio`,

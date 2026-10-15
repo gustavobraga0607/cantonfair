@@ -51,7 +51,7 @@ class HttpError extends Error {
 const now = () => new Date().toISOString();
 
 // background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, fx = null, background = (p) => p.catch(() => {}) }) {
+function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
@@ -344,7 +344,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       fx: fxStatus,
       settings,
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
-      features: { card_ocr: Boolean(readCard) },
+      features: { card_ocr: Boolean(readCard), product_ocr: Boolean(readProducts) },
     };
   }
 
@@ -650,22 +650,48 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     }
   });
 
+  // Lê a foto de um produto, etiqueta, catálogo ou tabela de preços e devolve os produtos encontrados.
+  route('POST', '/api/ocr/product', async ({ body, user }) => {
+    if (!readProducts) throw new HttpError(503, 'Leitor de fotos não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+    if (!ocrLimiter.hit(String(user.id))) throw new HttpError(429, 'Muitas leituras de foto em pouco tempo. Tente mais tarde.');
+    const img = parseImage(body.image);
+    try {
+      return await readProducts(img.mime, img.data.toString('base64'));
+    } catch (err) {
+      if (err instanceof OcrError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  });
+
+  // Identificador do cadastro gerado no celular (reenvio sem internet não duplica).
+  const clientRef = (v) => (/^[\w-]{8,64}$/.test(String(v ?? '')) ? String(v) : null);
+  const findByRef = (table, cnpj, ref) => (ref ? db.get(`SELECT id FROM ${table} WHERE cnpj = ? AND client_ref = ?`, [cnpj, ref]) : null);
+  const isUniqueViolation = (err) => err?.code === '23505' || /UNIQUE constraint/i.test(err?.message || '');
+
   route('POST', '/api/suppliers', async ({ user, body }) => {
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do fornecedor.');
     const cnpj = await targetCnpj(user, body);
+    const ref = clientRef(body.client_ref);
+    const dup = await findByRef('suppliers', cnpj, ref);
+    if (dup) return supplierOut(await loadSupplier(db, cnpj, dup.id)); // já recebido antes
     const img = body.card_photo ? parseImage(body.card_photo) : null; // foto do cartão é opcional
     const thumb = img ? parseThumb(body.card_photo_thumb) : null;
+    const f = supplierFields(body);
     const id = await db.tx(async (q) => {
       const photo = img ? await saveImage(q, img, cnpj, thumb) : null;
       const t = now();
-      const f = supplierFields(body);
       const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, phone_whatsapp, phone_wechat, address, province, notes,
-                                                     created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, user.id, user.id, t, t]);
+                                                     client_ref, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, ref, user.id, user.id, t, t]);
       return row.id;
+    }).catch(async (err) => {
+      const again = isUniqueViolation(err) && await findByRef('suppliers', cnpj, ref);
+      if (again) return { existing: again.id };
+      throw err;
     });
+    if (id?.existing) return supplierOut(await loadSupplier(db, cnpj, id.existing));
     return { status: 201, body: supplierOut(await loadSupplier(db, cnpj, id)) };
   });
 
@@ -726,18 +752,26 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('POST', '/api/products', async ({ user, body }) => {
     const f = productFields(body);
     const cnpj = await targetCnpj(user, body);
+    const ref = clientRef(body.client_ref);
+    const dup = await findByRef('products', cnpj, ref);
+    if (dup) return productResponse(cnpj, dup.id); // já recebido antes
     // Fornecedores das ofertas precisam ser da mesma empresa do produto.
     const offers = await parseOffers(cnpj, body.offers);
     const img = body.photo ? parseImage(body.photo) : null;
     const id = await db.tx(async (q) => {
       const photo = img ? await saveImage(q, img, cnpj, parseThumb(body.photo_thumb)) : null;
       const t = now();
-      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, notes, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, user.id, t, t]);
+      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, notes, client_ref, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, f.name, photo, f.price_brl, f.units_per_40hq, f.notes, ref, user.id, user.id, t, t]);
       await replaceOffers(q, row.id, offers);
       return row.id;
+    }).catch(async (err) => {
+      const again = isUniqueViolation(err) && await findByRef('products', cnpj, ref);
+      if (again) return { existing: again.id };
+      throw err;
     });
+    if (id?.existing) return productResponse(cnpj, id.existing);
     return { status: 201, body: await productResponse(cnpj, id) };
   });
 

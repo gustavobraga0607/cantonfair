@@ -151,6 +151,9 @@ const ADDED_COLUMNS = [
   ['products', 'units_per_40hq', 'INTEGER'],
   ['users', 'card_photo', 'TEXT'],
   ['images', 'thumb', '{{BLOB}}'],
+  // Identificador gerado no celular: reenviar um cadastro (sem internet, toque duplo) não duplica.
+  ['suppliers', 'client_ref', 'TEXT'],
+  ['products', 'client_ref', 'TEXT'],
 ];
 // Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
 const DROPPED_NOT_NULL = [
@@ -160,6 +163,8 @@ const DROPPED_NOT_NULL = [
 const ADDED_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_users_cnpj ON users(cnpj)',
   'CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_client_ref ON suppliers(cnpj, client_ref)',
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_products_client_ref ON products(cnpj, client_ref)',
 ];
 const typed = (driver, sql) => sql.replace(/\{\{(\w+)\}\}/g, (_, k) => TYPES[driver][k]);
 
@@ -171,7 +176,12 @@ function rebuildSqliteTable(conn, table) {
   const schema = schemaFor('sqlite');
   const create = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))[0];
   const indexes = schema.match(new RegExp(`CREATE INDEX IF NOT EXISTS \\w+ ON ${table}\\([^)]*\\);`, 'g')) || [];
-  const cols = conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name).join(', ');
+  conn.exec(`DROP TABLE IF EXISTS ${table}_new`);
+  conn.exec(create.replace(`EXISTS ${table} (`, `EXISTS ${table}_new (`));
+  // Copia as colunas que existem nas duas (as acrescentadas depois voltam em ADDED_COLUMNS).
+  const newCols = new Set(conn.prepare(`PRAGMA table_info(${table}_new)`).all().map((c) => c.name));
+  const cols = conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name).filter((c) => newCols.has(c)).join(', ');
+  conn.exec(`DROP TABLE ${table}_new`);
   conn.exec('PRAGMA foreign_keys = OFF');
   conn.exec('BEGIN');
   try {
@@ -199,14 +209,15 @@ function sqlite(dataDir) {
   const conn = new DatabaseSync(path.join(dataDir, 'cantonfair.db'));
   conn.exec('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
   conn.exec(schemaFor('sqlite'));
-  for (const [table, column, type] of ADDED_COLUMNS) {
-    if (!conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
-      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typed('sqlite', type)}`);
-    }
-  }
+  // Antes das colunas novas: a tabela recriada segue o esquema base.
   for (const [table, column] of DROPPED_NOT_NULL) {
     if (conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column && c.notnull)) {
       rebuildSqliteTable(conn, table);
+    }
+  }
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    if (!conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
+      conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typed('sqlite', type)}`);
     }
   }
   for (const sql of ADDED_INDEXES) conn.exec(sql);
