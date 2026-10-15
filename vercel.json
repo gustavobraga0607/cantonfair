@@ -3,6 +3,9 @@
   "framework": null,
   "installCommand": "npm install",
   "outputDirectory": "public",
+  "regions": [
+    "sin1"
+  ],
   "rewrites": [
     {
       "source": "/api/:path*",
