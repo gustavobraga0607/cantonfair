@@ -85,7 +85,7 @@ CREATE TABLE IF NOT EXISTS suppliers (
   id          {{ID}},
   cnpj        TEXT NOT NULL REFERENCES companies(cnpj),
   name        TEXT NOT NULL,
-  card_photo  TEXT NOT NULL,                    -- id em images
+  card_photo  TEXT,                             -- id em images (opcional)
   booth       TEXT,
   contact_name TEXT,
   phone       TEXT,
@@ -152,6 +152,10 @@ const ADDED_COLUMNS = [
   ['users', 'card_photo', 'TEXT'],
   ['images', 'thumb', '{{BLOB}}'],
 ];
+// Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
+const DROPPED_NOT_NULL = [
+  ['suppliers', 'card_photo'],
+];
 // Índices criados depois (bancos existentes também recebem).
 const ADDED_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_users_cnpj ON users(cnpj)',
@@ -160,6 +164,32 @@ const ADDED_INDEXES = [
 const typed = (driver, sql) => sql.replace(/\{\{(\w+)\}\}/g, (_, k) => TYPES[driver][k]);
 
 const clean = (params) => params.map((p) => (p === undefined ? null : p));
+
+// O SQLite não muda restrições de coluna: recria a tabela com a definição atual do esquema
+// e copia os dados (as demais tabelas continuam apontando para ela pelo nome).
+function rebuildSqliteTable(conn, table) {
+  const schema = schemaFor('sqlite');
+  const create = schema.match(new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\([\\s\\S]*?\\n\\);`))[0];
+  const indexes = schema.match(new RegExp(`CREATE INDEX IF NOT EXISTS \\w+ ON ${table}\\([^)]*\\);`, 'g')) || [];
+  const cols = conn.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name).join(', ');
+  conn.exec('PRAGMA foreign_keys = OFF');
+  conn.exec('BEGIN');
+  try {
+    // Procedimento recomendado pelo SQLite: cria a nova, copia, apaga a antiga e renomeia a nova
+    // (renomear a antiga faria as chaves estrangeiras das outras tabelas seguirem o nome antigo).
+    conn.exec(create.replace(`EXISTS ${table} (`, `EXISTS ${table}_new (`));
+    conn.exec(`INSERT INTO ${table}_new (${cols}) SELECT ${cols} FROM ${table}`);
+    conn.exec(`DROP TABLE ${table}`);
+    conn.exec(`ALTER TABLE ${table}_new RENAME TO ${table}`);
+    for (const sql of indexes) conn.exec(sql);
+    conn.exec('COMMIT');
+  } catch (err) {
+    conn.exec('ROLLBACK');
+    throw err;
+  } finally {
+    conn.exec('PRAGMA foreign_keys = ON');
+  }
+}
 
 function sqlite(dataDir) {
   const fs = require('node:fs');
@@ -172,6 +202,11 @@ function sqlite(dataDir) {
   for (const [table, column, type] of ADDED_COLUMNS) {
     if (!conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column)) {
       conn.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typed('sqlite', type)}`);
+    }
+  }
+  for (const [table, column] of DROPPED_NOT_NULL) {
+    if (conn.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === column && c.notnull)) {
+      rebuildSqliteTable(conn, table);
     }
   }
   for (const sql of ADDED_INDEXES) conn.exec(sql);
@@ -223,6 +258,7 @@ function postgres(connectionString) {
   const migrate = () => pool.query([
     schemaFor('postgres'),
     ...ADDED_COLUMNS.map(([table, column, type]) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${typed('postgres', type)};`),
+    ...DROPPED_NOT_NULL.map(([table, column]) => `ALTER TABLE ${table} ALTER COLUMN ${column} DROP NOT NULL;`),
     ...ADDED_INDEXES.map((sql) => `${sql};`),
   ].join('\n'));
   const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));

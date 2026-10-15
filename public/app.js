@@ -417,7 +417,8 @@ async function viewSupplier(id) {
   const s = await api(`/api/suppliers/${id}`);
   setChrome({ title: s.name, back: '#/suppliers', tab: 'suppliers' });
   $app.innerHTML = `
-    <div class="detail-photo" id="card-photo"><img src="${esc(s.card_photo)}" alt="Cartão de visitas"></div>
+    ${s.card_photo ? `<div class="detail-photo" id="card-photo"><img src="${esc(s.card_photo)}" alt="Cartão de visitas"></div>`
+      : `<a class="btn block" href="#/suppliers/${s.id}/edit">📇 Adicionar foto do cartão</a>`}
     <div class="card stack" style="margin-top:14px">
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
       ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
@@ -449,7 +450,7 @@ async function viewSupplier(id) {
         <div class="item-side"><div>${brl(p.estimated_brl)}</div><div class="item-sub">estimado</div></div>
       </a>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
     </div>`;
-  document.getElementById('card-photo').addEventListener('click', () => openLightbox(s.card_photo));
+  document.getElementById('card-photo')?.addEventListener('click', () => openLightbox(s.card_photo));
   bindCopyButtons();
 }
 
@@ -554,7 +555,7 @@ async function viewSupplierForm(id) {
   $app.innerHTML = `
     <form class="card stack" id="f" novalidate>
       ${companyField}
-      <div><label>Foto do cartão de visitas <span class="req">*</span></label>
+      <div><label>Foto do cartão de visitas</label>
         <div id="photo">${photoInputHtml(s.card_photo, state.me?.features?.card_ocr ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria')}</div></div>
       <div class="ocr-status" id="ocr-status" hidden></div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
@@ -583,7 +584,6 @@ async function viewSupplierForm(id) {
     const box = document.getElementById('err');
     box.hidden = true;
     if (!form.name.value.trim()) { box.textContent = 'Informe o nome do fornecedor.'; box.hidden = false; return; }
-    if (!editing && !cardPhoto) { box.textContent = 'A foto do cartão de visitas é obrigatória.'; box.hidden = false; return; }
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
     try {

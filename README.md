@@ -21,7 +21,7 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
 - **Administração de usuários e empresas** (aba *Conta* → *Usuários e empresas*, só administrador): lista todos os
   usuários e empresas, permite mudar a empresa de um usuário e excluir usuários (exceto a si mesmo). Uma empresa só
   pode ser excluída quando não tiver mais usuários; a exclusão apaga fornecedores, produtos, roteiros e fotos dela.
-- **Fornecedores**: nome\*, foto do cartão de visitas\* (tirada direto pela câmera), nome de contato, telefone
+- **Fornecedores**: nome\*, foto do cartão de visitas (opcional; câmera ou galeria), nome de contato, telefone
   (com atalhos para ligar e WhatsApp; marcação e ícone quando o número é WhatsApp e/ou WeChat), nº do stand, endereço (texto livre, com botão Copiar), província (lista das
   províncias e regiões da China) e observações.
 - **Leitor de cartões de visita (OCR)**: ao fotografar o cartão, o app usa o Claude (visão) para ler o cartão

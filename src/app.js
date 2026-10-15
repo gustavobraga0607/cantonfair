@@ -653,12 +653,11 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
   route('POST', '/api/suppliers', async ({ user, body }) => {
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do fornecedor.');
-    if (!body.card_photo) throw new HttpError(400, 'A foto do cartão de visitas é obrigatória.');
     const cnpj = await targetCnpj(user, body);
-    const img = parseImage(body.card_photo);
-    const thumb = parseThumb(body.card_photo_thumb);
+    const img = body.card_photo ? parseImage(body.card_photo) : null; // foto do cartão é opcional
+    const thumb = img ? parseThumb(body.card_photo_thumb) : null;
     const id = await db.tx(async (q) => {
-      const photo = await saveImage(q, img, cnpj, thumb);
+      const photo = img ? await saveImage(q, img, cnpj, thumb) : null;
       const t = now();
       const f = supplierFields(body);
       const row = await q.get(`INSERT INTO suppliers (cnpj, name, card_photo, booth, contact_name, phone, phone_whatsapp, phone_wechat, address, province, notes,

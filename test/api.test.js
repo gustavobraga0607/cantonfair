@@ -87,9 +87,14 @@ test('fluxo completo: cadastro, CNPJ compartilhado, fornecedores, produtos e ran
   r = await ana2('POST', '/api/login', { email: 'Ana@X.com', password: '12345678' });
   assert.equal(r.status, 200);
 
-  // fornecedor exige nome e foto do cartão
+  // fornecedor exige nome; a foto do cartão é opcional
+  assert.equal((await ana('POST', '/api/suppliers', { card_photo: PNG })).status, 400);
   r = await ana('POST', '/api/suppliers', { name: 'Sem foto' });
-  assert.equal(r.status, 400);
+  assert.equal(r.status, 201);
+  assert.equal(r.body.card_photo, null);
+  r = await ana('PUT', `/api/suppliers/${r.body.id}`, { name: 'Sem foto', card_photo: PNG });
+  assert.match(r.body.card_photo, /^\/uploads\//, 'foto pode ser adicionada depois');
+  assert.equal((await ana('DELETE', `/api/suppliers/${r.body.id}`)).status, 200);
   r = await ana('POST', '/api/suppliers', { name: 'Shenzhen A', booth: '11.2 C23', card_photo: PNG });
   assert.equal(r.status, 201);
   const supA = r.body;
