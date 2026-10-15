@@ -50,18 +50,29 @@ class OfflineError extends Error {}
 let navSeq = 0;
 class StaleNavigation extends Error {}
 
-async function api(path, { method = 'GET', body, background = false } = {}) {
+// timeout (ms): sinal fraco na feira costuma deixar o envio "pendurado"; passado o tempo,
+// a chamada falha como sem internet (o cadastro vai para a fila e o client_ref evita duplicar).
+async function api(path, { method = 'GET', body, background = false, timeout = 0 } = {}) {
   const nav = navSeq;
   let res;
+  const ctrl = timeout ? new AbortController() : null;
+  const timer = ctrl && setTimeout(() => ctrl.abort(), timeout);
   try {
     res = await fetch(path, {
       method,
       headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
       body: body !== undefined ? JSON.stringify(body) : undefined,
       credentials: 'same-origin',
+      signal: ctrl?.signal,
     });
   } catch {
     throw new OfflineError('Sem conexão com a internet. Tente de novo quando o sinal voltar.');
+  } finally {
+    clearTimeout(timer);
+  }
+  // Sem internet e nada salvo no celular para esta consulta (resposta do service worker).
+  if (res.headers.get('X-Offline') && !res.ok) {
+    throw new OfflineError('Sem conexão com a internet e sem dados salvos neste celular.');
   }
   // Resposta salva pelo service worker (sem internet): avisa uma vez.
   if (res.headers.get('X-Offline') && res.ok && !offlineNoticeShown) {
@@ -131,7 +142,7 @@ async function createOrQueue(kind, body, label) {
     return { queued };
   }
   try {
-    return { saved: await api(OUTBOX_PATHS[kind], { method: 'POST', body }) };
+    return { saved: await api(OUTBOX_PATHS[kind], { method: 'POST', body, timeout: navigator.onLine ? 25_000 : 1 }) };
   } catch (err) {
     if (!(err instanceof OfflineError)) throw err;
     return { queued: await queueItem({ kind, body, label }, err) };
@@ -389,13 +400,17 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
 const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</div>'; };
 
 // Inclui os fornecedores cadastrados sem internet (ainda na fila), com id provisório negativo.
+// Sem internet e sem lista salva no celular: devolve só os da fila (marcado com .offline).
 async function getSuppliers(company) {
   const [list, pending] = await Promise.all([
-    api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS())),
+    api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS()))
+      .catch((err) => { if (err instanceof OfflineError) return Object.assign([], { offline: true }); throw err; }),
     pendingSuppliers(company || (isAdmin() ? getScope() : null)),
   ]);
-  return [...pending, ...list];
+  return Object.assign([...pending, ...list], { offline: Boolean(list.offline) });
 }
+const offlineNote = (what) => `<div class="ocr-status err" style="margin-bottom:12px">📶 Sem internet e sem ${what} salvos neste celular.
+  Você pode cadastrar mesmo assim: fica guardado aqui e é enviado quando a conexão voltar.</div>`;
 const pendingTag = (x) => (x.pending ? `<span class="badge ${x.error ? 'bad' : 'pending'}">${x.error ? '⚠ erro no envio' : '⏳ aguardando internet'}</span>` : '');
 
 // ===================== administrador =====================
@@ -559,6 +574,7 @@ async function viewSuppliers() {
   loading();
   const list = await getSuppliers();
   $app.innerHTML = `
+    ${list.offline ? offlineNote('fornecedores') : ''}
     ${scopeBarHtml()}
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand, província"></div>
     <div class="list" id="list"></div>
@@ -665,7 +681,7 @@ async function readBusinessCard(form, dataUrl) {
   box.textContent = 'Lendo o cartão de visita…';
   submit.disabled = true;
   try {
-    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl } });
+    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 60_000 : 1 });
     if (seq !== ocrSeq) return;
     const filled = [];
     const fill = (field, value, label) => {
@@ -725,7 +741,9 @@ async function readBusinessCard(form, dataUrl) {
   } catch (err) {
     if (seq !== ocrSeq) return;
     box.className = 'ocr-status err';
-    box.textContent = err.message;
+    box.textContent = err instanceof OfflineError
+      ? 'Sem internet: a leitura automática do cartão não está disponível. Preencha os campos à mão e salve — o fornecedor (com a foto) fica guardado no celular e é enviado quando a conexão voltar.'
+      : err.message;
   } finally {
     if (seq === ocrSeq) submit.disabled = false;
   }
@@ -853,9 +871,13 @@ function savingBadge(priceBrl, estimated) {
 async function viewProducts() {
   setChrome({ title: 'Produtos', tab: 'products', fab: true });
   loading();
-  const [saved, pending] = await Promise.all([api('/api/products' + scopeQS()), pendingProducts(isAdmin() ? getScope() : null)]);
+  const [saved, pending] = await Promise.all([
+    api('/api/products' + scopeQS()).catch((err) => { if (err instanceof OfflineError) return Object.assign([], { offline: true }); throw err; }),
+    pendingProducts(isAdmin() ? getScope() : null),
+  ]);
   const list = [...pending, ...saved];
   $app.innerHTML = `
+    ${saved.offline ? offlineNote('produtos') : ''}
     ${scopeBarHtml()}
     <div class="add-choice" aria-label="Novo produto">
       <a class="btn primary" href="#/products/new">✍️ Manual<small>digitar os dados</small></a>
@@ -1149,7 +1171,7 @@ async function viewProductForm(id, query) {
     box.textContent = 'Lendo a foto…';
     submit.disabled = true;
     try {
-      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl } });
+      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 90_000 : 1 });
       if (seq !== ocrSeq) return;
       if (!products.length) {
         box.className = 'ocr-status err';
@@ -1505,7 +1527,7 @@ async function viewProductScan(query) {
     box.className = 'ocr-status busy';
     box.textContent = 'Lendo a foto…';
     try {
-      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl } });
+      const { products } = await api('/api/ocr/product', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 90_000 : 1 });
       if (!products.length) {
         box.className = 'ocr-status err';
         box.textContent = 'Não encontrei produtos nesta foto. Tente uma foto mais próxima e com boa luz.';
