@@ -33,8 +33,9 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
 - **Produtos**: nome, foto, preço no Brasil (R$), unidades por container 40HQ e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.
   Um mesmo produto pode ter vários fornecedores.
-- **Cadastro pela foto**: ao fotografar o produto, a etiqueta, uma página de catálogo ou a tabela de preços, o Claude
-  lê nome (em português), preço em US$, MOQ, Incoterm, unidades por 40HQ e especificações. Uma foto com vários
+- **Cadastro manual ou pela foto**: a lista de produtos oferece as duas opções. No cadastro manual a foto é opcional e
+  só é lida se o usuário tocar em "Preencher os campos com os dados da foto". Pela foto (produto, etiqueta, página de
+  catálogo ou tabela de preços), o Claude lê nome (em português), preço em US$, MOQ, Incoterm, unidades por 40HQ e especificações. Uma foto com vários
   produtos abre a tela *Cadastrar pela foto*, que lista os itens para conferir e salvar de uma vez (fornecedor,
   % de nacionalização e Incoterm comuns; várias fotos podem ser somadas). Preço em outra moeda vai para as
   observações, sem conversão.

@@ -857,7 +857,10 @@ async function viewProducts() {
   const list = [...pending, ...saved];
   $app.innerHTML = `
     ${scopeBarHtml()}
-    ${state.me?.features?.product_ocr ? '<a class="btn block scan-cta" href="#/products/scan">📷 Cadastrar pela foto <small>produto, etiqueta, catálogo ou tabela de preços</small></a>' : ''}
+    <div class="add-choice" aria-label="Novo produto">
+      <a class="btn primary" href="#/products/new">✍️ Manual<small>digitar os dados</small></a>
+      ${state.me?.features?.product_ocr ? '<a class="btn" href="#/products/scan">📷 Pela foto<small>catálogo ou tabela</small></a>' : ''}
+    </div>
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/products/new" aria-label="Novo produto">+</a>`;
@@ -1024,8 +1027,9 @@ async function viewProductForm(id, query) {
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
-        <div><label>Foto do produto</label><div id="photo">${photoInputHtml(p.photo, state.me?.features?.product_ocr && !editing
-          ? 'Fotografe o produto, a etiqueta ou o catálogo — os dados serão preenchidos automaticamente' : 'Tire uma foto ou escolha da galeria')}</div>
+        <div><label>Foto do produto <small class="item-sub">(opcional)</small></label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
+          ${state.me?.features?.product_ocr && !editing
+            ? '<button type="button" class="btn small block" id="read-photo" hidden style="margin-top:8px">✨ Preencher os campos com os dados da foto</button>' : ''}
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
         <div class="ocr-status" id="ocr-status" hidden></div>
         <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required>
@@ -1050,7 +1054,10 @@ async function viewProductForm(id, query) {
       </div>
     </form>`;
 
-  bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; if (!editing) readProductPhoto(d); });
+  // Cadastro manual: a foto é só a foto do produto. A leitura automática é opcional (botão).
+  const readBtn = document.getElementById('read-photo');
+  bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; if (readBtn) readBtn.hidden = false; });
+  readBtn?.addEventListener('click', () => { if (photo) readProductPhoto(photo); });
   bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
