@@ -9,6 +9,7 @@ const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
+const { fetchCnyBrl } = require('./fx');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 const PROVINCES = require('../public/provinces');
 
@@ -52,7 +53,7 @@ class HttpError extends Error {
 const now = () => new Date().toISOString();
 
 // background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
-function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fx = null, background = (p) => p.catch(() => {}) }) {
+function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
@@ -564,6 +565,7 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     await db.tx(async (q) => {
       for (const [table, col] of USER_REFS) await q.run(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`, [target.id]);
       await q.run('DELETE FROM sessions WHERE user_id = ?', [target.id]);
+      await q.run('DELETE FROM expenses WHERE user_id = ?', [target.id]);
       await q.run('DELETE FROM users WHERE id = ?', [target.id]);
       await removeImage(q, target.cnpj, target.card_photo);
     });
@@ -850,6 +852,102 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
       await removeImage(q, p.cnpj, p.photo);
     });
     return { ok: true };
+  });
+
+  // --- controle de viagem (despesas de cada usuário) ---
+  // O extrato é pessoal: cada usuário só vê e altera as próprias despesas (o administrador também).
+
+  const EXPENSE_CATEGORIES = ['hospedagem', 'alimentacao', 'transporte', 'passagens', 'feira', 'amostras', 'comunicacao', 'compras', 'outros'];
+  const PAYMENTS = ['cartao', 'dinheiro', 'alipay', 'wechat', 'outro'];
+  const CURRENCIES = ['CNY', 'BRL', 'USD'];
+  const round2x = (n) => Math.round(n * 100) / 100;
+
+  function expenseOut(e) {
+    return {
+      id: e.id, spent_on: e.spent_on, description: e.description, category: e.category, payment: e.payment ?? null,
+      amount: Number(e.amount), currency: e.currency, rate_brl: Number(e.rate_brl), amount_brl: Number(e.amount_brl),
+      created_at: e.created_at, updated_at: e.updated_at,
+    };
+  }
+
+  function expenseFields(body) {
+    const description = str(body.description, 200);
+    if (!description) throw new HttpError(400, 'Informe a descrição da despesa.');
+    const spentOn = str(body.spent_on, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(spentOn) || Number.isNaN(Date.parse(`${spentOn}T00:00:00Z`))) throw new HttpError(400, 'Data inválida.');
+    const category = EXPENSE_CATEGORIES.includes(body.category) ? body.category : null;
+    if (!category) throw new HttpError(400, 'Escolha a categoria.');
+    const payment = body.payment ? (PAYMENTS.includes(body.payment) ? body.payment : null) : null;
+    if (body.payment && !payment) throw new HttpError(400, 'Forma de pagamento inválida.');
+    const currency = String(body.currency || '').toUpperCase();
+    if (!CURRENCIES.includes(currency)) throw new HttpError(400, 'Moeda inválida.');
+    const amount = num(body.amount, 'o valor', { required: true });
+    if (!(amount > 0) || amount > 1e9) throw new HttpError(400, 'Valor inválido.');
+    const rate = currency === 'BRL' ? 1 : num(body.rate_brl, 'o câmbio para reais', { required: true });
+    if (!(rate > 0) || rate > 100) throw new HttpError(400, 'Câmbio para reais inválido.');
+    return { spent_on: spentOn, description, category, payment, amount: round2x(amount), currency, rate_brl: rate, amount_brl: round2x(amount * rate) };
+  }
+
+  async function loadExpense(user, id) {
+    const e = await db.get('SELECT * FROM expenses WHERE id = ? AND user_id = ?', [toId(id), user.id]);
+    if (!e) throw new HttpError(404, 'Despesa não encontrada.');
+    return e;
+  }
+
+  route('GET', '/api/expenses', async ({ user }) => {
+    const rows = await db.all('SELECT * FROM expenses WHERE user_id = ? ORDER BY spent_on DESC, id DESC', [user.id]);
+    return rows.map(expenseOut);
+  });
+
+  route('POST', '/api/expenses', async ({ user, body }) => {
+    const f = expenseFields(body);
+    const ref = clientRef(body.client_ref);
+    const findRef = () => (ref ? db.get('SELECT * FROM expenses WHERE user_id = ? AND client_ref = ?', [user.id, ref]) : null);
+    const dup = await findRef();
+    if (dup) return expenseOut(dup); // já recebido antes (reenvio sem internet)
+    const t = now();
+    try {
+      const row = await db.get(`INSERT INTO expenses (user_id, spent_on, description, category, payment, amount, currency, rate_brl, amount_brl, client_ref, created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        [user.id, f.spent_on, f.description, f.category, f.payment, f.amount, f.currency, f.rate_brl, f.amount_brl, ref, t, t]);
+      return { status: 201, body: expenseOut(row) };
+    } catch (err) {
+      const again = isUniqueViolation(err) && await findRef();
+      if (again) return expenseOut(again);
+      throw err;
+    }
+  });
+
+  route('PUT', '/api/expenses/:id', async ({ user, params, body }) => {
+    const e = await loadExpense(user, params.id);
+    const f = expenseFields(body);
+    const row = await db.get(`UPDATE expenses SET spent_on = ?, description = ?, category = ?, payment = ?, amount = ?, currency = ?,
+                                rate_brl = ?, amount_brl = ?, updated_at = ? WHERE id = ? RETURNING *`,
+      [f.spent_on, f.description, f.category, f.payment, f.amount, f.currency, f.rate_brl, f.amount_brl, now(), e.id]);
+    return expenseOut(row);
+  });
+
+  route('DELETE', '/api/expenses/:id', async ({ user, params }) => {
+    const e = await loadExpense(user, params.id);
+    await db.run('DELETE FROM expenses WHERE id = ?', [e.id]);
+    return { ok: true };
+  });
+
+  // Câmbio sugerido para o lançamento: dólar da empresa e yuan do dia (guardado 1 h).
+  let cnyCache = null;
+  route('GET', '/api/fx/rates', async ({ user }) => {
+    const company = await getCompany(user.cnpj);
+    if (!cnyCache || Date.now() - cnyCache.at > 3600_000) {
+      const q = await fetchCny().catch(() => null);
+      if (q) cnyCache = { ...q, at: Date.now() };
+    }
+    const usd = Number(company?.exchange_rate) || null;
+    return {
+      USD: usd, BRL: 1,
+      // Sem cotação do yuan: estimativa pelo dólar (1 US$ ≈ 7,2 ¥), avisada na tela.
+      CNY: cnyCache?.rate ?? (usd ? Math.round((usd / 7.2) * 10000) / 10000 : null),
+      cny_source: cnyCache ? cnyCache.source : 'estimado pelo dólar',
+    };
   });
 
   // --- roteiros de viagem ---

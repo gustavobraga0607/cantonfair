@@ -69,6 +69,12 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   legenda viram o tipo de cada atividade; o título no topo da planilha vira o título do roteiro) e mostra dia a dia para
   os usuários daquela empresa, destacando o dia de hoje. O administrador pode editar na tela, substituir a planilha
   ou excluir; só ele baixa a planilha original — os usuários veem apenas o roteiro visual.
+- **Controle de viagem** (aba *Conta*): extrato pessoal das despesas da viagem — cada usuário vê só o seu (o
+  administrador também). Lançamento com descrição, valor em yuan, real ou dólar, câmbio para reais (sugerido: yuan do dia
+  pela AwesomeAPI/ExchangeRate-API e dólar da empresa; editável), categoria (hospedagem, alimentação, transporte local,
+  passagens, feira, amostras, internet/telefone, compras, outros), data e forma de pagamento (cartão, dinheiro, Alipay,
+  WeChat Pay). Mostra total em R$, total por categoria (toque para filtrar) e o extrato por dia; exporta planilha (CSV
+  para Excel). Funciona sem internet como os demais cadastros.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

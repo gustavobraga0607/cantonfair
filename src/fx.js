@@ -122,4 +122,21 @@ function createFxService({ db, fetchQuote = fetchUsdBrl, now = () => Date.now() 
   return { ensureFresh, refreshInBackground, read: async () => status(await read()) };
 }
 
-module.exports = { fetchUsdBrl, createFxService, SOURCES };
+// Yuan → real (para o controle de despesas da viagem). Guardado 1 h em memória.
+async function fetchCnyBrl({ fetchImpl = globalThis.fetch, timeoutMs = 4000 } = {}) {
+  const sources = [
+    { name: 'AwesomeAPI', url: 'https://economia.awesomeapi.com.br/json/last/CNY-BRL', parse: (d) => Number(d.CNYBRL?.ask) },
+    { name: 'ExchangeRate-API', url: 'https://open.er-api.com/v6/latest/CNY', parse: (d) => Number(d.rates?.BRL) },
+  ];
+  for (const s of sources) {
+    try {
+      const res = await fetchImpl(s.url, { signal: AbortSignal.timeout(timeoutMs), headers: { Accept: 'application/json', 'User-Agent': 'MissaoChinaBRTrading/1.0' } });
+      if (!res.ok) continue;
+      const rate = s.parse(await res.json());
+      if (Number.isFinite(rate) && rate > 0.1 && rate < 5) return { rate: Math.round(rate * 10000) / 10000, source: s.name };
+    } catch { /* tenta a próxima fonte */ }
+  }
+  return null;
+}
+
+module.exports = { fetchUsdBrl, fetchCnyBrl, createFxService, SOURCES };

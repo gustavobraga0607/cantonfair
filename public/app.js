@@ -152,8 +152,8 @@ function resolveTempIds(kind, body, map) {
 const outboxPut = (item) => outboxTx('readwrite', (st) => st.put(item));
 const outboxDelete = (ref) => outboxTx('readwrite', (st) => st.delete(ref));
 
-const OUTBOX_PATHS = { supplier: '/api/suppliers', product: '/api/products' };
-const OUTBOX_KIND = { supplier: 'Fornecedor', product: 'Produto', offer: 'Oferta' };
+const OUTBOX_PATHS = { supplier: '/api/suppliers', product: '/api/products', expense: '/api/expenses' };
+const OUTBOX_KIND = { supplier: 'Fornecedor', product: 'Produto', offer: 'Oferta', expense: 'Despesa' };
 
 // Cria no servidor; sem internet, guarda na fila e devolve { queued }.
 async function createOrQueue(kind, body, label) {
@@ -1742,6 +1742,220 @@ async function viewModelTest() {
   });
 }
 
+// ===================== controle de viagem (despesas) =====================
+// Extrato pessoal: cada usuário lança e vê só as próprias despesas.
+
+const EXPENSE_CATS = [
+  ['hospedagem', '🏨', 'Hospedagem'], ['alimentacao', '🍜', 'Alimentação'], ['transporte', '🚕', 'Transporte local'],
+  ['passagens', '✈️', 'Passagens'], ['feira', '🏛️', 'Feira'], ['amostras', '📦', 'Amostras'],
+  ['comunicacao', '📱', 'Internet e telefone'], ['compras', '🛍️', 'Compras'], ['outros', '🧾', 'Outros'],
+];
+const PAYMENTS = [['cartao', '💳 Cartão', 'Cartão'], ['dinheiro', '💵 Dinheiro', 'Dinheiro'], ['alipay', 'Alipay', 'Alipay'], ['wechat', 'WeChat Pay', 'WeChat Pay'], ['outro', 'Outro', 'Outro']];
+const CURRENCY_SYMBOL = { CNY: '¥', BRL: 'R$', USD: 'US$' };
+const catInfo = (k) => EXPENSE_CATS.find((c) => c[0] === k) || EXPENSE_CATS[EXPENSE_CATS.length - 1];
+const moneyIn = (n, cur) => (cur === 'BRL' ? brl(n) : `${CURRENCY_SYMBOL[cur]} ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+const fmtDay = (iso) => {
+  const [y, m, d] = iso.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('pt-BR', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+// Câmbio do dia guardado no celular, para lançar sem internet.
+function savedRates() { try { return JSON.parse(localStorage.getItem('cfb.rates') || 'null'); } catch { return null; } }
+async function expenseRates() {
+  try {
+    const r = await api('/api/fx/rates', { fresh: true, timeout: 8000, background: true });
+    try { localStorage.setItem('cfb.rates', JSON.stringify(r)); } catch { /* sem armazenamento */ }
+    return r;
+  } catch {
+    return savedRates() || { BRL: 1, USD: state.me?.company?.exchange_rate ?? null, CNY: null, cny_source: null };
+  }
+}
+
+async function viewExpenses(query) {
+  setChrome({ title: 'Controle de viagem', tab: 'account', back: '#/account', fab: true });
+  loading();
+  const [saved, queued] = await Promise.all([
+    api('/api/expenses').catch((err) => { if (err instanceof OfflineError) return Object.assign([], { offline: true }); throw err; }),
+    outboxAll().then((items) => items.filter((i) => i.kind === 'expense').map((i) => ({
+      ...i.body, id: null, pending: true, error: i.error || null,
+      amount_brl: Math.round(Number(i.body.amount) * (i.body.currency === 'BRL' ? 1 : Number(i.body.rate_brl)) * 100) / 100,
+    }))),
+  ]);
+  const all = [...queued, ...saved];
+  const filter = query.get('cat') || '';
+  const list = filter ? all.filter((e) => e.category === filter) : all;
+  const total = all.reduce((s, e) => s + e.amount_brl, 0);
+  const byCat = EXPENSE_CATS.map(([k, icon, label]) => ({ k, icon, label, sum: all.filter((e) => e.category === k).reduce((s, e) => s + e.amount_brl, 0) }))
+    .filter((c) => c.sum > 0).sort((a, b) => b.sum - a.sum);
+  const days = [...new Set(list.map((e) => e.spent_on))].sort().reverse();
+
+  $app.innerHTML = `
+    ${saved.offline ? offlineNote('despesas') : ''}
+    <div class="card exp-summary">
+      <div class="item-sub">Total gasto na viagem</div>
+      <div class="exp-total">${brl(total)}</div>
+      <div class="item-sub">${all.length} lançamento(s)${all.some((e) => e.currency !== 'BRL') ? ' · valores em yuan e dólar convertidos pelo câmbio do lançamento' : ''}</div>
+      ${byCat.length ? `<div class="exp-cats">${byCat.map((c) => `
+        <a class="exp-cat${filter === c.k ? ' active' : ''}" href="#/expenses${filter === c.k ? '' : `?cat=${c.k}`}">
+          <span>${c.icon} ${esc(c.label)}</span><b>${brl(c.sum)}</b>
+          <i style="width:${Math.max(3, Math.round((100 * c.sum) / byCat[0].sum))}%"></i>
+        </a>`).join('')}</div>` : ''}
+    </div>
+    <div class="actions" style="margin:12px 0">
+      <a class="btn primary" href="#/expenses/new">+ Lançar despesa</a>
+      ${all.length ? '<button type="button" class="btn" id="export">⬇ Exportar planilha</button>' : ''}
+    </div>
+    ${filter ? `<div class="hint" style="margin-bottom:8px">Mostrando só: <b>${esc(catInfo(filter)[2])}</b> · <a href="#/expenses">ver todas</a></div>` : ''}
+    <div class="exp-list">${days.length ? days.map((d) => {
+      const items = list.filter((e) => e.spent_on === d);
+      return `
+      <div class="exp-day"><span>${esc(fmtDay(d))}</span><b>${brl(items.reduce((s, e) => s + e.amount_brl, 0))}</b></div>
+      ${items.map((e) => `
+        <a class="item exp-item" href="${e.pending ? '#/outbox' : `#/expenses/${e.id}/edit`}">
+          <div class="thumb">${catInfo(e.category)[1]}</div>
+          <div class="item-body">
+            <div class="item-title">${esc(e.description)}</div>
+            <div class="item-sub">${esc(catInfo(e.category)[2])}${e.payment ? ' · ' + esc((PAYMENTS.find((p) => p[0] === e.payment) || [])[1] || '') : ''}</div>
+            ${pendingTag(e)}
+          </div>
+          <div class="item-side"><div>${moneyIn(e.amount, e.currency)}</div>${e.currency !== 'BRL' ? `<div class="item-sub">${brl(e.amount_brl)}</div>` : ''}</div>
+        </a>`).join('')}`;
+    }).join('') : `<div class="empty">${all.length ? 'Nenhuma despesa nesta categoria.' : 'Nenhuma despesa lançada ainda.<br>Toque em “Lançar despesa” a cada gasto: hotel, táxi, refeições, amostras…'}</div>`}
+    </div>
+    <a class="fab" href="#/expenses/new" aria-label="Lançar despesa">+</a>`;
+
+  document.getElementById('export')?.addEventListener('click', () => exportExpenses(all));
+}
+
+// Planilha (CSV) que abre no Excel em português: separador ";" e vírgula decimal.
+function exportExpenses(list) {
+  const num = (n) => Number(n).toFixed(2).replace('.', ',');
+  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const rows = [['Data', 'Descrição', 'Categoria', 'Pagamento', 'Moeda', 'Valor', 'Câmbio (R$)', 'Valor em R$']]
+    .concat([...list].sort((a, b) => a.spent_on.localeCompare(b.spent_on)).map((e) => [
+      e.spent_on.split('-').reverse().join('/'), e.description, catInfo(e.category)[2],
+      (PAYMENTS.find((p) => p[0] === e.payment) || [])[2] || '', e.currency, num(e.amount),
+      e.currency === 'BRL' ? '1' : String(e.rate_brl).replace('.', ','), num(e.amount_brl),
+    ]));
+  rows.push(['', '', '', '', '', '', 'Total', num(list.reduce((s, e) => s + e.amount_brl, 0))]);
+  const csv = '\ufeff' + rows.map((r) => r.map(cell).join(';')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `controle-de-viagem-${isoToday()}.csv`;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+}
+
+async function viewExpenseForm(id) {
+  const editing = id != null;
+  setChrome({ title: editing ? 'Editar despesa' : 'Lançar despesa', back: '#/expenses', tab: 'account', form: true });
+  loading();
+  const [list, rates] = await Promise.all([editing ? api('/api/expenses') : null, expenseRates()]);
+  const e = editing ? list.find((x) => x.id === Number(id)) : null;
+  if (editing && !e) throw new Error('Despesa não encontrada.');
+  let lastCur = 'CNY';
+  try { lastCur = localStorage.getItem('cfb.expCur') || 'CNY'; } catch { /* sem armazenamento */ }
+  const cur0 = e?.currency || lastCur;
+  const rateFor = (c) => (c === 'BRL' ? 1 : rates[c]);
+  const formRef = newRef();
+
+  $app.innerHTML = `
+    <form class="card stack" id="f" novalidate>
+      <div><label for="description">Descrição <span class="req">*</span></label>
+        <input id="description" name="description" value="${esc(e?.description)}" placeholder="ex.: Táxi hotel → feira" autocomplete="off" required></div>
+      <div><label>Valor <span class="req">*</span></label>
+        <div class="segmented" id="cur">${['CNY', 'BRL', 'USD'].map((c) => `<button type="button" data-cur="${c}" class="${c === cur0 ? 'active' : ''}">${CURRENCY_SYMBOL[c]} ${c === 'CNY' ? 'Yuan' : c === 'BRL' ? 'Real' : 'Dólar'}</button>`).join('')}</div>
+        <input id="amount" name="amount" inputmode="decimal" value="${e ? String(e.amount).replace('.', ',') : ''}" placeholder="0,00" class="exp-amount"></div>
+      <div id="rate-box"><label for="rate">Câmbio: R$ por <span id="rate-cur"></span></label>
+        <input id="rate" name="rate" inputmode="decimal">
+        <div class="hint" id="rate-hint"></div></div>
+      <div class="exp-preview" id="preview"></div>
+      <div><label>Categoria <span class="req">*</span></label>
+        <div class="exp-cat-grid">${EXPENSE_CATS.map(([k, icon, label]) => `
+          <label class="exp-cat-opt"><input type="radio" name="category" value="${k}"${e?.category === k ? ' checked' : ''}><span>${icon}<small>${esc(label)}</small></span></label>`).join('')}</div></div>
+      <div class="row">
+        <div><label for="spent_on">Data</label><input id="spent_on" name="spent_on" type="date" value="${esc(e?.spent_on || isoToday())}"></div>
+        <div><label for="payment">Pagamento</label><select id="payment" name="payment"><option value="">—</option>${PAYMENTS.map(([k, l]) => `<option value="${k}"${e?.payment === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></div>
+      </div>
+      <div class="error-box" id="err" hidden></div>
+      <div class="actions form-actions">
+        ${editing ? '<button type="button" class="btn danger" id="del">Excluir</button>' : ''}
+        <button class="btn primary" type="submit">Salvar</button>
+      </div>
+    </form>`;
+
+  const form = document.getElementById('f');
+  let currency = cur0;
+  const rateInput = form.rate;
+  function setCurrency(c, { keepRate = false } = {}) {
+    currency = c;
+    form.querySelectorAll('#cur button').forEach((b) => b.classList.toggle('active', b.dataset.cur === c));
+    document.getElementById('rate-box').hidden = c === 'BRL';
+    document.getElementById('rate-cur').textContent = c === 'CNY' ? 'yuan (¥ 1)' : 'dólar (US$ 1)';
+    if (!keepRate) rateInput.value = rateFor(c) != null ? String(rateFor(c)).replace('.', ',') : '';
+    document.getElementById('rate-hint').textContent = c === 'CNY'
+      ? (rates.cny_source ? `Cotação do dia (${rates.cny_source}). Ajuste se o seu câmbio foi outro.` : 'Sem cotação agora: informe o câmbio.')
+      : 'Câmbio da empresa usado nas estimativas. Ajuste se o seu foi outro.';
+    preview();
+  }
+  function preview() {
+    const amount = parseNum(form.amount.value, { thousands: true });
+    const rate = currency === 'BRL' ? 1 : parseNum(rateInput.value);
+    document.getElementById('preview').textContent = amount > 0 && rate > 0 && currency !== 'BRL' ? `≈ ${brl(Math.round(amount * rate * 100) / 100)}` : '';
+  }
+  if (e && e.currency !== 'BRL') { setCurrency(e.currency, { keepRate: true }); rateInput.value = String(e.rate_brl).replace('.', ','); preview(); } else setCurrency(cur0);
+  form.querySelector('#cur').addEventListener('click', (ev) => { const c = ev.target.closest('[data-cur]')?.dataset.cur; if (c) setCurrency(c); });
+  form.amount.addEventListener('input', preview);
+  rateInput.addEventListener('input', preview);
+  if (!editing) form.description.focus();
+
+  form.addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const box = document.getElementById('err');
+    const fail = (m) => { box.textContent = m; box.hidden = false; };
+    box.hidden = true;
+    const amount = parseNum(form.amount.value, { thousands: true });
+    const rate = currency === 'BRL' ? 1 : parseNum(rateInput.value);
+    if (!form.description.value.trim()) return fail('Informe a descrição.');
+    if (!(amount > 0)) return fail('Informe o valor.');
+    if (!(rate > 0)) return fail('Informe o câmbio para reais.');
+    const category = form.querySelector('input[name=category]:checked')?.value;
+    if (!category) return fail('Escolha a categoria.');
+    const body = {
+      description: form.description.value.trim(), amount, currency, rate_brl: rate, category,
+      spent_on: form.spent_on.value || isoToday(), payment: form.payment.value || null,
+    };
+    try { localStorage.setItem('cfb.expCur', currency); } catch { /* sem armazenamento */ }
+    const btn = form.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      if (editing) {
+        await api(`/api/expenses/${id}`, { method: 'PUT', body });
+        toast('Despesa salva.');
+      } else {
+        body.client_ref = formRef;
+        const { saved } = await createOrQueue('expense', body, body.description);
+        toast(saved ? 'Despesa lançada.' : 'Sem internet: despesa guardada no celular. Ela será enviada quando a conexão voltar.');
+      }
+      location.hash = '#/expenses';
+    } catch (err) {
+      fail(err.message);
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  document.getElementById('del')?.addEventListener('click', async () => {
+    if (!confirm('Excluir esta despesa?')) return;
+    try {
+      await api(`/api/expenses/${id}`, { method: 'DELETE' });
+      toast('Despesa excluída.');
+      location.hash = '#/expenses';
+    } catch (err) { toast(err.message); }
+  });
+}
+
 // ===================== fila de envio (sem internet) =====================
 
 async function viewOutbox() {
@@ -2467,6 +2681,9 @@ async function viewAccount() {
       ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
     </div>
+    <a class="item" href="#/expenses" style="margin-top:14px"><div class="thumb">🧾</div><div class="item-body">
+      <div class="item-title">Controle de viagem</div>
+      <div class="item-sub">Lance e categorize as despesas da viagem — seu extrato pessoal</div></div></a>
     <h2 id="cambio">Câmbio para estimativas</h2>
     <div id="rate-card"></div>
     <div id="freight-card"></div>
@@ -2512,6 +2729,9 @@ const routes = [
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
   [/^\/products\/scan$/, (m, q) => viewProductScan(q)],
   [/^\/outbox$/, viewOutbox],
+  [/^\/expenses$/, (m, q) => viewExpenses(q)],
+  [/^\/expenses\/new$/, () => viewExpenseForm(null)],
+  [/^\/expenses\/(\d+)\/edit$/, (m) => viewExpenseForm(m[1])],
   [/^\/products\/(\d+)$/, (m) => viewProduct(m[1])],
   [/^\/products\/(\d+)\/edit$/, (m, q) => viewProductForm(m[1], q)],
   [/^\/map$/, viewMap],

@@ -129,6 +129,25 @@ CREATE TABLE IF NOT EXISTS offers (
 );
 CREATE INDEX IF NOT EXISTS idx_offers_product ON offers(product_id);
 CREATE INDEX IF NOT EXISTS idx_offers_supplier ON offers(supplier_id);
+
+-- Controle de viagem: despesas de cada usuário (extrato pessoal).
+CREATE TABLE IF NOT EXISTS expenses (
+  id          {{ID}},
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  spent_on    TEXT NOT NULL,                    -- data (AAAA-MM-DD)
+  description TEXT NOT NULL,
+  category    TEXT NOT NULL,
+  payment     TEXT,
+  amount      {{REAL}} NOT NULL,                -- valor na moeda paga
+  currency    TEXT NOT NULL,                    -- CNY, BRL ou USD
+  rate_brl    {{REAL}} NOT NULL,                -- R$ por unidade da moeda no dia do lançamento
+  amount_brl  {{REAL}} NOT NULL,
+  client_ref  TEXT,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_expenses_user ON expenses(user_id, spent_on);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_ref ON expenses(user_id, client_ref);
 `;
 
 const TYPES = {

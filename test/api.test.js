@@ -17,7 +17,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
+    await db.run('DROP TABLE IF EXISTS expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -25,7 +25,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts, benchReaders,
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts, benchReaders, fetchCny: async () => ({ rate: 0.71, source: 'teste' }),
     fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -397,6 +397,59 @@ test('revisão 2: cookie malformado, lista leve de nomes e fornecedor de outra e
   r = await a('GET', '/api/products?fields=names');
   assert.deepEqual(r.body, [{ id: r.body[0].id, name: 'Garrafa', company_cnpj: '11222333000181', offer_count: 2 }]);
   assert.equal((await b('GET', '/api/products?fields=names')).body.length, 0, 'só os da própria empresa');
+});
+
+test('controle de viagem: cada usuário tem o próprio extrato, com conversão para reais', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const a = client(base);
+  const colega = client(base);
+  const admin = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await colega('POST', '/api/register', { name: 'C', email: 'c@x.com', password: '12345678', cnpj: '11222333000181' });
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
+  assert.equal((await client(base)('GET', '/api/expenses')).status, 401);
+
+  let r = await a('GET', '/api/fx/rates');
+  assert.equal(r.body.CNY, 0.71);
+  assert.equal(r.body.BRL, 1);
+
+  // validações
+  assert.equal((await a('POST', '/api/expenses', { description: 'Táxi', spent_on: '2026-10-16', category: 'transporte', currency: 'CNY', amount: 50 })).status, 400, 'yuan sem câmbio');
+  assert.equal((await a('POST', '/api/expenses', { description: 'Táxi', spent_on: '16/10/2026', category: 'transporte', currency: 'BRL', amount: 50 })).status, 400);
+  assert.equal((await a('POST', '/api/expenses', { description: 'Táxi', spent_on: '2026-10-16', category: 'xyz', currency: 'BRL', amount: 50 })).status, 400);
+  assert.equal((await a('POST', '/api/expenses', { description: 'Táxi', spent_on: '2026-10-16', category: 'transporte', currency: 'BRL', amount: -5 })).status, 400);
+
+  r = await a('POST', '/api/expenses', { description: 'Táxi para a feira', spent_on: '2026-10-16', category: 'transporte', payment: 'wechat', currency: 'CNY', amount: 58.5, rate_brl: 0.71, client_ref: 'exp-ref-12345678' });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.amount_brl, 41.54);
+  const id = r.body.id;
+  // reenvio (sem internet) não duplica
+  r = await a('POST', '/api/expenses', { description: 'Táxi para a feira', spent_on: '2026-10-16', category: 'transporte', payment: 'wechat', currency: 'CNY', amount: 58.5, rate_brl: 0.71, client_ref: 'exp-ref-12345678' });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.id, id);
+  r = await a('POST', '/api/expenses', { description: 'Hotel', spent_on: '2026-10-15', category: 'hospedagem', currency: 'BRL', amount: 800, rate_brl: 999 });
+  assert.equal(r.body.rate_brl, 1, 'real não tem câmbio');
+  assert.equal(r.body.amount_brl, 800);
+
+  r = await a('GET', '/api/expenses');
+  assert.deepEqual(r.body.map((e) => e.description), ['Táxi para a feira', 'Hotel'], 'mais recente primeiro');
+
+  // outra pessoa da mesma empresa e o administrador não veem nem alteram
+  assert.equal((await colega('GET', '/api/expenses')).body.length, 0);
+  assert.equal((await admin('GET', '/api/expenses')).body.length, 0);
+  assert.equal((await colega('PUT', `/api/expenses/${id}`, { description: 'x', spent_on: '2026-10-16', category: 'outros', currency: 'BRL', amount: 1 })).status, 404);
+  assert.equal((await admin('DELETE', `/api/expenses/${id}`)).status, 404);
+
+  r = await a('PUT', `/api/expenses/${id}`, { description: 'Táxi', spent_on: '2026-10-16', category: 'transporte', currency: 'USD', amount: 10, rate_brl: 5.5 });
+  assert.equal(r.body.amount_brl, 55);
+  assert.equal(r.body.payment, null);
+  assert.equal((await a('DELETE', `/api/expenses/${id}`)).status, 200);
+  assert.equal((await a('GET', '/api/expenses')).body.length, 1);
+
+  // excluir o usuário apaga o extrato dele
+  const users = (await admin('GET', '/api/admin/users')).body;
+  assert.equal((await admin('DELETE', `/api/admin/users/${users.find((u) => u.email === 'a@x.com').id}`)).status, 200);
 });
 
 test('leitor de cartões desligado sem chave de API', async (t) => {
