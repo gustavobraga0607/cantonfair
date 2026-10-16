@@ -1658,7 +1658,7 @@ async function viewModelTest() {
       (cartões em inglês e chinês, etiqueta, tabela em US$ e tabela em yuan). Custo do teste completo: cerca de US$ 0,60.</p>
     <div class="card">
       <div class="item-sub">Modelos comparados</div>
-      <div>${models.map((m) => `<b>${esc(m.label)}</b>${m.current ? ' <span class="badge good">em uso</span>' : ''} <small class="item-sub">US$ ${m.input} / ${m.output} por milhão de tokens</small>`).join('<br>')}</div>
+      <div>${models.map((m) => `<b>${esc(m.label)}</b>${m.current ? ' <span class="badge good">em uso</span>' : ''} <small class="item-sub">${m.input == null ? 'lê com o primeiro e passa para o segundo só quando precisa' : `US$ ${m.input} / ${m.output} por milhão de tokens`}</small>`).join('<br>')}</div>
       <button class="btn primary block" id="run" style="margin-top:12px">▶ Rodar teste com as ${samples.length} fotos</button>
     </div>
     <div id="summary"></div>
@@ -1671,7 +1671,7 @@ async function viewModelTest() {
       <div id="own-result"></div>
     </div>`;
 
-  const totals = Object.fromEntries(models.map((m) => [m.id, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0 }]));
+  const totals = Object.fromEntries(models.map((m) => [m.id, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0, escalated: 0 }]));
   function renderSummary(done) {
     document.getElementById('summary').innerHTML = `
       <h2>Resultado ${done < samples.length ? `(${done} de ${samples.length}…)` : ''}</h2>
@@ -1679,7 +1679,7 @@ async function viewModelTest() {
       ${models.map((m) => {
         const t = totals[m.id];
         const pct = t.total ? Math.round((100 * t.points) / t.total) : null;
-        return `<tr><td><b>${esc(m.label)}</b>${t.errors ? `<br><small class="item-sub">${t.errors} erro(s)</small>` : ''}</td>
+        return `<tr><td><b>${esc(m.label)}</b>${t.errors ? `<br><small class="item-sub">${t.errors} erro(s)</small>` : ''}${t.escalated ? `<br><small class="item-sub">usou a reserva em ${t.escalated} foto(s)</small>` : ''}</td>
           <td><b>${pct == null ? '—' : pct + '%'}</b><br><small class="item-sub">${t.points}/${t.total}</small></td>
           <td>${t.n ? money(t.cost / t.n) : '—'}</td><td>${t.n ? secs(t.ms / t.n) : '—'}</td></tr>`;
       }).join('')}</table></div>`;
@@ -1687,7 +1687,7 @@ async function viewModelTest() {
 
   document.getElementById('run').addEventListener('click', async (e) => {
     e.target.disabled = true;
-    for (const t of Object.values(totals)) Object.assign(t, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0 });
+    for (const t of Object.values(totals)) Object.assign(t, { points: 0, total: 0, cost: 0, ms: 0, n: 0, errors: 0, escalated: 0 });
     const details = document.getElementById('details');
     details.innerHTML = '';
     renderSummary(0);
@@ -1701,13 +1701,14 @@ async function viewModelTest() {
         t.points += x.points || 0; t.total += x.total || 0;
         if (x.cost_usd != null) { t.cost += x.cost_usd; t.ms += x.ms || 0; t.n++; }
         if (x.error) t.errors++;
+        if (x.escalated) t.escalated++;
       }
       done++;
       renderSummary(done);
       details.insertAdjacentHTML('beforeend', `
         <div class="card bench-sample">
           <div class="scan-head"><img class="scan-src" src="${s.image}" alt=""><b style="flex:1">${esc(s.label)}</b></div>
-          ${r.results.map((x) => `<div class="bench-row"><span><b>${esc(label(x.model))}</b> · ${x.points}/${x.total}</span>
+          ${r.results.map((x) => `<div class="bench-row"><span><b>${esc(label(x.model))}</b> · ${x.points}/${x.total}${x.escalated ? ` <small class="item-sub">(reserva: ${esc(x.escalated)})</small>` : ''}</span>
             <small class="item-sub">${money(x.cost_usd)} · ${secs(x.ms)}</small>
             ${x.error ? `<div class="error-box">${esc(x.error)}</div>` : x.misses?.length ? `<div class="item-sub">Errou: ${esc(x.misses.join(', '))}</div>` : '<div class="item-sub">✓ tudo certo</div>'}</div>`).join('')}
         </div>`);

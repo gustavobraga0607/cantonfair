@@ -346,7 +346,8 @@ test('teste de modelos de leitura: só administrador; roda as fotos em todos os 
     readCard: async (m, b, meta) => { Object.assign(meta, { ms: 5, cost_usd: good ? 0.04 : 0.001 }); return good ? { company_name: 'Hairun', contact_name: 'Lily Chen', phone: '+86 138 0574 2266', phone_whatsapp: true, phone_wechat: false, booth: '11.2 C23', province: 'Zhejiang', email: 'lily@hairun-hw.com', wechat: 'lilychen_nb' } : { company_name: 'Hairun' }; },
     readProducts: async () => { throw new Error('falhou'); },
   });
-  const { base, close } = await setup({ adminEmails: ['chefe@br.com'], benchReaders: { 'claude-opus-5-5': fake(true), 'claude-haiku-5-5': fake(false) } });
+  const cfg = { readCard: async (m, b, meta) => { Object.assign(meta, { model: 'claude-opus-5-5', escalated: 'leitura incompleta', cost_usd: 0.05 }); return fake(true).readCard(m, b, {}); }, readProducts: async () => ({ products: [] }) };
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'], benchReaders: { 'claude-opus-5-5': fake(true), 'claude-haiku-5-5': fake(false), config: cfg } });
   t.after(close);
   const a = client(base);
   const admin = client(base);
@@ -354,19 +355,23 @@ test('teste de modelos de leitura: só administrador; roda as fotos em todos os 
   await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
   assert.equal((await a('GET', '/api/admin/ocr-bench')).status, 403);
   let r = await admin('GET', '/api/admin/ocr-bench');
-  assert.equal(r.body.models.length, 2);
-  assert.ok(r.body.models.find((m) => m.id === 'claude-opus-5-5').current);
+  assert.equal(r.body.models.length, 3);
+  assert.ok(r.body.models.find((m) => m.id === 'config').current, 'a configuração com reserva é a em uso');
+  assert.match(r.body.models.find((m) => m.id === 'config').label, /Haiku 5.5 \+ Opus 5.5 de reserva/);
   assert.equal(r.body.samples.length, 6);
   r = await admin('POST', '/api/admin/ocr-bench/card-bilingual', {});
-  const [opus, haiku] = r.body.results;
+  const [opus, haiku, config] = r.body.results;
+  assert.equal(config.model, 'config', 'o id da coluna não é trocado pelo modelo que respondeu');
+  assert.equal(config.served_by, 'claude-opus-5-5');
+  assert.equal(config.escalated, 'leitura incompleta');
   assert.equal(opus.points, opus.total);
   assert.ok(haiku.points < haiku.total);
   assert.equal(haiku.cost_usd, 0.001);
   r = await admin('POST', '/api/admin/ocr-bench/price-table', {});
-  assert.ok(r.body.results.every((x) => x.error && x.points === 0 && x.total > 0));
+  assert.ok(r.body.results.filter((x) => x.model !== 'config').every((x) => x.error && x.points === 0 && x.total > 0));
   assert.equal((await admin('POST', '/api/admin/ocr-bench/nao-existe', {})).status, 404);
   r = await admin('POST', '/api/admin/ocr-compare', { kind: 'card', image: PNG });
-  assert.equal(r.body.results.length, 2);
+  assert.equal(r.body.results.length, 3);
   assert.equal((await a('POST', '/api/admin/ocr-compare', { kind: 'card', image: PNG })).status, 403);
 });
 

@@ -67,9 +67,9 @@ async function runModels(readers, kind, mime, base64, score) {
     const meta = {};
     try {
       const out = kind === 'card' ? await r.readCard(mime, base64, meta) : await r.readProducts(mime, base64, meta);
-      return { model, ...meta, output: out, ...(score ? score(out) : {}) };
+      return { ...meta, model, served_by: meta.model ?? null, output: out, ...(score ? score(out) : {}) };
     } catch (err) {
-      return { model, ...meta, error: err.message, ...(score ? { points: 0, total: null, misses: ['erro na leitura'] } : {}) };
+      return { ...meta, model, served_by: meta.model ?? null, error: err.message, ...(score ? { points: 0, total: null, misses: ['erro na leitura'] } : {}) };
     }
   }));
 }

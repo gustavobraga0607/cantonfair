@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber } = require('../src/ocr');
+const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency } = require('../src/ocr');
 
 function fakeClient(response, calls = []) {
   return { beta: { messages: { create: async (params) => { calls.push(params); if (response instanceof Error) throw response; return response; } } } };
@@ -24,10 +24,11 @@ test('envia a imagem com saída estruturada e devolve os campos do cartão', asy
   assert.deepEqual(Object.keys(out).sort(), Object.keys(FIELDS).sort());
 
   const p = calls[0];
-  assert.equal(p.model, 'claude-opus-5-5');
+  assert.equal(p.model, 'claude-haiku-5-5', 'Haiku é o modelo principal');
+  assert.equal(p.output_config.effort, 'high');
+  assert.equal(p.fallbacks, undefined, 'o Haiku não aceita troca automática do servidor');
   assert.equal(p.output_config.format.type, 'json_schema');
   assert.equal(p.output_config.format.schema.additionalProperties, false);
-  assert.equal(p.fallbacks, 'default');
   assert.equal(p.output_config.format.schema.properties.phone_whatsapp.type, 'boolean');
   assert.equal(out.phone_whatsapp, false);
   const prov = p.output_config.format.schema.properties.province;
@@ -93,7 +94,7 @@ test('produtos pela foto: lista fechada de Incoterm, números normalizados e ite
   const schema = calls[0].output_config.format.schema;
   assert.equal(schema.properties.products.type, 'array');
   assert.ok(schema.properties.products.items.properties.incoterm.enum.includes('FOB'));
-  assert.equal(calls[0].fallbacks, 'default');
+  assert.equal(calls[0].model, 'claude-haiku-5-5');
   assert.equal(createProductReader({}), null);
 });
 
@@ -132,4 +133,79 @@ test('teste de modelos: gabarito pontua leitura perfeita com 100% e aponta os er
   r = scoreProducts(rmb.expected, { products: good.products.map((p) => ({ ...p, price_usd: 2.3 })) });
   assert.equal(r.misses.filter((m) => m.includes('preço US$')).length, 4);
   for (const s of samples) assert.ok(s.data.length > 1000 && s.expected, s.id);
+});
+
+// Cliente falso que responde por modelo.
+function byModel(map, calls = []) {
+  return { beta: { messages: { create: async (params) => {
+    calls.push(params);
+    const r = map[params.model];
+    if (r instanceof Error) throw r;
+    return { usage: { input_tokens: 1000, output_tokens: 500 }, ...r };
+  } } } };
+}
+const ok = (obj) => ({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(obj) }] });
+
+test('Haiku com Opus de reserva: só chama o Opus quando o Haiku recusa, falha ou lê pouco', async () => {
+  const good = { company_name: 'ACME', phone: '+86 138 0000 1111', address: 'Yiwu City' };
+  // Haiku leu bem: o Opus não é chamado
+  let calls = [];
+  let read = createCardReader({ client: byModel({ 'claude-haiku-5-5': ok(good) }, calls), fallbackModel: 'claude-opus-5-5' });
+  let meta = {};
+  let out = await read('image/png', 'x', meta);
+  assert.equal(out.company_name, 'ACME');
+  assert.equal(out.province, 'Zhejiang', 'província deduzida pela cidade');
+  assert.deepEqual(calls.map((c) => c.model), ['claude-haiku-5-5']);
+  assert.equal(meta.escalated, undefined);
+  assert.ok(Math.abs(meta.cost_usd - (1000 * 0.10 + 500 * 0.50) / 1e6) < 1e-12);
+
+  // Haiku recusou: Opus lê, com a troca automática do servidor ligada nele
+  calls = [];
+  read = createCardReader({ client: byModel({ 'claude-haiku-5-5': { stop_reason: 'refusal', content: [] }, 'claude-opus-5-5': ok(good) }, calls), fallbackModel: 'claude-opus-5-5' });
+  meta = {};
+  out = await read('image/png', 'x', meta);
+  assert.equal(out.company_name, 'ACME');
+  assert.deepEqual(calls.map((c) => c.model), ['claude-haiku-5-5', 'claude-opus-5-5']);
+  assert.equal(calls[1].fallbacks, 'default');
+  assert.equal(meta.escalated, 'erro');
+  assert.ok(meta.cost_usd > (1000 * 4 + 500 * 20) / 1e6, 'custo soma as duas leituras');
+
+  // leitura fraca (sem empresa) vai para o Opus
+  calls = [];
+  read = createCardReader({ client: byModel({ 'claude-haiku-5-5': ok({ phone: '1' }), 'claude-opus-5-5': ok(good) }, calls), fallbackModel: 'claude-opus-5-5' });
+  meta = {};
+  out = await read('image/png', 'x', meta);
+  assert.equal(out.company_name, 'ACME');
+  assert.equal(meta.escalated, 'leitura incompleta');
+
+  // Opus também falhou: fica com o que o Haiku leu
+  read = createCardReader({ client: byModel({ 'claude-haiku-5-5': ok({ phone: '1' }), 'claude-opus-5-5': Object.assign(new Error('x'), { status: 500 }) }), fallbackModel: 'claude-opus-5-5' });
+  out = await read('image/png', 'x', {});
+  assert.equal(out.phone, '1');
+
+  // chave inválida não tenta o Opus (teria o mesmo problema)
+  calls = [];
+  read = createCardReader({ client: byModel({ 'claude-haiku-5-5': Object.assign(new Error('auth'), { status: 401 }) }, calls), fallbackModel: 'claude-opus-5-5' });
+  await assert.rejects(read('image/png', 'x', {}), (e) => e.status === 503);
+  assert.equal(calls.length, 1);
+
+  // produtos: nenhum item encontrado vai para o Opus
+  calls = [];
+  const p = createProductReader({ client: byModel({ 'claude-haiku-5-5': ok({ products: [] }), 'claude-opus-5-5': ok({ products: [{ name: 'Copo', price_usd: '1.2', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '', name_original: '' }] }) }, calls), fallbackModel: 'claude-opus-5-5' });
+  const r = await p('image/png', 'x', {});
+  assert.equal(r.products.length, 1);
+  assert.equal(calls.length, 2);
+});
+
+test('regras fixas: província pelo endereço e preço em yuan não vira dólar', () => {
+  assert.equal(provinceFromAddress('No. 88 Jiangnan Road, Ningbo, Zhejiang, China', ''), 'Zhejiang');
+  assert.equal(provinceFromAddress('广东省佛山市顺德区北滘镇工业大道18号', ''), 'Guangdong');
+  assert.equal(provinceFromAddress('Room 301, No. 5 Futian Road, Yiwu City', ''), 'Zhejiang');
+  assert.equal(provinceFromAddress('Yiwu City, Zhejiang', 'Guangdong'), 'Zhejiang', 'província escrita no endereço vale mais que a leitura');
+  assert.equal(provinceFromAddress('No. 1 Shanghai Rd, Ningbo', ''), 'Zhejiang', 'rua com nome de cidade não conta');
+  assert.equal(provinceFromAddress('宁波市北京路8号', ''), 'Zhejiang');
+  assert.equal(provinceFromAddress('Unknown street 5', 'Fujian'), 'Fujian', 'sem pista no endereço, fica a leitura');
+  assert.equal(guardCurrency({ price_usd: 16.8, price_note: '¥16.80' }).price_usd, null);
+  assert.equal(guardCurrency({ price_usd: 2.35, price_note: 'US$2.35 (1000 pcs) / ¥17' }).price_usd, 2.35);
+  assert.equal(guardCurrency({ price_usd: 2.35, price_note: '' }).price_usd, 2.35);
 });

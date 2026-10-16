@@ -30,9 +30,15 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   província (deduzida pela cidade quando o cartão não a traz); e-mail, WeChat, site e outros dados vão para as
   observações. Uma foto nova atualiza os campos que o cartão traz; os demais ficam como estão.
   Requer a variável `ANTHROPIC_API_KEY`; sem ela, o cadastro funciona normalmente sem a leitura automática.
-  O modelo usado é o Claude Opus 5.5; a variável `OCR_MODEL` troca o modelo (ex.: `claude-haiku-5-5`) sem mudar o código.
+  As leituras usam o **Claude Haiku 5.5** (esforço `high`) com o **Claude Opus 5.5 de reserva**: o Opus só é chamado
+  quando o Haiku recusa, falha ou devolve uma leitura incompleta (cartão sem empresa ou sem nenhum contato; foto sem
+  nenhum produto). Regras fixas no servidor completam a leitura: província pelo endereço (nome da província ou cidade
+  conhecida, ignorando nomes de rua), preço em yuan nunca vira dólar, telefone de WhatsApp/WeChat preferido.
+  Variáveis: `OCR_MODEL` (modelo principal), `OCR_FALLBACK_MODEL` (reserva; `none` desliga). Para voltar ao Opus em
+  tudo: `OCR_MODEL=claude-opus-5-5`.
 - **Teste de modelos de leitura** (administrador, em *Conta → Administração*): roda 6 fotos de teste fictícias (cartões em
-  inglês e chinês, etiqueta, tabela em US$ e tabela em yuan) no Opus 5.5, Sonnet 5.5 e Haiku 5.5, confere com o gabarito
+  inglês e chinês, etiqueta, tabela em US$ e tabela em yuan) no Opus 5.5, Sonnet 5.5, Haiku 5.5 e na configuração em uso
+  (Haiku + Opus de reserva), confere com o gabarito
   e mostra acerto, custo e tempo de cada um; também compara os modelos lado a lado com uma foto do próprio administrador.
 - **Produtos**: nome, foto, preço no Brasil (R$), unidades por container 40HQ e uma ou mais ofertas — cada oferta tem
   fornecedor, preço em US$, MOQ, Incoterm e % de custo de nacionalização.

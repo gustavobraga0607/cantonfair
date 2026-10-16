@@ -4,8 +4,13 @@
 // Entende cartões em inglês, chinês e outros idiomas e devolve os campos já
 // separados para preencher o cadastro do fornecedor.
 
-// Modelo usado nas leituras; pode ser trocado pela variável OCR_MODEL (ex.: claude-haiku-5-5).
-const MODEL = 'claude-opus-5-5';
+// Leituras: Haiku 5.5 (barato e rápido) com o Opus 5.5 de reserva, chamado só quando o Haiku
+// recusa, falha ou devolve uma leitura incompleta. OCR_MODEL / OCR_FALLBACK_MODEL trocam os modelos
+// sem mudar o código (OCR_FALLBACK_MODEL=none desliga a reserva).
+const MODEL = 'claude-haiku-5-5';
+const FALLBACK_MODEL = 'claude-opus-5-5';
+// O Haiku lê melhor pensando um pouco mais; continua muito mais barato que o Opus.
+const effortFor = (model) => (/haiku/.test(model) ? 'high' : 'medium');
 // Preço por milhão de tokens (US$, entrada/saída) — usado para estimar o custo de cada leitura.
 const PRICES = {
   'claude-opus-5-5': { input: 4, output: 20, label: 'Opus 5.5' },
@@ -88,8 +93,8 @@ async function askVision(client, model, { system, schema, prompt, mime, base64, 
   try {
     response = await client.beta.messages.create({
       model,
-      max_tokens: 8000,
-      output_config: { effort: 'medium', format: { type: 'json_schema', schema } },
+      max_tokens: 16000,
+      output_config: { effort: effortFor(model), format: { type: 'json_schema', schema } },
       // Se o modelo recusar por política, a API tenta automaticamente o modelo recomendado.
       ...(supportsFallback(model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
       system,
@@ -108,10 +113,12 @@ async function askVision(client, model, { system, schema, prompt, mime, base64, 
     throw new OcrError(502, 'Não foi possível ler a foto agora. Preencha manualmente ou tente de novo.');
   }
   if (meta) {
+    // Soma com uma chamada anterior (quando a leitura passou para o modelo de reserva).
+    const add = (a, b) => (a == null && b == null ? null : (a || 0) + (b || 0));
     Object.assign(meta, {
-      model: response.model || model, ms: Date.now() - started,
-      input_tokens: response.usage?.input_tokens ?? null, output_tokens: response.usage?.output_tokens ?? null,
-      cost_usd: costUsd(model, response.usage),
+      model: response.model || model, ms: add(meta.ms, Date.now() - started),
+      input_tokens: add(meta.input_tokens, response.usage?.input_tokens), output_tokens: add(meta.output_tokens, response.usage?.output_tokens),
+      cost_usd: add(meta.cost_usd, costUsd(model, response.usage)),
     });
   }
   if (response.stop_reason === 'refusal') {
@@ -123,11 +130,35 @@ async function askVision(client, model, { system, schema, prompt, mime, base64, 
   }
 }
 
-function createCardReader({ client, model = MODEL } = {}) {
+// Lê com o modelo principal e, se ele recusar, falhar ou a leitura vier fraca, com o de reserva.
+async function withFallback({ model, fallbackModel, meta, read, weak }) {
+  let first;
+  let firstErr;
+  try {
+    first = await read(model);
+    if (!fallbackModel || !weak(first)) return first;
+  } catch (err) {
+    // Chave inválida ou limite de uso: a reserva teria o mesmo problema.
+    if (!fallbackModel || !(err instanceof OcrError) || ![422, 502].includes(err.status)) throw err;
+    firstErr = err;
+  }
+  if (meta) meta.escalated = firstErr ? 'erro' : 'leitura incompleta';
+  try {
+    return await read(fallbackModel);
+  } catch (err) {
+    if (first) return first; // a reserva falhou: fica com o que o principal leu
+    throw firstErr || err;
+  }
+}
+
+// Cartão sem empresa ou sem nenhum contato: vale tentar o modelo de reserva.
+const weakCard = (c) => !(c.company_name || c.company_name_local) || !(c.phone || c.email || c.wechat || c.whatsapp);
+
+function createCardReader({ client, model = MODEL, fallbackModel = null } = {}) {
   if (!client) return null;
 
-  return async function readCard(mime, base64, meta) {
-    const data = await askVision(client, model, {
+  async function readWith(m, mime, base64, meta) {
+    const data = await askVision(client, m, {
       system: SYSTEM, schema: SCHEMA, prompt: 'Extraia os dados deste cartão de visita.', mime, base64, what: 'cartão', meta,
     });
     const out = {};
@@ -135,8 +166,48 @@ function createCardReader({ client, model = MODEL } = {}) {
       out[k] = BOOL_FIELDS.includes(k) ? data[k] === true : typeof data[k] === 'string' ? data[k].trim().slice(0, 500) : '';
     }
     if (!PROVINCES.some((p) => p.name === out.province)) out.province = '';
+    out.province = provinceFromAddress(out.address, out.province);
     return preferMessagingPhone(out);
+  }
+
+  return function readCard(mime, base64, meta) {
+    return withFallback({ model, fallbackModel, meta, weak: weakCard, read: (m) => readWith(m, mime, base64, meta) });
   };
+}
+
+// ---------- província pelo endereço ----------
+// Regra fixa (não depende do modelo): o nome da província escrito no endereço vale mais que a
+// leitura; sem ele, usa a leitura; sem leitura, deduz pela cidade (polos comuns de fornecedores).
+const CITY_PROVINCE = {
+  Zhejiang: ['ningbo', 'yiwu', 'hangzhou', 'wenzhou', 'jinhua', 'yongkang', 'shaoxing', 'huzhou', 'jiaxing', 'cixi', 'yuyao', 'wuyi', 'lishui', 'quzhou', 'zhoushan',
+    '宁波', '义乌', '杭州', '温州', '金华', '永康', '绍兴', '湖州', '嘉兴', '慈溪', '余姚', '武义', '丽水', '衢州', '舟山'],
+  Guangdong: ['guangzhou', 'shenzhen', 'dongguan', 'foshan', 'shantou', 'zhongshan', 'jiangmen', 'huizhou', 'zhuhai', 'chaozhou', 'jieyang', 'shunde', 'zhaoqing', 'qingyuan',
+    '广州', '深圳', '东莞', '佛山', '汕头', '中山', '江门', '惠州', '珠海', '潮州', '揭阳', '顺德', '肇庆', '清远'],
+  Fujian: ['xiamen', 'quanzhou', 'fuzhou', 'jinjiang', 'putian', 'zhangzhou', 'shishi', '厦门', '泉州', '福州', '晋江', '莆田', '漳州', '石狮'],
+  Jiangsu: ['suzhou', 'wuxi', 'nanjing', 'changzhou', 'nantong', 'yangzhou', 'kunshan', 'danyang', 'xuzhou', 'zhenjiang', 'yancheng',
+    '苏州', '无锡', '南京', '常州', '南通', '扬州', '昆山', '丹阳', '徐州', '镇江', '盐城'],
+  Shandong: ['qingdao', 'jinan', 'yantai', 'weifang', 'linyi', 'zibo', 'rizhao', 'weihai', '青岛', '济南', '烟台', '潍坊', '临沂', '淄博', '日照', '威海'],
+  Hebei: ['shijiazhuang', 'baoding', 'tangshan', 'langfang', 'cangzhou', '石家庄', '保定', '唐山', '廊坊', '沧州'],
+  Henan: ['zhengzhou', 'luoyang', '郑州', '洛阳'], Hubei: ['wuhan', '武汉'], Hunan: ['changsha', '长沙'],
+  Sichuan: ['chengdu', '成都'], Anhui: ['hefei', 'wuhu', '合肥', '芜湖'], Jiangxi: ['nanchang', 'jingdezhen', '南昌', '景德镇'],
+  Liaoning: ['dalian', 'shenyang', '大连', '沈阳'], Shaanxi: ["xi'an", 'xian', '西安'], Guangxi: ['nanning', 'guilin', '南宁', '桂林'],
+};
+const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// Nome de rua com nome de cidade ("Shanghai Road", "北京路") não conta como localização.
+const STREET = String.raw`\s*(road|rd\.?|street|st\.?|avenue|ave\.?|lu|dadao|boulevard|blvd)\b`;
+const wordRe = (w) => (/[a-z]/i.test(w)
+  ? new RegExp(`(^|[^a-z])${escRe(w)}(?!${STREET})([^a-z]|$)`, 'i')
+  : new RegExp(`${escRe(w)}(?![路街道巷])`));
+function provinceFromAddress(address, current = '') {
+  const a = String(address || '');
+  if (!a) return current;
+  const named = PROVINCES.find((p) => wordRe(p.name).test(a) || wordRe(p.local).test(a));
+  if (named) return named.name;
+  if (current) return current;
+  for (const [prov, cities] of Object.entries(CITY_PROVINCE)) {
+    if (cities.some((c) => wordRe(c).test(a))) return prov;
+  }
+  return '';
 }
 
 // ---------- produtos pela foto ----------
@@ -180,7 +251,12 @@ const PRODUCT_SCHEMA = {
 const PRODUCT_SYSTEM = `Você ajuda compradores brasileiros na Feira de Cantão (China) a cadastrar produtos a partir de fotos tiradas no estande.
 A foto pode ser do próprio produto, de uma etiqueta, embalagem, página de catálogo ou tabela de preços (em inglês, chinês ou outro idioma).
 Transcreva preços, quantidades e códigos exatamente como aparecem; não invente nem estime valores ausentes (campo sem informação = string vazia).
-Numa tabela ou catálogo, liste cada produto/linha separadamente. Ignore cabeçalhos, totais e itens ilegíveis.`;
+Numa tabela ou catálogo, liste cada produto/linha separadamente. Ignore cabeçalhos, totais e itens ilegíveis.
+Regras:
+1. price_usd só recebe preço em dólar (US$, USD, $). Preço em yuan (¥, RMB, CNY, 元) NUNCA vai em price_usd: deixe vazio e copie o preço em price_note. Não converta moedas.
+2. Condição de preço escrita no cabeçalho da tabela (ex.: "Price terms: FOB Shenzhen") vale para todas as linhas: preencha o incoterm de cada produto.
+3. MOQ e quantidades são números inteiros sem separador ("1,000 pcs" → "1000"; "500个" → "500").
+4. O nome vai em português, curto, com a medida que diferencia o item (capacidade, potência, tamanho).`;
 
 // "2,35" / "US$ 2.35" / "1.000" → número; vazio ou inválido → null.
 function toNumber(v, { integer = false } = {}) {
@@ -194,10 +270,15 @@ function toNumber(v, { integer = false } = {}) {
   return integer ? (Number.isInteger(n) ? n : null) : Math.round(n * 10000) / 10000;
 }
 
-function createProductReader({ client, model = MODEL } = {}) {
+function createProductReader({ client, model = MODEL, fallbackModel = null } = {}) {
   if (!client) return null;
 
-  return async function readProducts(mime, base64, meta) {
+  return function readProducts(mime, base64, meta) {
+    // Nenhum produto encontrado: o modelo de reserva tenta de novo.
+    return withFallback({ model, fallbackModel, meta, weak: (r) => !r.products.length, read: (m) => readProductsWith(m, mime, base64, meta) });
+  };
+
+  async function readProductsWith(model, mime, base64, meta) {
     const data = await askVision(client, model, {
       system: PRODUCT_SYSTEM, schema: PRODUCT_SCHEMA, mime, base64, what: 'produto', meta,
       prompt: 'Liste os produtos desta foto com os dados para o cadastro.',
@@ -216,9 +297,19 @@ function createProductReader({ client, model = MODEL } = {}) {
         units_per_40hq: toNumber(p.units_per_40hq, { integer: true }),
         specs: txt(p.specs, 500),
       };
-    }).filter((p) => p.name);
+    }).filter((p) => p.name).map(guardCurrency);
     return { products };
-  };
+  }
+}
+
+// Regra fixa: preço que só aparece em yuan não pode ficar como dólar (o modelo às vezes copia o número).
+function guardCurrency(p) {
+  const note = p.price_note || '';
+  if (p.price_usd != null && /¥|rmb|cny|元|人民币/i.test(note) && !/\$|usd|us\$|美元/i.test(note)) {
+    const nums = (note.match(/\d+(?:[.,]\d+)?/g) || []).map((n) => Number(n.replace(',', '.')));
+    if (nums.includes(p.price_usd)) return { ...p, price_usd: null };
+  }
+  return p;
 }
 
 // Cria o leitor a partir do ambiente (ANTHROPIC_API_KEY). Sem chave, o recurso fica desligado.
@@ -236,18 +327,32 @@ function clientFromEnv() {
   return { beta: { messages: { create: (...args) => real().beta.messages.create(...args) } } };
 }
 const envModel = () => process.env.OCR_MODEL || MODEL;
-const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv(), model: envModel() });
-const productReaderFromEnv = () => createProductReader({ client: clientFromEnv(), model: envModel() });
+const envFallback = () => {
+  const v = process.env.OCR_FALLBACK_MODEL ?? FALLBACK_MODEL;
+  return !v || v === 'none' || v === envModel() ? null : v;
+};
+const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv(), model: envModel(), fallbackModel: envFallback() });
+const productReaderFromEnv = () => createProductReader({ client: clientFromEnv(), model: envModel(), fallbackModel: envFallback() });
 // Leitores de cada modelo, para o administrador comparar (teste de modelos).
 function benchReadersFromEnv() {
   const client = clientFromEnv();
   if (!client) return null;
-  return Object.fromEntries(Object.keys(PRICES).map((model) => [model, {
+  const readers = Object.fromEntries(Object.keys(PRICES).map((model) => [model, {
     readCard: createCardReader({ client, model }), readProducts: createProductReader({ client, model }),
   }]));
+  // A configuração em uso (modelo principal + reserva), como os usuários a recebem.
+  if (envFallback()) {
+    readers[CONFIG_ID] = {
+      readCard: createCardReader({ client, model: envModel(), fallbackModel: envFallback() }),
+      readProducts: createProductReader({ client, model: envModel(), fallbackModel: envFallback() }),
+    };
+  }
+  return readers;
 }
+const CONFIG_ID = 'config';
+const configLabel = () => `${PRICES[envModel()]?.label || envModel()} + ${PRICES[envFallback()]?.label || envFallback()} de reserva`;
 
 module.exports = {
   createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
-  preferMessagingPhone, toNumber, PRICES, MODEL,
+  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
 };

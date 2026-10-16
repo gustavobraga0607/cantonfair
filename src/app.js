@@ -7,7 +7,7 @@ const crypto = require('node:crypto');
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
-const { OcrError, PRICES, MODEL: OCR_DEFAULT_MODEL } = require('./ocr');
+const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 const PROVINCES = require('../public/provinces');
@@ -683,9 +683,11 @@ function createApp({ db, publicDir, cnpjLookup = cnpjUtil.lookup, cnpjOnlineChec
     requireAdminUser(user);
     if (!benchReaders) throw new HttpError(503, 'Leitor de fotos não configurado (defina ANTHROPIC_API_KEY na Vercel).');
   }
+  // "em uso": a configuração com reserva, ou o modelo único quando não há reserva.
   const benchModels = () => Object.keys(benchReaders || {}).map((id) => ({
-    id, label: PRICES[id]?.label || id, input: PRICES[id]?.input, output: PRICES[id]?.output,
-    current: id === (process.env.OCR_MODEL || OCR_DEFAULT_MODEL),
+    id, label: id === CONFIG_ID ? configLabel() : PRICES[id]?.label || id,
+    input: PRICES[id]?.input ?? null, output: PRICES[id]?.output ?? null,
+    current: CONFIG_ID in benchReaders ? id === CONFIG_ID : id === envModel(),
   }));
   route('GET', '/api/admin/ocr-bench', async ({ user }) => {
     requireBench(user);
