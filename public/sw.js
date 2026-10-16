@@ -6,11 +6,11 @@
 // - Dados (/api/...): sempre busca na rede; sem conexão (comum na feira), mostra a última
 //   versão salva. O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v20';
+const VERSION = 'v23';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';
-const SHELL_FILES = ['/', '/app.js', '/provinces.js', '/styles.css', '/manifest.webmanifest',
+const SHELL_FILES = ['/', '/app.js', '/sourcing.js', '/provinces.js', '/styles.css', '/manifest.webmanifest',
   '/brand/logo.png', '/brand/icon-192.png', '/brand/favicon.png'];
 const MAX_IMAGES = 400;
 
@@ -86,7 +86,7 @@ self.addEventListener('fetch', (event) => {
 
   if (url.pathname.startsWith('/api/')) {
     // Downloads e diagnóstico não passam pelo cache.
-    if (url.pathname.endsWith('/file') || url.pathname === '/api/health') return;
+    if (url.pathname.endsWith('/file') || url.pathname.startsWith('/api/sourcing/files/') || url.pathname === '/api/health') return;
     event.respondWith(networkFirst(request));
   } else if (url.pathname.startsWith('/uploads/')) {
     event.respondWith(cacheFirst(request));
