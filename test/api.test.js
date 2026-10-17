@@ -193,6 +193,10 @@ test('serve a interface', async (t) => {
   const r = await fetch(base + '/');
   assert.equal(r.status, 200);
   assert.match(await r.text(), /Missão China/);
+  // A voz do intérprete chega como data:audio — sem media-src o navegador recusa tocar.
+  assert.match(r.headers.get('content-security-policy'), /media-src 'self' data: blob:/);
+  const vercelCsp = require('../vercel.json').headers.flatMap((h) => h.headers).find((h) => h.key === 'Content-Security-Policy').value;
+  assert.match(vercelCsp, /media-src 'self' data: blob:/);
   assert.equal((await fetch(base + '/../package.json')).status, 200); // cai no index (SPA), não expõe o arquivo
   assert.doesNotMatch(await (await fetch(base + '/%2e%2e/package.json')).text(), /"scripts"/);
 });
