@@ -2120,7 +2120,7 @@ async function viewCredits() {
     <div class="card exp-summary">
       <div class="item-sub">Saldo da empresa (toda a equipe usa o mesmo saldo)</div>
       <div class="exp-total">${fmtDur(c.balance_seconds)}</div>
-      <a class="btn small" href="#/interpreter" style="justify-self:start">🎙️ Abrir o intérprete</a>
+      <a class="btn small" href="#/interpreter" style="justify-self:start">Abrir o intérprete</a>
     </div>
     <h2>Comprar minutos</h2>
     ${c.payments_enabled ? '' : '<div class="ocr-status err">Pagamento ainda não configurado (chave do Asaas na Vercel). Fale com a BR Trading para liberar créditos.</div>'}
@@ -2406,7 +2406,7 @@ function dateRange(a, b) {
 }
 
 const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Roteiro">
-  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">🎙️ Intérprete</a></nav>`;
+  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">Intérprete</a></nav>`;
 
 async function viewTrip(id) {
   setChrome({ title: 'Roteiro de viagem', tab: 'trip', back: id && isAdmin() ? '#/trip' : null });

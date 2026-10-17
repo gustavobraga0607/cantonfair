@@ -355,11 +355,12 @@ body.map-mode main { display: none; }
 
 /* câmbio */
 .rate-chip { cursor: pointer; }
-.interp-btn {
-  flex: none; display: grid; place-items: center; width: 34px; height: 34px; border-radius: 50%;
-  background: var(--neutral-bg); font-size: 1.05rem; text-decoration: none; line-height: 1;
+.topbar-interp {
+  flex: none; display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%;
+  background: var(--neutral-bg); color: var(--text); text-decoration: none;
 }
-.interp-btn:active, .interp-btn.active { background: var(--primary); }
+.topbar-interp .tab-icon { width: 1.05rem; height: 1.05rem; }
+.topbar-interp:active, .topbar-interp.active { background: var(--primary); color: var(--primary-ink); }
 .rate-chip.warn { background: var(--bad-bg); color: var(--bad); font-weight: 600; }
 .rate-chip small { font-size: .7rem; opacity: .8; }
 .rate-now { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; }
