@@ -369,7 +369,7 @@ async function viewSourcingOp(id) {
     }
     return `<div class="src-table-wrap"><table class="src-table"><thead><tr><th>${esc(tr('date'))}</th><th>${esc(tr('description'))}</th>
       <th class="num">${esc(tr('value'))}</th><th>${esc(tr('currency'))}</th><th>${esc(tr('receipt'))}</th><th></th></tr></thead><tbody>
-      ${list.map((e) => `<tr><td>${esc(srcDate(e.entry_on))}</td><td>${esc(e.description)}</td>
+      ${list.map((e) => `<tr><td>${esc(srcDate(e.entry_on))}</td><td>${esc(e.description || '—')}</td>
         <td class="num">${srcNum(e.amount.toFixed(2))}${e.currency !== 'USD' ? `<br><small class="item-sub">${srcMoney(e.amount_usd)}</small>` : ''}</td>
         <td>${esc(e.currency)}</td><td>${fileCell(e)}</td><td>${menu(e)}</td></tr>`).join('')}</tbody></table></div>`;
   }
@@ -530,7 +530,7 @@ async function viewSourcingOp(id) {
         <div><label>${esc(tr('date'))} *</label><input name="entry_on" type="date" value="${esc(e.entry_on)}"></div>
         <div><label>${esc(tr('currency'))}</label><select name="currency">${['USD', 'CNY', 'BRL'].map((c) => `<option${c === e.currency ? ' selected' : ''}>${c}</option>`).join('')}</select></div>
       </div>
-      <div><label>${esc(tr('description'))} *</label><input name="description" value="${esc(e.description)}" autocomplete="off"></div>
+      <div><label>${esc(tr('description'))}${kind === 'revenue' ? '' : ' *'}</label><input name="description" value="${esc(e.description)}" autocomplete="off"></div>
       <div class="row">
         <div><label>${esc(tr(isRefund ? 'estimated' : 'value'))} *</label><input name="amount" inputmode="decimal" value="${numIn(e.amount)}"></div>
         <div class="rate-box"><label class="rate-label"></label><input name="rate_usd" inputmode="decimal"></div>
@@ -563,13 +563,13 @@ async function viewSourcingOp(id) {
     setRate(Boolean(entry));
     if (entry && entry.currency !== 'USD') form.rate_usd.value = String(entry.rate_usd).replace('.', ',');
     form.currency.addEventListener('change', () => setRate(false));
-    form.description.focus();
+    (kind === 'revenue' ? form.amount : form.description).focus();
     form.addEventListener('submit', async (ev) => {
       ev.preventDefault();
       const err = form.querySelector('.error-box');
       err.hidden = true;
       const amount = parseNum(form.amount.value, { thousands: true });
-      if (!form.description.value.trim() || !(amount > 0) || !form.entry_on.value) { err.textContent = tr('required'); err.hidden = false; return; }
+      if ((!form.description.value.trim() && kind !== 'revenue') || !(amount > 0) || !form.entry_on.value) { err.textContent = tr('required'); err.hidden = false; return; }
       const body = {
         kind, entry_on: form.entry_on.value, description: form.description.value, amount, currency: form.currency.value,
         rate_usd: form.currency.value === 'USD' ? 1 : parseNum(form.rate_usd.value),

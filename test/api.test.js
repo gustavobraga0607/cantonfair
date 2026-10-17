@@ -508,7 +508,11 @@ test('sourcing: administrador cria operação e operador da China lança, conver
   assert.equal((await op1('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'revenue', description: 'Sinal', entry_on: '2026-04-10', amount: 3000 })).status, 403);
   r = await admin('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'revenue', description: 'Sinal do cliente', entry_on: '2026-04-10', amount: 3000, file: { name: 'recibo.pdf', data: PDF } });
   assert.equal(r.status, 201);
-  await admin('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'revenue', description: 'Saldo', entry_on: '2026-05-15', amount: 4500 });
+  // receita sem descrição é aceita; despesa sem descrição não
+  r = await admin('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'revenue', entry_on: '2026-05-15', amount: 4500 });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.entries.find((e) => e.amount === 4500).description, '');
+  assert.equal((await op1('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'expense', entry_on: '2026-04-05', amount: 10 })).status, 400);
   r = await op1('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'expense', description: 'Pagamento fornecedor', entry_on: '2026-04-05', amount: 6000 });
   assert.equal(r.status, 201);
   r = await op1('POST', `/api/sourcing/ops/${id}/entries`, { kind: 'expense', description: 'Inspeção', entry_on: '2026-04-12', amount: 1050, currency: 'CNY', rate_usd: 0.1429 });

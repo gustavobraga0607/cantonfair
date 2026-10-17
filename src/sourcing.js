@@ -277,7 +277,8 @@ function registerSourcing({ route, db, HttpError, str, num, now, toId, isAdmin, 
 
   function entryFields(kind, body) {
     const description = str(body.description, 200);
-    if (!description) throw new HttpError(400, 'Informe a descrição.');
+    // Receita não precisa de descrição (despesa e tax refund precisam).
+    if (!description && kind !== 'revenue') throw new HttpError(400, 'Informe a descrição.');
     const entryOn = str(body.entry_on, 10);
     if (!isDate(entryOn)) throw new HttpError(400, 'Data inválida.');
     const currency = String(body.currency || 'USD').toUpperCase();
