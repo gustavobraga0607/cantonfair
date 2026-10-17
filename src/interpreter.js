@@ -126,6 +126,10 @@ function createAzureInterpreter({ speechKey, speechRegion, translatorKey, transl
     try {
       out.translator = (await translate('olá', 'pt', 'zh')).length > 0;
     } catch (err) { out.translator_error = err.message; }
+    // Voz: sintetiza uma palavra em cada idioma (custo desprezível).
+    for (const lang of Object.keys(LANGS)) {
+      try { out[`voice_${lang}`] = (await speak(lang === 'zh' ? '你好' : 'ok', lang)).length > 1000; } catch (err) { out[`voice_${lang}`] = false; out.voice_error = err.message; }
+    }
     return out;
   };
   return interpret;
