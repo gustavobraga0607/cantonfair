@@ -198,6 +198,20 @@
     "澳门威尼斯人": ["Q1156708", "Jimmy Yao (vixyao) on Flickr", "CC BY-SA 2.0", "Venetian_Macau.jpg"],
     "东湖": ["Q845631", "gugganij", "CC BY-SA 3.0", "Ostsee_Wuhan_3.jpg"],
     "江汉路步行街": ["Q11134650", "User:Vmenkov", "CC BY-SA 3.0", "Hankou-Hanjiang-Lu-0247.jpg"],
+    "花城广场": ["c5e0b38096e", "钉钉", "CC BY-SA 4.0", "Huacheng_Square,_Guangzhou.jpg"],
+    "锦绣中华民俗村": ["ccca801df48", "Abasaa", "Domínio público", "Night_at_Splendid_China_Folk_Village_01.JPG"],
+    "华侨城创意文化园": ["cfc65606512", "Dinkun Chen", "CC BY-SA 4.0", "OCT_LOFT,_SHENZHEN_(47).jpg"],
+    "天星小轮": ["ce377c75dc6", "Bahnfrend", "CC BY-SA 4.0", "Solar_Star,_Victoria_Harbour,_2006_(01).jpg"],
+    "河坊街": ["cc476e8ad86", "钉钉", "CC BY-SA 4.0", "Hefang_Street,_Hangzhou.jpg"],
+    "楚河汉街": ["cca57b2b700", "Doraemon.tvb", "CC BY-SA 3.0", "Chuhe_Hanjie_Night_01.jpg"],
+    "芙蓉街": ["c46159a0ca1", "Reinhold Möller Ermell", "CC BY-SA 4.0", "Jinan_Furong_Fußgängerzone-20150519-RM-191555.jpg"],
+    "宾王夜市": ["c637c5e71ba", "Ariel Palmon", "CC BY-SA 3.0", "Yiwu_night_market_ap_002.jpg"],
+    "北京路步行街": ["cb4da56757d", "Windmemories", "CC BY-SA 4.0", "20250222_Street_scene_of_Beijing_Road_03.jpg"],
+    "顺德美食 大良": ["cc0fa4c7733", "Lau Hau Yatyue Tiger", "CC0", "GD_廣東_Guangdong_佛山_Foshan_順德_Shunde_華蓋路_Huagai_Road_shop_民信老店_Minxin_Lao_Dian_甜品_Dessert_white_food_雙皮燉奶_Double_skin_milk_bowels_January_2024_R12S_05.jpg"],
+    "户部巷": ["c45feb47fd2", "Howchou", "CC BY-SA 3.0", "Hubu_Xiang_1.jpg"],
+    "岭南天地": ["c4c392c8a64", "Uuongkinghe", "CC BY-SA 4.0", "龙生九子_20240215.jpg"],
+    "五龙潭": ["c6b93975a4a", "Steven Sun", "CC BY-SA 4.0", "Five_Dragon_Pool_20260422_02.jpg"],
+    "宽厚里": ["c7121082ff5", "Steven Sun", "CC BY-SA 4.0", "Far_view_of_Jinan_Kuanhouli_20170824.jpg"],
   };
 
   const TOURISM = { CITIES, PLACES, PHOTOS };
