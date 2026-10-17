@@ -2030,15 +2030,23 @@ const INTERP_LANG = {
 async function recordToWav(blob) {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   const ctx = new Ctx();
-  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  const data = await blob.arrayBuffer();
+  // Forma com callbacks: funciona também no Safari mais antigo.
+  const decoded = await new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
   ctx.close?.();
+  // Mistura os canais e reduz para 16 kHz fazendo a média de cada janela — sem OfflineAudioContext,
+  // que no Safari recusa taxas abaixo de 22.050 Hz.
   const rate = 16000;
-  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
-  const src = off.createBufferSource();
-  src.buffer = decoded;
-  src.connect(off.destination);
-  src.start();
-  const pcm = (await off.startRendering()).getChannelData(0);
+  const chans = Array.from({ length: decoded.numberOfChannels }, (_, i) => decoded.getChannelData(i));
+  const ratio = decoded.sampleRate / rate;
+  const pcm = new Float32Array(Math.max(1, Math.floor(decoded.length / ratio)));
+  for (let i = 0; i < pcm.length; i++) {
+    const a = Math.floor(i * ratio);
+    const b = Math.max(a + 1, Math.min(decoded.length, Math.floor((i + 1) * ratio)));
+    let sum = 0;
+    for (let j = a; j < b; j++) for (const ch of chans) sum += ch[j];
+    pcm[i] = sum / ((b - a) * chans.length);
+  }
   const buf = new ArrayBuffer(44 + pcm.length * 2);
   const v = new DataView(buf);
   const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
@@ -2058,6 +2066,9 @@ async function recordToWav(blob) {
 // "destravado" no toque do botão e reaproveitado quando a tradução chega.
 let interpCtx = null;
 let interpSource = null;
+// iPhone (iOS 17+): enquanto o microfone está aberto o som sai baixo, pelo fone do ouvido; depois
+// de gravar volta para "playback" — alto-falante, tocando mesmo com a chave de silencioso ligada.
+const setAudioSession = (type) => { try { if (navigator.audioSession) navigator.audioSession.type = type; } catch { /* sem suporte */ } };
 function unlockInterpAudio() {
   const Ctx = window.AudioContext || window.webkitAudioContext;
   if (!Ctx) return;
@@ -2144,10 +2155,16 @@ async function viewInterpreter() {
     unlockInterpAudio();
     if (recording) { stop(); return; }
     if (balance <= 0) { toast('Sem créditos do intérprete. Compre minutos para continuar.'); return; }
+    if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+      toast('Este navegador não grava áudio. No iPhone, atualize para o iOS 14.5 ou mais novo e use o Safari.');
+      return;
+    }
     let stream;
+    setAudioSession('play-and-record');
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch {
+      setAudioSession('playback');
       toast('Permita o uso do microfone para usar o intérprete.');
       return;
     }
@@ -2170,6 +2187,7 @@ async function viewInterpreter() {
     clearInterval(recording.timer);
     recording.recorder.stop();
     recording.stream.getTracks().forEach((t) => t.stop());
+    setAudioSession('playback');
   }
 
   async function finish(lang, chunks, mime) {
