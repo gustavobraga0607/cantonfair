@@ -404,12 +404,7 @@ function photoInputHtml(current, placeholder) {
 
 // form: telas de cadastro escondem a barra de abas (no celular ela sobe com o
 // teclado e cobre os campos) e usam uma barra fixa com o botão Salvar.
-// wide: tela larga no computador (área de sourcing). Operador da China não vê as abas do app.
-function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false, map = false, wide = false }) {
-  const operator = isOperator();
-  if (operator) { form = true; fab = false; }
-  document.body.classList.toggle('wide', wide);
-  document.body.classList.toggle('operator', operator);
+function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false, map = false }) {
   document.getElementById('map-view').hidden = !map;
   document.body.classList.toggle('map-mode', map);
   document.title = title ? `${title} · Missão China` : 'Missão China by BR Trading';
@@ -430,7 +425,7 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   chip.classList.toggle('warn', fxFailing());
   chip.title = fxFailing() ? 'Cotação automática indisponível — toque para ajustar' : 'Câmbio usado nas estimativas — toque para ajustar';
   chip.onclick = () => { location.hash = '#/account?cambio'; };
-  chip.hidden = !state.me || operator;
+  chip.hidden = !state.me;
 }
 
 const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</div>'; };
@@ -454,7 +449,6 @@ const pendingTag = (x) => (x.pending ? `<span class="badge ${x.error ? 'bad' : '
 // filtrar por empresa (a escolha fica salva neste navegador).
 
 const isAdmin = () => Boolean(state.me?.user?.is_admin);
-const isOperator = () => state.me?.user?.role === 'operator';
 const ownCnpj = () => state.me?.company?.cnpj;
 
 function getScope() {
@@ -2697,9 +2691,6 @@ async function viewAccount() {
       <a class="item" href="#/admin"><div class="thumb">👥</div><div class="item-body">
         <div class="item-title">Usuários e empresas</div>
         <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>
-      <a class="item" href="#/sourcing"><div class="thumb">🌏</div><div class="item-body">
-        <div class="item-title">Gestão de sourcing</div>
-        <div class="item-sub">Operações de compra com a equipe na China: receitas, despesas, tax refund, documentos e chat</div></div></a>
       <a class="item" href="#/admin/models"><div class="thumb">🧪</div><div class="item-body">
         <div class="item-title">Teste de modelos de leitura</div>
         <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
@@ -2751,11 +2742,6 @@ const routes = [
   [/^\/account$/, viewAccount],
   [/^\/admin$/, (m, q) => viewAdmin(q)],
   [/^\/admin\/models$/, viewModelTest],
-  [/^\/sourcing$/, () => viewSourcingList()],
-  [/^\/sourcing\/operators$/, () => viewSourcingOperators()],
-  [/^\/sourcing\/new$/, () => viewSourcingForm(null)],
-  [/^\/sourcing\/(\d+)$/, (m) => viewSourcingOp(m[1])],
-  [/^\/sourcing\/(\d+)\/edit$/, (m) => viewSourcingForm(m[1])],
 ];
 
 async function router() {
@@ -2771,11 +2757,7 @@ async function router() {
   if (!match) { location.hash = '#/ranking'; return; }
   const [re, view, isPublic] = match;
   if (!isPublic && !state.me) { location.hash = '#/login'; return; }
-  if (isPublic && state.me) { location.hash = isOperator() ? '#/sourcing' : '#/ranking'; return; }
-  // Operador da China só usa a área de sourcing; ela é só da equipe (administradores e operadores).
-  const sourcingPath = path.startsWith('/sourcing');
-  if (isOperator() && !sourcingPath) { location.hash = '#/sourcing'; return; }
-  if (sourcingPath && !isOperator() && !isAdmin()) { location.hash = '#/account'; return; }
+  if (isPublic && state.me) { location.hash = '#/ranking'; return; }
   window.scrollTo(0, 0);
   refreshOutboxBar();
   if (state.me && navigator.onLine && !router.flushed) { router.flushed = true; flushOutbox(); }

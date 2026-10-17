@@ -37,3 +37,21 @@ test('SQLite antigo: foto do cartão do fornecedor deixa de ser obrigatória sem
   await db2.close();
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('limpeza do sourcing removido: apaga tabelas e contas de operador', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cf-src-'));
+  const raw = new DatabaseSync(path.join(dir, 'cantonfair.db'));
+  raw.exec(`CREATE TABLE companies (cnpj TEXT PRIMARY KEY, name TEXT, exchange_rate REAL NOT NULL DEFAULT 5.5, rate_mode TEXT NOT NULL DEFAULT 'auto', rate_source TEXT, rate_updated_at TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE users (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, cnpj TEXT NOT NULL REFERENCES companies(cnpj), role TEXT NOT NULL DEFAULT 'user', card_photo TEXT, created_at TEXT NOT NULL);
+    CREATE TABLE sourcing_ops (id INTEGER PRIMARY KEY, operator_id INTEGER REFERENCES users(id));
+    CREATE TABLE sourcing_messages (id INTEGER PRIMARY KEY, op_id INTEGER REFERENCES sourcing_ops(id));
+    INSERT INTO companies (cnpj, created_at) VALUES ('11222333000181', 'x');
+    INSERT INTO users (name, email, password_hash, cnpj, role, created_at) VALUES ('Admin', 'a@x.com', 'h', '11222333000181', 'admin', 'x'), ('Lin', 'lin@cn.com', 'h', '11222333000181', 'operator', 'x');
+    INSERT INTO sourcing_ops (id, operator_id) VALUES (1, 2); INSERT INTO sourcing_messages (id, op_id) VALUES (1, 1);`);
+  raw.close();
+  const db = open({ dataDir: dir });
+  assert.deepEqual((await db.all('SELECT email FROM users')).map((u) => u.email), ['a@x.com']);
+  assert.equal((await db.all("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'sourcing%'")).length, 0);
+  await db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});

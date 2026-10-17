@@ -10,7 +10,6 @@ const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight 
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
 const { fetchCnyBrl } = require('./fx');
-const { registerSourcing, OPERATOR_PATHS } = require('./sourcing');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 const PROVINCES = require('../public/provinces');
 
@@ -340,15 +339,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   }
 
   async function meOut(user) {
-    // Operador da China: só o necessário para a área de sourcing (nada da empresa compradora).
-    if (user.role === 'operator') {
-      const company = await getCompany(user.cnpj);
-      return {
-        user: { id: user.id, name: user.name, email: user.email, role: 'operator', is_admin: false, is_operator: true, card_photo: null },
-        company: { cnpj: null, cnpj_formatted: '', name: null, exchange_rate: company?.exchange_rate ?? null, members: [], rate_mode: 'auto' },
-        fx: null, settings: {}, companies: undefined, features: {},
-      };
-    }
     const [company, members, companies, fxStatus, settings] = await Promise.all([
       getCompany(user.cnpj),
       db.all('SELECT name, email FROM users WHERE cnpj = ? ORDER BY lower(name)', [user.cnpj]),
@@ -521,8 +511,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   const USER_REFS = [
     ['suppliers', 'created_by'], ['suppliers', 'updated_by'], ['products', 'created_by'], ['products', 'updated_by'],
     ['itineraries', 'created_by'], ['itineraries', 'updated_by'], ['app_settings', 'updated_by'],
-    ['sourcing_ops', 'created_by'], ['sourcing_ops', 'operator_id'], ['sourcing_entries', 'created_by'],
-    ['sourcing_files', 'created_by'], ['sourcing_messages', 'user_id'],
   ];
 
   route('GET', '/api/admin/users', async ({ user }) => {
@@ -866,8 +854,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return { ok: true };
   });
 
-  registerSourcing({ route, db, HttpError, str, num, now, toId, isAdmin, auth, RAW, securityHeaders: SECURITY_HEADERS });
-
   // --- controle de viagem (despesas de cada usuário) ---
   // O extrato é pessoal: cada usuário só vê e altera as próprias despesas (o administrador também).
 
@@ -1200,7 +1186,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
         if (!sessionUser) return send(res, 401, { error: 'Não autenticado.' });
         const user = withRole(sessionUser);
-        if (user.role === 'operator') return send(res, 404, { error: 'Imagem não encontrada.' });
         return await serveUpload(res, user, pathname.slice('/uploads/'.length));
       }
       if (!pathname.startsWith('/api/')) {
@@ -1216,8 +1201,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
         if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
         const user = sessionUser && withRole(sessionUser);
-        // Operador da China só usa a área de sourcing.
-        if (user?.role === 'operator' && !OPERATOR_PATHS.test(pathname)) throw new HttpError(403, 'Acesso restrito à área de sourcing.');
         // Mantém a cotação do dia atualizada sem atrasar a resposta (busca em segundo plano;
         // usa cache de 30 min). Só espera se ainda não existe nenhuma cotação.
         // Confere no máximo uma vez por minuto por instância e sem segurar a resposta.

@@ -75,15 +75,6 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   passagens, feira, amostras, internet/telefone, compras, outros), data e forma de pagamento (cartão, dinheiro, Alipay,
   WeChat Pay). Mostra total em R$, total por categoria (toque para filtrar) e o extrato por dia; exporta planilha (CSV
   para Excel). Funciona sem internet como os demais cadastros.
-- **Gestão de sourcing** (administrador, em *Conta → Administração*; operador da China entra direto nela): operações de
-  compra acompanhadas pela equipe do Brasil e pelos operadores na China. O administrador cria a operação (cliente,
-  fornecedor, operador CN, produto, quantidade, valor, datas), os logins dos operadores (*Operadores CN*) e lança as
-  receitas; o operador vê só as operações atribuídas a ele, lança despesas e tax refund com comprovante, envia a Invoice e
-  o Packing List finais e marca as etapas Produção e Pronto; o administrador conclui (ou reabre). Resultado = receitas +
-  tax refund recebido − despesas, em US$ (lançamentos em yuan ou real são convertidos pelo câmbio informado). Chat por
-  operação com fotos e PDFs (atualiza a cada 6 s). Telas em português, chinês e inglês (o operador começa em chinês).
-  Arquivos: PDF, JPG ou PNG até 2,9 MB (limite de envio da Vercel; fotos são reduzidas automaticamente). O operador não
-  acessa nenhuma outra parte do app.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

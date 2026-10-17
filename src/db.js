@@ -148,81 +148,6 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 CREATE INDEX IF NOT EXISTS idx_expenses_user ON expenses(user_id, spent_on);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_ref ON expenses(user_id, client_ref);
-
--- Gestão de sourcing: operações acompanhadas pela equipe do Brasil (administradores) e pelos
--- operadores da empresa na China (usuários com role 'operator', criados pelo administrador).
-CREATE TABLE IF NOT EXISTS sourcing_ops (
-  id            {{ID}},
-  code          TEXT,                            -- OP-2026-00125
-  client_name   TEXT NOT NULL,                   -- ex.: J&J
-  title         TEXT NOT NULL,                   -- ex.: Toilets
-  request_ref   TEXT,                            -- referência da solicitação
-  supplier_name TEXT,
-  supplier_local TEXT,                           -- nome do fornecedor em chinês
-  operator_id   INTEGER REFERENCES users(id),
-  product       TEXT,
-  product_desc  TEXT,
-  quantity      INTEGER,
-  unit          TEXT,
-  purchase_value {{REAL}},                       -- valor da compra em US$
-  confirmed_on  TEXT NOT NULL,                   -- pedido confirmado
-  production_on TEXT,
-  ready_on      TEXT,
-  concluded_on  TEXT,
-  expected_on   TEXT,                            -- previsão de conclusão
-  status        TEXT NOT NULL DEFAULT 'confirmed', -- confirmed | production | ready | concluded
-  created_by    INTEGER REFERENCES users(id),
-  created_at    TEXT NOT NULL,
-  updated_at    TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sourcing_ops_operator ON sourcing_ops(operator_id);
-
--- Arquivos (comprovantes, documentos finais, anexos do chat): PDF, JPG ou PNG.
-CREATE TABLE IF NOT EXISTS sourcing_files (
-  id          {{ID}},
-  op_id       INTEGER NOT NULL REFERENCES sourcing_ops(id) ON DELETE CASCADE,
-  kind        TEXT NOT NULL,                     -- receipt | invoice | packing | chat
-  name        TEXT NOT NULL,
-  mime        TEXT NOT NULL,
-  size        INTEGER NOT NULL,
-  data        {{BLOB}} NOT NULL,
-  created_by  INTEGER REFERENCES users(id),
-  created_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sourcing_files_op ON sourcing_files(op_id, kind);
-
--- Receitas, despesas e tax refund da operação.
-CREATE TABLE IF NOT EXISTS sourcing_entries (
-  id           {{ID}},
-  op_id        INTEGER NOT NULL REFERENCES sourcing_ops(id) ON DELETE CASCADE,
-  kind         TEXT NOT NULL,                    -- revenue | expense | refund
-  entry_on     TEXT NOT NULL,
-  description  TEXT NOT NULL,
-  amount       {{REAL}} NOT NULL,                -- valor (no refund: valor estimado)
-  currency     TEXT NOT NULL DEFAULT 'USD',      -- USD | CNY | BRL
-  rate_usd     {{REAL}} NOT NULL DEFAULT 1,      -- US$ por unidade da moeda
-  amount_usd   {{REAL}} NOT NULL,
-  received     {{REAL}},                         -- tax refund: valor recebido
-  pct          {{REAL}},                         -- tax refund: alíquota (%)
-  expected_on  TEXT,                             -- tax refund: data prevista
-  received_on  TEXT,                             -- tax refund: data de recebimento
-  file_id      INTEGER REFERENCES sourcing_files(id) ON DELETE SET NULL,
-  created_by   INTEGER REFERENCES users(id),
-  created_at   TEXT NOT NULL,
-  updated_at   TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sourcing_entries_op ON sourcing_entries(op_id, kind);
-
-CREATE TABLE IF NOT EXISTS sourcing_messages (
-  id          {{ID}},
-  op_id       INTEGER NOT NULL REFERENCES sourcing_ops(id) ON DELETE CASCADE,
-  user_id     INTEGER REFERENCES users(id),
-  user_name   TEXT NOT NULL,                     -- guardado para o histórico (usuário pode ser excluído)
-  body        TEXT,
-  file_id     INTEGER REFERENCES sourcing_files(id) ON DELETE SET NULL,
-  created_at  TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_sourcing_messages_op ON sourcing_messages(op_id, id);
 `;
 
 const TYPES = {
@@ -253,6 +178,18 @@ const ADDED_COLUMNS = [
 const DROPPED_NOT_NULL = [
   ['suppliers', 'card_photo'],
 ];
+// Limpeza do módulo de sourcing (removido): tabelas e contas de operador da China. Sem o módulo,
+// um operador viraria usuário comum da empresa do administrador, então a conta é apagada.
+const CLEANUP_SQL = [
+  'DROP TABLE IF EXISTS sourcing_messages',
+  'DROP TABLE IF EXISTS sourcing_entries',
+  'DROP TABLE IF EXISTS sourcing_files',
+  'DROP TABLE IF EXISTS sourcing_ops',
+  "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'operator')",
+  "DELETE FROM expenses WHERE user_id IN (SELECT id FROM users WHERE role = 'operator')",
+  "DELETE FROM users WHERE role = 'operator'",
+];
+
 // Índices criados depois (bancos existentes também recebem).
 const ADDED_INDEXES = [
   'CREATE INDEX IF NOT EXISTS idx_users_cnpj ON users(cnpj)',
@@ -316,6 +253,7 @@ function sqlite(dataDir) {
     }
   }
   for (const sql of ADDED_INDEXES) conn.exec(sql);
+  for (const sql of CLEANUP_SQL) conn.exec(sql);
 
   let txQueue = Promise.resolve();
   const q = {
@@ -370,6 +308,7 @@ function postgres(connectionString) {
     ...ADDED_COLUMNS.map(([table, column, type]) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${typed('postgres', type)};`),
     ...DROPPED_NOT_NULL.map(([table, column]) => `ALTER TABLE ${table} ALTER COLUMN ${column} DROP NOT NULL;`),
     ...ADDED_INDEXES.map((sql) => `${sql};`),
+    ...CLEANUP_SQL.map((sql) => `${sql};`),
   ].join('\n'));
   const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));
   const base = wrap(pool);
