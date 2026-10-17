@@ -2572,6 +2572,10 @@ let tourPos = null;
 
 async function viewTourism(query) {
   setChrome({ title: 'Turismo', tab: 'trip' });
+  if (!window.TOURISM) {
+    $app.innerHTML = `${subnavHtml('tourism')}<div class="empty">Atualizando o app… feche e abra de novo para ver o turismo.</div>`;
+    return;
+  }
   const { CITIES, PLACES } = window.TOURISM;
   let saved = null;
   try { saved = localStorage.getItem('cfb.tourCity'); } catch { /* sem armazenamento */ }
