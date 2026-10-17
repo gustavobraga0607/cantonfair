@@ -676,7 +676,7 @@ async function viewSuppliers() {
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             ${pendingTag(s)}
-            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone_whatsapp || s.phone_wechat ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone && (s.phone_whatsapp || s.phone_wechat) ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" role="button" tabindex="0" data-msg="${k}" data-phone="${esc(s.phone)}" title="${k === 'wechat' ? 'Copiar o número e abrir o WeChat' : 'Abrir conversa no WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -685,6 +685,7 @@ async function viewSuppliers() {
   render();
   bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
+  bindMsgButtons();
 }
 
 async function viewSupplier(id) {
@@ -699,8 +700,9 @@ async function viewSupplier(id) {
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
       ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
       ${s.phone ? `<div><div class="item-sub">Telefone</div><div class="phone-line">
-        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>${msgBadges({ phone_wechat: s.phone_wechat })}
-        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small${s.phone_whatsapp ? ' wa-btn' : ''}" target="_blank" rel="noopener" href="https://wa.me/${esc(s.phone.replace(/\D/g, ''))}">${s.phone_whatsapp ? MSG_ICONS.whatsapp : ''}WhatsApp</a>` : ''}
+        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>
+        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small${s.phone_whatsapp ? ' wa-btn' : ''}" target="_blank" rel="noopener" href="${esc(waLink(s.phone))}">${s.phone_whatsapp ? MSG_ICONS.whatsapp : ''}WhatsApp</a>` : ''}
+        ${s.phone_wechat ? `<button type="button" class="btn small wc-btn" data-msg="wechat" data-phone="${esc(s.phone)}">${MSG_ICONS.wechat}WeChat</button>` : ''}
       </div></div>` : ''}
       <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
       ${s.address || s.province ? `<div><div class="item-sub">Endereço</div><div class="trip-line">
@@ -729,6 +731,7 @@ async function viewSupplier(id) {
     </div>`;
   document.getElementById('card-photo')?.addEventListener('click', () => openLightbox(s.card_photo));
   bindCopyButtons();
+  bindMsgButtons();
 }
 
 // Ícones de WhatsApp e WeChat ao lado do telefone.
@@ -736,8 +739,38 @@ const MSG_ICONS = {
   whatsapp: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M12 2a10 10 0 0 0-8.6 15.1L2 22l5-1.3A10 10 0 1 0 12 2Zm0 18.2c-1.5 0-3-.4-4.3-1.2l-.3-.2-3 .8.8-2.9-.2-.3A8.2 8.2 0 1 1 12 20.2Zm4.5-6.1c-.2-.1-1.5-.7-1.7-.8-.2-.1-.4-.1-.6.1l-.8 1c-.1.2-.3.2-.5.1a6.7 6.7 0 0 1-3.3-2.9c-.2-.4.2-.4.7-1.3.1-.2 0-.3 0-.4l-.8-1.8c-.2-.5-.4-.4-.6-.4h-.5c-.2 0-.4.1-.7.3-.2.3-.9.9-.9 2.2s.9 2.5 1 2.7c.1.2 1.8 2.8 4.4 3.9 1.6.7 2.3.8 3.1.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.2-1.2-.1-.1-.3-.2-.5-.3Z"/></svg>',
   wechat: '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M9 3.5C4.9 3.5 1.5 6.3 1.5 9.8c0 2 1.1 3.8 2.9 4.9l-.7 2.2 2.6-1.4c.9.3 1.8.4 2.7.4h.6a5.7 5.7 0 0 1-.2-1.6c0-3.4 3.2-6.1 7.2-6.1h.6C16.5 5.5 13.1 3.5 9 3.5Zm-2.6 4.4a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm5.2 0a1 1 0 1 1 0-2 1 1 0 0 1 0 2Zm10.9 6.3c0-2.9-2.9-5.3-6.4-5.3s-6.4 2.4-6.4 5.3 2.9 5.3 6.4 5.3c.7 0 1.4-.1 2.1-.3l2 1.1-.5-1.8a5 5 0 0 0 2.8-4.3Zm-8.5-.9a.9.9 0 1 1 0-1.7.9.9 0 0 1 0 1.7Zm4.3 0a.9.9 0 1 1 0-1.7.9.9 0 0 1 0 1.7Z"/></svg>',
 };
-const msgBadges = (s) => [s.phone_whatsapp && ['whatsapp', 'WhatsApp'], s.phone_wechat && ['wechat', 'WeChat']]
-  .filter(Boolean).map(([k, label]) => `<span class="msg-badge ${k}" title="${label}">${MSG_ICONS[k]}<span>${label}</span></span>`).join('');
+
+// Número no formato internacional para o WhatsApp (wa.me exige o código do país).
+// Celular chinês sem código (11 dígitos começando com 13–19) ou fixo com o 0 de longa distância
+// recebem o 86 da China; "+" ou "00" na frente já indicam o país.
+function waNumber(phone) {
+  const raw = String(phone || '').trim();
+  const d = raw.replace(/\D/g, '');
+  if (raw.startsWith('+')) return d;
+  if (d.startsWith('00')) return d.slice(2);
+  if (/^1[3-9]\d{9}$/.test(d)) return '86' + d;
+  if (/^0[1-9]\d{8,10}$/.test(d)) return '86' + d.slice(1);
+  return d;
+}
+const waLink = (phone) => `https://wa.me/${waNumber(phone)}`;
+
+// Ícones de WhatsApp/WeChat clicáveis (um único ouvinte em $app, que é reaproveitado entre telas).
+// O WeChat não tem link para abrir a conversa com um número: copia o número e abre o app,
+// para colar em "Adicionar contatos".
+function bindMsgButtons() {
+  if ($app.dataset.msgBound) return;
+  $app.dataset.msgBound = '1';
+  const act = async (el, e) => {
+    e.preventDefault(); e.stopPropagation();
+    if (el.dataset.msg === 'whatsapp') { window.open(waLink(el.dataset.phone), '_blank', 'noopener'); return; }
+    const number = waNumber(el.dataset.phone);
+    try { await navigator.clipboard.writeText(number.startsWith('86') ? number.slice(2) : number); } catch { /* sem área de transferência */ }
+    toast('Número copiado. No WeChat: + → Adicionar contatos → cole o número.');
+    setTimeout(() => { location.href = 'weixin://'; }, 800);
+  };
+  $app.addEventListener('click', (e) => { const el = e.target.closest('[data-msg]'); if (el) act(el, e); });
+  $app.addEventListener('keydown', (e) => { const el = e.target.closest('[data-msg]'); if (el && (e.key === 'Enter' || e.key === ' ')) act(el, e); });
+}
 
 // Botões "Copiar" de endereços (útil para mostrar ao taxista).
 function bindCopyButtons() {
