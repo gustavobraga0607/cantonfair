@@ -512,3 +512,9 @@ body.map-mode main { display: none; }
 .pix-code code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .72rem; background: var(--neutral-bg); padding: 8px; border-radius: 8px; max-height: 80px; overflow-y: auto; }
 .pos { color: var(--good); } .neg { color: var(--danger); }
 .src-table-wrap { overflow-x: auto; }
+
+/* ícones de linha fina (substituem emojis) */
+.ic { width: 1.15em; height: 1.15em; flex: none; vertical-align: -.2em; fill: none; stroke: currentColor;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.thumb .ic { width: 1.5rem; height: 1.5rem; vertical-align: 0; }
+.trip-line > span:first-child .ic { vertical-align: -.22em; color: var(--muted); }

@@ -30,6 +30,55 @@ const offerFreight = (incoterm, perUnit) => (FREIGHT_INCLUDED.includes(String(in
 // Bandeiras (SVG, para aparecerem iguais em qualquer aparelho — emoji de bandeira vira "CN"/"BR" no Windows).
 const FLAG_CN = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="China"><rect width="30" height="20" fill="#EE1C25"/><polygon fill="#FFDE00" points="5.00,2.00 5.67,4.07 7.85,4.07 6.09,5.35 6.76,7.43 5.00,6.15 3.24,7.43 3.91,5.35 2.15,4.07 4.33,4.07"/><polygon fill="#FFDE00" points="9.14,2.51 9.62,1.97 9.25,1.34 9.91,1.63 10.39,1.08 10.33,1.80 11.00,2.09 10.29,2.25 10.22,2.97 9.85,2.35"/><polygon fill="#FFDE00" points="11.01,4.14 11.66,3.82 11.56,3.10 12.07,3.62 12.72,3.30 12.38,3.95 12.88,4.47 12.17,4.34 11.83,4.99 11.73,4.27"/><polygon fill="#FFDE00" points="11.04,6.73 11.76,6.70 11.96,6.00 12.21,6.68 12.94,6.66 12.37,7.10 12.62,7.79 12.01,7.38 11.44,7.83 11.64,7.13"/><polygon fill="#FFDE00" points="9.22,8.38 9.90,8.63 10.35,8.06 10.32,8.79 11.00,9.05 10.30,9.24 10.26,9.96 9.87,9.36 9.16,9.55 9.62,8.98"/></svg>';
 const FLAG_BR = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Brasil"><rect width="30" height="20" fill="#009C3B"/><polygon fill="#FFDF00" points="15,2.2 27.6,10 15,17.8 2.4,10"/><circle cx="15" cy="10" r="4.3" fill="#002776"/><path d="M10.9 8.9a4.3 4.3 0 0 1 8.1 2.2" stroke="#fff" stroke-width=".8" fill="none"/></svg>';
+// Ícones de linha fina (traço na cor do texto) — usados no lugar de emojis.
+const ICON_PATHS = {
+  alert: '<path d="M12 4 2.5 20h19z"/><path d="M12 10v4.5M12 17.5v.01"/>',
+  bag: '<path d="M5 8h14l-1 13H6z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/>',
+  bed: '<path d="M3 5v14M3 15h18M21 19v-6a3 3 0 0 0-3-3h-8v5"/><circle cx="6.5" cy="11.5" r="1.5"/>',
+  building: '<rect x="5" y="3" width="14" height="18" rx="1"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01M10 21v-3h4v3"/>',
+  bus: '<rect x="4" y="3" width="16" height="15" rx="2"/><path d="M4 7h16M4 12h16M8 18v2M16 18v2M8 15h.01M16 15h.01"/>',
+  camera: '<path d="M3 8.5A2 2 0 0 1 5 6.5h2l2-2.5h6l2 2.5h2a2 2 0 0 1 2 2V18a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/>',
+  car: '<path d="M5 11l1.5-4.5A2 2 0 0 1 8.4 5h7.2a2 2 0 0 1 1.9 1.5L19 11"/><rect x="3" y="11" width="18" height="6" rx="2"/><path d="M6 17v2M18 17v2M7 14h.01M17 14h.01"/>',
+  card: '<rect x="2.5" y="5" width="19" height="14" rx="2"/><path d="M2.5 10h19M6 15h4"/>',
+  cash: '<rect x="2.5" y="6" width="19" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/>',
+  check: '<circle cx="12" cy="12" r="9"/><path d="m8 12 3 3 5-6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  contact: '<rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="M6 16a3 3 0 0 1 6 0M15 10h3M15 14h3"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  factory: '<path d="M3 21V10l5 3v-3l5 3v-3l5 3V4h3v17z"/><path d="M7 17h2M12 17h2"/>',
+  flask: '<path d="M9 3h6M10 3v6L4.5 19a1.5 1.5 0 0 0 1.3 2h12.4a1.5 1.5 0 0 0 1.3-2L14 9V3M7 15h10"/>',
+  gift: '<rect x="3" y="8" width="18" height="4" rx="1"/><path d="M5 12v9h14v-9M12 8v13M12 8C10 8 7.5 7 8 5s3.5-.5 4 3c.5-3.5 3.5-5 4-3s-2 3-4 3"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.5"/><path d="m21 16-5-5-9 9"/>',
+  landmark: '<path d="M3 21h18M4 10h16M12 3 3 8h18zM6 10v8M10 10v8M14 10v8M18 10v8"/>',
+  mic: '<rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/>',
+  note: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h5"/>',
+  package: '<path d="M21 8 12 3 3 8v8l9 5 9-5z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  pen: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>',
+  phone: '<rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18h2"/>',
+  pin: '<path d="M12 21s-7-6.2-7-11.5a7 7 0 0 1 14 0C19 14.8 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/>',
+  plane: '<path d="M17.8 19.2 16 11l3.5-3.5C21 6 21.5 4 21 3c-1-.5-3 0-4.5 1.5L13 8 4.8 6.2c-.5-.1-.9.1-1.1.5l-.3.5c-.2.5-.1 1 .3 1.3L9 12l-2 3H4l-1 1 3 2 2 3 1-1v-3l3-2 3.5 5.3c.3.4.8.5 1.3.3l.5-.2c.4-.3.6-.7.5-1.2z"/>',
+  receipt: '<path d="M5 3h14v18l-2.3-1.5L14.3 21 12 19.5 9.7 21l-2.4-1.5L5 21z"/><path d="M9 8h6M9 12h6M9 16h4"/>',
+  refresh: '<path d="M20 12a8 8 0 1 1-2.3-5.6L20 8.5M20 4v4.5h-4.5"/>',
+  share: '<path d="M12 15V3M8 7l4-4 4 4M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/>',
+  ship: '<path d="M3 15h18l-2 5H5z"/><path d="M6 15V9h12v6M12 4v5M9 6.5h6"/>',
+  sparkles: '<path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/><path d="M19 15l.6 1.9 1.9.6-1.9.6L19 20l-.6-1.9-1.9-.6 1.9-.6z"/>',
+  speaker: '<path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  train: '<rect x="5" y="3" width="14" height="14" rx="3"/><path d="M5 10h14M9 21l1.5-4M15 21l-1.5-4M9 13.5h.01M15 13.5h.01"/>',
+  trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+  undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+  upload: '<path d="M12 20V9M7 14l5-5 5 5M5 4h14"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6.5 6.5 0 0 1 3.5 6"/>',
+  utensils: '<path d="M7 3v8M5 3v5a2 2 0 0 0 4 0V3M7 11v10M17 21V3c-2 1-3 3.5-3 6.5V13h3"/>',
+  van: '<path d="M3 6h11l4 4h3v7H3z"/><path d="M14 6v4h4"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>',
+  walk: '<circle cx="13" cy="4.5" r="1.5"/><path d="m10 21 2-6 3 3v3M8 12l2-3.5 3-1.5 2 3 3 1M12 15l1-7"/>',
+  search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  wifiOff: '<path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01M3 3l18 18"/>',
+};
+const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
+const FLAG_US = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Estados Unidos"><rect width="30" height="20" fill="#fff"/><path d="M0 0h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V7.7H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V20H0z" fill="#B22234"/><rect width="12" height="10.77" fill="#3C3B6E"/></svg>';
 const FORMULA = 'Estimado = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio';
 const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
@@ -278,8 +327,8 @@ async function refreshOutboxBar() {
   bar.hidden = !items.length || location.hash.startsWith('#/outbox');
   bar.classList.toggle('warn', errors > 0);
   bar.innerHTML = errors
-    ? `⚠ ${errors} cadastro(s) com problema · ${items.length} na fila <b>Ver</b>`
-    : `⏳ ${items.length} cadastro(s) aguardando internet para enviar <b>Ver</b>`;
+    ? `${ic('alert')} ${errors} cadastro(s) com problema · ${items.length} na fila <b>Ver</b>`
+    : `${ic('clock')} ${items.length} cadastro(s) aguardando internet para enviar <b>Ver</b>`;
 }
 
 window.addEventListener('online', () => flushOutbox());
@@ -366,7 +415,7 @@ function makeThumb(dataUrl, size = 240) {
   });
 }
 const thumbUrl = (url) => (url ? `${url}/thumb` : null);
-const thumbImg = (url, fallback = '📦') => (url
+const thumbImg = (url, fallback = ic('package')) => (url
   ? `<img class="thumb" src="${esc(thumbUrl(url))}" alt="" loading="lazy" decoding="async" width="64" height="64">`
   : `<div class="thumb">${fallback}</div>`);
 
@@ -394,11 +443,11 @@ function photoInputHtml(current, placeholder) {
     <div class="photo-input">
       <div class="photo-preview" style="width:100%">${current
         ? `<img src="${esc(current)}" alt="Foto atual">`
-        : `<div style="padding:24px">📷<br>${esc(placeholder)}</div>`}</div>
+        : `<div style="padding:24px">${ic('camera')}<br>${esc(placeholder)}</div>`}</div>
     </div>
     <div class="photo-buttons">
-      <label class="btn photo-camera">📷 Câmera<input type="file" accept="image/*" capture="environment"></label>
-      <label class="btn photo-gallery">🖼 Galeria<input type="file" accept="image/*"></label>
+      <label class="btn photo-camera">${ic('camera')} Câmera<input type="file" accept="image/*" capture="environment"></label>
+      <label class="btn photo-gallery">${ic('image')} Galeria<input type="file" accept="image/*"></label>
     </div>`;
 }
 
@@ -420,7 +469,7 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   const chip = document.getElementById('rate-chip');
   chip.innerHTML = state.me
-    ? `${fxFailing() ? '⚠ ' : ''}<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}${state.me.company.rate_mode === 'manual' ? ' <small>manual</small>' : ''}`
+    ? `${fxFailing() ? ic('alert') + ' ' : ''}<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}${state.me.company.rate_mode === 'manual' ? ' <small>manual</small>' : ''}`
     : '';
   chip.classList.toggle('warn', fxFailing());
   chip.title = fxFailing() ? 'Cotação automática indisponível — toque para ajustar' : 'Câmbio usado nas estimativas — toque para ajustar';
@@ -444,9 +493,9 @@ async function getSuppliers(company) {
   ]);
   return Object.assign([...pending, ...list], { offline: Boolean(list.offline) });
 }
-const offlineNote = (what) => `<div class="ocr-status err" style="margin-bottom:12px">📶 Sem internet e sem ${what} salvos neste celular.
+const offlineNote = (what) => `<div class="ocr-status err" style="margin-bottom:12px">${ic('wifiOff')} Sem internet e sem ${what} salvos neste celular.
   Você pode cadastrar mesmo assim: fica guardado aqui e é enviado quando a conexão voltar.</div>`;
-const pendingTag = (x) => (x.pending ? `<span class="badge ${x.error ? 'bad' : 'pending'}">${x.error ? '⚠ erro no envio' : '⏳ aguardando internet'}</span>` : '');
+const pendingTag = (x) => (x.pending ? `<span class="badge ${x.error ? 'bad' : 'pending'}">${x.error ? ic('alert') + ' erro no envio' : ic('clock') + ' aguardando internet'}</span>` : '');
 
 // ===================== administrador =====================
 // O administrador vê fornecedores e produtos de todas as empresas e pode
@@ -475,7 +524,7 @@ function companyLabel(cnpj) {
 }
 // Etiqueta da empresa, exibida só para o administrador.
 function companyTag(cnpj) {
-  return isAdmin() && cnpj ? `<span class="badge company" title="Empresa">🏢 ${esc(companyLabel(cnpj))}</span>` : '';
+  return isAdmin() && cnpj ? `<span class="badge company" title="Empresa">${ic('building')} ${esc(companyLabel(cnpj))}</span>` : '';
 }
 
 function companyOptions(selected, { all = false } = {}) {
@@ -623,7 +672,7 @@ async function viewSuppliers() {
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
         <a class="item" href="${s.pending ? '#/outbox' : `#/suppliers/${s.id}`}">
-          ${thumbImg(s.card_photo, '📇')}
+          ${thumbImg(s.card_photo, ic('contact'))}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             ${pendingTag(s)}
@@ -645,7 +694,7 @@ async function viewSupplier(id) {
   setChrome({ title: s.name, back: '#/suppliers', tab: 'suppliers' });
   $app.innerHTML = `
     ${s.card_photo ? `<div class="detail-photo" id="card-photo"><img src="${esc(s.card_photo)}" alt="Cartão de visitas"></div>`
-      : `<a class="btn block" href="#/suppliers/${s.id}/edit">📇 Adicionar foto do cartão</a>`}
+      : `<a class="btn block" href="#/suppliers/${s.id}/edit">${ic('contact')} Adicionar foto do cartão</a>`}
     <div class="card stack" style="margin-top:14px">
       <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
       ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
@@ -664,7 +713,7 @@ async function viewSupplier(id) {
         <a class="btn" href="#/suppliers/${s.id}/edit">Editar</a>
         <a class="btn primary" href="#/products/new?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">+ Produto</a>
       </div>
-      ${state.me?.features?.product_ocr ? `<a class="btn block" href="#/products/scan?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">📷 Produtos pela foto (catálogo, tabela de preços)</a>` : ''}
+      ${state.me?.features?.product_ocr ? `<a class="btn block" href="#/products/scan?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">${ic('camera')} Produtos pela foto (catálogo, tabela de preços)</a>` : ''}
       <div class="meta">Atualizado ${dateBr(s.updated_at)}${s.updated_by_name ? ' por ' + esc(s.updated_by_name) : ''}</div>
     </div>
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
@@ -832,7 +881,7 @@ async function viewSupplierForm(id) {
   const delPhoto = document.createElement('button');
   delPhoto.type = 'button';
   delPhoto.className = 'btn small danger photo-remove';
-  delPhoto.textContent = '🗑 Excluir foto do cartão';
+  delPhoto.innerHTML = `${ic('trash')} Excluir foto do cartão`;
   delPhoto.hidden = !s.card_photo;
   photoBox.append(delPhoto);
   delPhoto.addEventListener('click', () => {
@@ -840,7 +889,7 @@ async function viewSupplierForm(id) {
     ocrSeq++; // descarta leitura em andamento
     cardPhoto = null;
     removePhoto = Boolean(s.card_photo);
-    photoBox.querySelector('.photo-preview').innerHTML = `<div style="padding:24px">📷<br>${esc(photoHint)}</div>`;
+    photoBox.querySelector('.photo-preview').innerHTML = `<div style="padding:24px">${ic('camera')}<br>${esc(photoHint)}</div>`;
     document.getElementById('ocr-status').hidden = true;
     form.querySelector('button[type=submit]').disabled = false;
     delPhoto.hidden = true;
@@ -917,8 +966,8 @@ async function viewProducts() {
     ${saved.offline ? offlineNote('produtos') : ''}
     ${scopeBarHtml()}
     <div class="add-choice" aria-label="Novo produto">
-      <a class="btn primary" href="#/products/new">✍️ Manual<small>digitar os dados</small></a>
-      ${state.me?.features?.product_ocr ? '<a class="btn" href="#/products/scan">📷 Pela foto<small>catálogo ou tabela</small></a>' : ''}
+      <a class="btn primary" href="#/products/new">${ic('pen')} Manual<small>digitar os dados</small></a>
+      ${state.me?.features?.product_ocr ? `<a class="btn" href="#/products/scan">${ic('camera')} Pela foto<small>catálogo ou tabela</small></a>` : ''}
     </div>
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
@@ -932,7 +981,7 @@ async function viewProducts() {
         if (p.pending) {
           return `
         <a class="item" href="#/outbox">
-          <div class="thumb">⏳</div>
+          <div class="thumb">${ic('clock')}</div>
           <div class="item-body"><div class="item-title">${esc(p.name)}</div>${pendingTag(p)}</div>
         </a>`;
         }
@@ -987,7 +1036,7 @@ async function viewProduct(id) {
       <a class="item rank-item" href="#/suppliers/${o.supplier_id}">
         <div class="offer-head" style="margin:0">
           <div class="item-body">
-            <div class="item-title">${i === 0 ? '★ ' : ''}${esc(o.supplier_name)}</div>
+            <div class="item-title">${i === 0 ? ic('star') + ' ' : ''}${esc(o.supplier_name)}</div>
             <div class="item-sub">${o.supplier_booth ? 'Stand ' + esc(o.supplier_booth) : 'Sem stand'}</div>
           </div>
           ${i === 0 ? '<span class="badge good">melhor preço</span>' : ''}
@@ -1093,7 +1142,7 @@ async function viewProductForm(id, query) {
       <div class="card stack">
         <div><label>Foto do produto <small class="item-sub">(opcional)</small></label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
           ${state.me?.features?.product_ocr && !editing
-            ? '<button type="button" class="btn small block" id="read-photo" hidden style="margin-top:8px">✨ Preencher os campos com os dados da foto</button>' : ''}
+            ? `<button type="button" class="btn small block" id="read-photo" hidden style="margin-top:8px">${ic('sparkles')} Preencher os campos com os dados da foto</button>` : ''}
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
         <div class="ocr-status" id="ocr-status" hidden></div>
         <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required>
@@ -1125,7 +1174,7 @@ async function viewProductForm(id, query) {
   bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
-    document.querySelector('#photo .photo-preview').innerHTML = '<div style="padding:24px">📷<br>Tire uma foto ou escolha da galeria</div>';
+    document.querySelector('#photo .photo-preview').innerHTML = `<div style="padding:24px">${ic('camera')}<br>Tire uma foto ou escolha da galeria</div>`;
     e.target.remove();
   });
 
@@ -1152,7 +1201,7 @@ async function viewProductForm(id, query) {
         <div class="offer-head">
           <div class="combo">
             <input class="combo-input" data-combo="${i}" value="${esc(supplierLabel(o.supplier_id))}"
-              placeholder="🔍 Buscar fornecedor pelo nome ou stand…" autocomplete="off" role="combobox"
+              placeholder="Buscar fornecedor pelo nome ou stand…" autocomplete="off" role="combobox"
               aria-label="Fornecedor" aria-expanded="false" aria-autocomplete="list">
             <ul class="combo-list" role="listbox" hidden></ul>
           </div>
@@ -1177,7 +1226,7 @@ async function viewProductForm(id, query) {
   // ---- campo de fornecedor com busca ----
   function supplierLabel(id) {
     const s = suppliers.find((x) => x.id === Number(id));
-    return s ? (s.pending ? '⏳ ' : '') + s.name + (s.booth ? ` — ${s.booth}` : '') : '';
+    return s ? s.name + (s.booth ? ` — ${s.booth}` : '') + (s.pending ? ' (aguardando internet)' : '') : '';
   }
 
   // ---- aviso de produto parecido já cadastrado ----
@@ -1192,7 +1241,7 @@ async function viewProductForm(id, query) {
       ...(Number(o.supplier_id) > 0 ? { add_supplier: o.supplier_id } : {}), price: o.price_usd || '', moq: o.moq || '',
       incoterm: o.incoterm || '', nat: o.nationalization_pct || '',
     });
-    dupBox.innerHTML = `<div class="dup-title">⚠ Parecido com produto já cadastrado:</div>${found.map(({ p: x }) => `
+    dupBox.innerHTML = `<div class="dup-title">${ic('alert')} Parecido com produto já cadastrado:</div>${found.map(({ p: x }) => `
       <div class="dup-item"><span>${esc(x.name)}${x.pending ? ' <small>(aguardando envio)</small>' : ` <small>· ${x.offer_count ?? x.offers?.length ?? 0} fornecedor(es)</small>`}</span>
         ${x.pending || !x.id ? '' : `<a class="btn small" href="#/products/${x.id}/edit?${qs}">${Number(o.supplier_id) > 0 ? 'Adicionar a oferta neste' : 'Abrir este'}</a>`}
       </div>`).join('')}
@@ -1458,7 +1507,7 @@ async function viewProductScan(query) {
       <div class="card stack">
         <div><label for="supplier">Fornecedor</label>
           <select id="supplier"><option value="">— escolha o fornecedor —</option>${suppliers.map((s) =>
-            `<option value="${s.id}"${s.id === Number(supplierId) ? ' selected' : ''}>${s.pending ? '⏳ ' : ''}${esc(s.name)}${s.booth ? ` — ${esc(s.booth)}` : ''}</option>`).join('')}</select>
+            `<option value="${s.id}"${s.id === Number(supplierId) ? ' selected' : ''}>${esc(s.name)}${s.booth ? ` — ${esc(s.booth)}` : ''}${s.pending ? ' (aguardando internet)' : ''}</option>`).join('')}</select>
           <div class="hint">Sem fornecedor, os produtos são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
         <div class="row">
           <div><label for="nat">Nacionaliz. (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
@@ -1519,7 +1568,7 @@ async function viewProductScan(query) {
           <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
         </div>
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
-        ${similar.length ? `<div class="dup-box"><div class="dup-title">⚠ Parecido com produto já cadastrado</div>
+        ${similar.length ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado</div>
           <select data-k="target"><option value="">Criar produto novo</option>${similar.map(({ p }) =>
             `<option value="${p.id}"${Number(it.target) === p.id ? ' selected' : ''}>Adicionar a oferta em: ${esc(p.name)}</option>`).join('')}</select></div>` : ''}
         ${it.target ? '' : `<label class="scan-check"><input type="checkbox" data-k="use_photo"${it.use_photo ? ' checked' : ''}> Usar esta foto como foto do produto</label>`}
@@ -1750,11 +1799,11 @@ async function viewModelTest() {
 // Extrato pessoal: cada usuário lança e vê só as próprias despesas.
 
 const EXPENSE_CATS = [
-  ['hospedagem', '🏨', 'Hospedagem'], ['alimentacao', '🍜', 'Alimentação'], ['transporte', '🚕', 'Transporte local'],
-  ['passagens', '✈️', 'Passagens'], ['feira', '🏛️', 'Feira'], ['amostras', '📦', 'Amostras'],
-  ['comunicacao', '📱', 'Internet e telefone'], ['compras', '🛍️', 'Compras'], ['outros', '🧾', 'Outros'],
+  ['hospedagem', ic('bed'), 'Hospedagem'], ['alimentacao', ic('utensils'), 'Alimentação'], ['transporte', ic('car'), 'Transporte local'],
+  ['passagens', ic('plane'), 'Passagens'], ['feira', ic('landmark'), 'Feira'], ['amostras', ic('package'), 'Amostras'],
+  ['comunicacao', ic('phone'), 'Internet e telefone'], ['compras', ic('bag'), 'Compras'], ['outros', ic('receipt'), 'Outros'],
 ];
-const PAYMENTS = [['cartao', '💳 Cartão', 'Cartão'], ['dinheiro', '💵 Dinheiro', 'Dinheiro'], ['alipay', 'Alipay', 'Alipay'], ['wechat', 'WeChat Pay', 'WeChat Pay'], ['outro', 'Outro', 'Outro']];
+const PAYMENTS = [['cartao', 'Cartão', 'Cartão'], ['dinheiro', 'Dinheiro', 'Dinheiro'], ['alipay', 'Alipay', 'Alipay'], ['wechat', 'WeChat Pay', 'WeChat Pay'], ['outro', 'Outro', 'Outro']];
 const CURRENCY_SYMBOL = { CNY: '¥', BRL: 'R$', USD: 'US$' };
 const catInfo = (k) => EXPENSE_CATS.find((c) => c[0] === k) || EXPENSE_CATS[EXPENSE_CATS.length - 1];
 const moneyIn = (n, cur) => (cur === 'BRL' ? brl(n) : `${CURRENCY_SYMBOL[cur]} ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
@@ -1806,7 +1855,7 @@ async function viewExpenses(query) {
     </div>
     <div class="actions" style="margin:12px 0">
       <a class="btn primary" href="#/expenses/new">+ Lançar despesa</a>
-      ${all.length ? '<button type="button" class="btn" id="export">⬇ Exportar planilha</button>' : ''}
+      ${all.length ? `<button type="button" class="btn" id="export">${ic('download')} Exportar planilha</button>` : ''}
     </div>
     ${filter ? `<div class="hint" style="margin-bottom:8px">Mostrando só: <b>${esc(catInfo(filter)[2])}</b> · <a href="#/expenses">ver todas</a></div>` : ''}
     <div class="exp-list">${days.length ? days.map((d) => {
@@ -1974,7 +2023,7 @@ const INTERP_PAIRS = { 'pt-zh': ['pt', 'zh'], 'pt-en': ['pt', 'en'] };
 const INTERP_LANG = {
   pt: { flag: FLAG_BR, speak: 'Falar em português', name: 'Português' },
   zh: { flag: FLAG_CN, speak: '说中文 (falar em chinês)', name: '中文' },
-  en: { flag: '🇺🇸', speak: 'Speak English', name: 'English' },
+  en: { flag: FLAG_US, speak: 'Speak English', name: 'English' },
 };
 
 // Grava o microfone e devolve WAV 16 kHz mono (formato aceito pela Azure em qualquer celular).
@@ -2042,7 +2091,7 @@ async function viewInterpreter() {
         <div class="card interp-msg ${m.from}">
           <div class="item-sub">${INTERP_LANG[m.from].flag} ${esc(m.source)}</div>
           <div class="interp-tr">${INTERP_LANG[m.to].flag} ${esc(m.translated || '—')}</div>
-          ${m.audio ? `<button type="button" class="btn small" data-play="${i}">🔊 Ouvir de novo</button>` : ''}
+          ${m.audio ? `<button type="button" class="btn small" data-play="${i}">${ic('speaker')} Ouvir de novo</button>` : ''}
         </div>`).join('') : `<div class="empty">Toque no seu idioma, fale uma frase e toque de novo. O app mostra e fala a tradução.<br>
           Para o fornecedor responder, ele toca no botão do idioma dele.<br><small>Cobrado só o tempo de fala (até 60 s por vez).</small></div>`}
       </div>`;
@@ -2137,11 +2186,11 @@ async function viewCredits() {
     <div id="checkout"></div>
     ${c.pending.length ? `<h2>Pagamentos aguardando</h2><div class="list">${c.pending.map((p) => `
       <button type="button" class="item" data-resume="${p.id}" style="text-align:left;width:100%">
-        <div class="thumb">⏳</div><div class="item-body"><div class="item-title">${fmtDur(p.minutes * 60)} · ${brl(p.value)}</div>
+        <div class="thumb">${ic('clock')}</div><div class="item-body"><div class="item-title">${fmtDur(p.minutes * 60)} · ${brl(p.value)}</div>
         <div class="item-sub">${p.method === 'pix' ? 'Pix' : 'Cartão'} · ${dateBr(p.created_at)} · toque para ver</div></div></button>`).join('')}</div>` : ''}
     <h2>Extrato</h2>
     <div class="list">${c.ledger.length ? c.ledger.map((l) => `
-      <div class="item"><div class="thumb">${{ purchase: '💳', grant: '🎁', usage: '🎙️', refund: '↩️' }[l.kind] || '•'}</div>
+      <div class="item"><div class="thumb">${ic({ purchase: 'card', grant: 'gift', usage: 'mic', refund: 'undo' }[l.kind] || 'receipt')}</div>
         <div class="item-body"><div class="item-title">${esc(kinds[l.kind] || l.kind)}${l.note ? ` · <span class="item-sub">${esc(l.note)}</span>` : ''}</div>
           <div class="item-sub">${dateBr(l.created_at)}${l.user_name ? ` · ${esc(l.user_name)}` : ''}</div></div>
         <div class="item-side"><b class="${l.seconds < 0 ? '' : 'pos'}">${l.seconds < 0 ? '−' : '+'}${fmtDur(Math.abs(l.seconds))}</b></div></div>`).join('')
@@ -2225,7 +2274,7 @@ async function viewAdminCredits() {
     </form>
     <h2>Últimos pagamentos</h2>
     <div class="list">${d.payments.length ? d.payments.map((p) => `
-      <div class="item"><div class="thumb">${p.paid ? '✅' : '⏳'}</div><div class="item-body">
+      <div class="item"><div class="thumb">${ic(p.paid ? 'check' : 'clock')}</div><div class="item-body">
         <div class="item-title">${esc(p.company_name || p.cnpj)} · ${fmtDur(p.minutes * 60)} · ${brl(p.value)}</div>
         <div class="item-sub">${p.method === 'pix' ? 'Pix' : 'Cartão'} · ${esc(p.status)} · ${dateBr(p.created_at)}</div></div></div>`).join('')
       : '<div class="empty">Nenhum pagamento ainda.</div>'}</div>`;
@@ -2263,7 +2312,7 @@ async function viewOutbox() {
     <button class="btn primary block" id="send-now" ${items.length ? '' : 'disabled'}>Enviar agora</button>
     <div class="list" style="margin-top:14px">${items.length ? items.map((i) => `
       <div class="item">
-        <div class="thumb">${i.error ? '⚠️' : '⏳'}</div>
+        <div class="thumb">${ic(i.error ? 'alert' : 'clock')}</div>
         <div class="item-body">
           <div class="item-title">${esc(OUTBOX_KIND[i.kind])}: ${esc(i.label || i.body.name || '')}</div>
           <div class="item-sub">Feito em ${dateBr(i.created_at)}</div>
@@ -2325,7 +2374,7 @@ function renderRankProducts(r) {
         ${thumbImg(it.photo)}
         <div class="item-body">
           <div class="item-title">${esc(it.name)}</div>
-          <div class="item-sub">${it.best ? `★ ${esc(it.best.supplier_name)}${it.best.supplier_booth ? ' · Stand ' + esc(it.best.supplier_booth) : ''}` : 'Sem fornecedor'}</div>
+          <div class="item-sub">${it.best ? `${ic('star')} ${esc(it.best.supplier_name)}${it.best.supplier_booth ? ' · Stand ' + esc(it.best.supplier_booth) : ''}` : 'Sem fornecedor'}</div>
           <div style="margin-top:4px">${savingBadge(it.price_brl, it.best?.estimated_brl)}${it.options.length > 1 ? ` <span class="badge">${it.options.length} fornecedores</span>` : ''} ${companyTag(it.company_cnpj)}</div>
         </div>
       </div>
@@ -2361,35 +2410,35 @@ const TRIP_FIELDS = [
   ['time', 'Hora'], ['city', 'Cidade'], ['activity', 'Atividade'],
   ['transport', 'Transporte'], ['hotel', 'Hotel'], ['notes', 'Observações'],
 ];
-const TRIP_ICONS = { location: '📍', hotel: '🏨', contact: '👤', notes: '📝' };
-// Meios de transporte. A ordem importa: "Transfer para o aeroporto" é 🚐, não ✈️.
+const TRIP_ICONS = { location: ic('pin'), hotel: ic('bed'), contact: ic('user'), notes: ic('note') };
+// Meios de transporte. A ordem importa: "Transfer para o aeroporto" é van, não avião.
 // O texto é comparado sem acentos e em minúsculas ("Vôo", "AÉREA", "Ônibus" também valem).
 const TRANSPORT_RULES = [
-  [/transfer|tra[n]?slado|\bcarro\b|\bvan\b|\btaxi|\bdidi\b|\buber\b|motorista|\bcar\b|专车|接送|出租/, '🚐'],
-  [/\bvoo|\bvoa|aviao|aere[oa]|aeroporto|\bflight|\bfly|airport|airline|航班|飞机/, '✈️'],
-  [/\btre[mn]|alta velocidade|high.?speed|\bcrh\b|\bg\d{1,4}\b|\bmetro\b|subway|高铁|动车|火车|地铁/, '🚆'],
-  [/onibus|\bbus\b|\bcoach\b|巴士|大巴/, '🚌'],
-  [/\bbarco\b|balsa|ferry|\bboat\b|轮渡/, '⛴️'],
-  [/a pe\b|caminhada|\bwalk/, '🚶'],
+  [/transfer|tra[n]?slado|\bcarro\b|\bvan\b|\btaxi|\bdidi\b|\buber\b|motorista|\bcar\b|专车|接送|出租/, ic('van')],
+  [/\bvoo|\bvoa|aviao|aere[oa]|aeroporto|\bflight|\bfly|airport|airline|航班|飞机/, ic('plane')],
+  [/\btre[mn]|alta velocidade|high.?speed|\bcrh\b|\bg\d{1,4}\b|\bmetro\b|subway|高铁|动车|火车|地铁/, ic('train')],
+  [/onibus|\bbus\b|\bcoach\b|巴士|大巴/, ic('bus')],
+  [/\bbarco\b|balsa|ferry|\bboat\b|轮渡/, ic('ship')],
+  [/a pe\b|caminhada|\bwalk/, ic('walk')],
 ];
-// Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → 🚆), depois o
+// Ícone da atividade. Olha primeiro o texto da atividade ("Trem para Shenzhen" → trem), depois o
 // campo Transporte, e só usa o tipo da legenda de cores quando nada indica — o tipo costuma ser
 // genérico, ex.: "Deslocamento (voo, trem, transfer)".
 const ICON_RULES = [
   ...TRANSPORT_RULES,
-  [/deslocamento/, '🚐'],
-  [/\bfeira\b|\bfair\b|\bexpo\b/, '🏛️'],
-  [/fabrica|factory|visita/, '🏭'],
-  [/\bhotel\b|check-?in/, '🏨'],
-  [/\blivre\b|descanso|\bfree\b/, '☀️'],
+  [/deslocamento/, ic('van')],
+  [/\bfeira\b|\bfair\b|\bexpo\b/, ic('landmark')],
+  [/fabrica|factory|visita/, ic('factory')],
+  [/\bhotel\b|check-?in/, ic('bed')],
+  [/\blivre\b|descanso|\bfree\b/, ic('sun')],
 ];
 const plain = (text) => String(text || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase();
 const matchIcon = (rules, text) => { const t = plain(text); return rules.find(([re]) => re.test(t))?.[1] || ''; };
 const iconFor = (text) => matchIcon(ICON_RULES, text);
-// Ícone da linha "Transporte": conforme o meio informado; 🚗 quando não dá para saber.
+// Ícone da linha "Transporte": conforme o meio informado; carro quando não dá para saber.
 // Número de voo no formato da companhia: "CZ3456", "MU 5102" (em maiúsculas, como no bilhete).
 const FLIGHT_NO = /\b[A-Z][A-Z0-9]\s?\d{3,4}\b/;
-const transportIcon = (text) => matchIcon(TRANSPORT_RULES, text) || (FLIGHT_NO.test(text) ? '✈️' : '🚗');
+const transportIcon = (text) => matchIcon(TRANSPORT_RULES, text) || (FLIGHT_NO.test(text) ? ic('plane') : ic('car'));
 const tripIcon = (it) => iconFor(it.activity) || matchIcon(TRANSPORT_RULES, it.transport) || iconFor(it.category);
 const WEEKDAYS = ['dom.', 'seg.', 'ter.', 'qua.', 'qui.', 'sex.', 'sáb.'];
 
@@ -2418,10 +2467,10 @@ async function viewTrip(id) {
   $app.innerHTML = `
     ${subnavHtml('trip')}
     ${scopeBarHtml()}
-    ${isAdmin() ? '<a class="btn primary block" href="#/trip/new" style="margin-bottom:14px">⬆ Enviar roteiro (Excel)</a>' : ''}
+    ${isAdmin() ? `<a class="btn primary block" href="#/trip/new" style="margin-bottom:14px">${ic('upload')} Enviar roteiro (Excel)</a>` : ''}
     <div class="list">${list.length ? list.map((it) => `
       <a class="item" href="#/trip/${it.id}">
-        <div class="thumb">✈️</div>
+        <div class="thumb">${ic('plane')}</div>
         <div class="item-body">
           <div class="item-title">${esc(it.title)}</div>
           <div class="item-sub">${it.start_date ? esc(dateRange(it.start_date, it.end_date)) + ' · ' : ''}${it.day_count} dia(s) · ${it.item_count} atividade(s)</div>
@@ -2464,8 +2513,8 @@ function renderTrip(it, { back }) {
       <div class="item-sub">${it.start_date ? esc(dateRange(it.start_date, it.end_date)) + ' · ' : ''}${it.day_count} dia(s)</div>
       ${isAdmin() ? `<div>${companyTag(it.company_cnpj)}</div>` : ''}
       ${isAdmin() ? `<div class="actions" style="margin-top:10px">
-        <a class="btn small" href="/api/itineraries/${it.id}/file" download>⬇ Planilha original</a>
-        <a class="btn small" href="#/trip/${it.id}/edit">✎ Editar</a>
+        <a class="btn small" href="/api/itineraries/${it.id}/file" download>${ic('download')} Planilha original</a>
+        <a class="btn small" href="#/trip/${it.id}/edit">${ic('pen')} Editar</a>
       </div>` : ''}
     </div>
     <div class="trip-days">${it.days.map((d, i) => {
@@ -2478,7 +2527,7 @@ function renderTrip(it, { back }) {
           <div class="trip-day-title">${esc(d.date ? dayTitle(d.date) : '')}${d.label ? ` <span>${esc(d.label)}</span>` : ''}</div>
           ${isToday ? '<span class="badge good">Hoje</span>' : ''}
         </header>
-        ${cities.length || d.sheet ? `<div class="badges" style="margin:0 0 6px">${cities.map((c) => `<span class="badge city">📍 ${esc(c)}</span>`).join('')}</div>` : ''}
+        ${cities.length || d.sheet ? `<div class="badges" style="margin:0 0 6px">${cities.map((c) => `<span class="badge city">${ic('pin')} ${esc(c)}</span>`).join('')}</div>` : ''}
         <ul class="trip-items">${d.items.map((x) => tripItemHtml(x, cities.length === 1 ? cities[0] : null)).join('')}</ul>
       </section>`;
     }).join('')}</div>
@@ -2692,7 +2741,7 @@ function renderMyCard() {
         <img src="${esc(user.card_photo)}" alt="Meu cartão de visitas"></button>
       <div class="actions" style="margin-top:10px">
         <button type="button" class="btn" id="my-card-full">⤢ Mostrar</button>
-        <button type="button" class="btn primary" id="my-card-share">↗ Compartilhar</button>
+        <button type="button" class="btn primary" id="my-card-share">${ic('share')} Compartilhar</button>
       </div>
       <details class="my-card-more"><summary>Trocar ou remover</summary>
         <div id="my-card-photo" style="margin-top:8px">${photoInputHtml(null, '')}</div>
@@ -2825,7 +2874,7 @@ async function viewAdmin(query) {
             <select data-move="${u.id}">${companies.map((c) => `<option value="${esc(c.cnpj)}" ${c.cnpj === u.cnpj ? 'selected' : ''}>${c.name ? `${esc(c.name)} — ` : ''}${esc(c.cnpj_formatted)}</option>`).join('')}</select>
           </label>
         </div>
-        ${u.is_self ? '' : `<button type="button" class="icon-btn danger-icon" data-del-user="${u.id}" aria-label="Excluir usuário" title="Excluir usuário">🗑</button>`}
+        ${u.is_self ? '' : `<button type="button" class="icon-btn danger-icon" data-del-user="${u.id}" aria-label="Excluir usuário" title="Excluir usuário">${ic('trash')}</button>`}
       </div>`).join('') || '<div class="empty">Nenhum usuário encontrado.</div>';
   const renderCompanies = (term) => companies.filter((c) => !term || norm(`${c.name} ${c.cnpj} ${c.cnpj_formatted}`).includes(term))
     .map((c) => `
@@ -2838,7 +2887,7 @@ async function viewAdmin(query) {
           ${c.users ? '<div class="hint">Para excluir, primeiro exclua ou mude a empresa dos usuários.</div>' : ''}
         </div>
         <button type="button" class="icon-btn danger-icon" data-del-company="${esc(c.cnpj)}" ${c.users ? 'disabled' : ''}
-          aria-label="Excluir empresa" title="${c.users ? 'Exclua os usuários primeiro' : 'Excluir empresa'}">🗑</button>
+          aria-label="Excluir empresa" title="${c.users ? 'Exclua os usuários primeiro' : 'Excluir empresa'}">${ic('trash')}</button>
       </div>`).join('') || '<div class="empty">Nenhuma empresa encontrada.</div>';
 
   const list = document.getElementById('list');
@@ -2910,12 +2959,12 @@ function renderRateCard() {
         <b>R$ ${fmtRate(company.exchange_rate)}</b>
         <span class="item-sub">${quoteInfo}</span>
       </div>
-      ${failing ? `<div class="error-box">⚠ ${esc(fx.error)} Estamos usando o último valor disponível.
+      ${failing ? `<div class="error-box">${ic('alert')} ${esc(fx.error)} Estamos usando o último valor disponível.
         Tente atualizar de novo ou informe o câmbio manualmente abaixo.</div>` : ''}
       ${auto ? `
         <p class="hint" style="margin:0">Atualizado sozinho a cada 30 minutos pela PTAX (taxa de venda) do Banco Central,
           com AwesomeAPI e ExchangeRate-API como reserva.</p>
-        <button type="button" class="btn" id="fx-refresh">↻ Atualizar agora</button>` : ''}
+        <button type="button" class="btn" id="fx-refresh">${ic('refresh')} Atualizar agora</button>` : ''}
       <form class="stack" id="rate-form" ${auto && !failing ? 'hidden' : ''}>
         <div><label for="rate">${auto ? 'Informar manualmente (R$ por US$ 1,00)' : 'R$ por US$ 1,00'}</label>
           <input id="rate" name="rate" inputmode="decimal" value="${fmtRate(company.exchange_rate)}"></div>
@@ -2952,7 +3001,7 @@ function renderRateCard() {
     } catch (err) {
       toast(err.message);
       e.target.disabled = false;
-      e.target.textContent = '↻ Atualizar agora';
+      e.target.innerHTML = `${ic('refresh')} Atualizar agora`;
     }
   });
   box.querySelector('#rate-form').addEventListener('submit', (e) => {
@@ -2977,23 +3026,23 @@ async function viewAccount() {
       ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
     </div>
-    <a class="item" href="#/credits" style="margin-top:14px"><div class="thumb">🎙️</div><div class="item-body">
+    <a class="item" href="#/credits" style="margin-top:14px"><div class="thumb">${ic('mic')}</div><div class="item-body">
       <div class="item-title">Créditos do intérprete</div>
       <div class="item-sub">Saldo de minutos de tradução por voz e compra por Pix ou cartão</div></div></a>
-    <a class="item" href="#/expenses" style="margin-top:10px"><div class="thumb">🧾</div><div class="item-body">
+    <a class="item" href="#/expenses" style="margin-top:10px"><div class="thumb">${ic('receipt')}</div><div class="item-body">
       <div class="item-title">Controle de viagem</div>
       <div class="item-sub">Lance e categorize as despesas da viagem — seu extrato pessoal</div></div></a>
     <h2 id="cambio">Câmbio para estimativas</h2>
     <div id="rate-card"></div>
     <div id="freight-card"></div>
     ${user.is_admin ? `<h2>Administração</h2>
-      <a class="item" href="#/admin"><div class="thumb">👥</div><div class="item-body">
+      <a class="item" href="#/admin"><div class="thumb">${ic('users')}</div><div class="item-body">
         <div class="item-title">Usuários e empresas</div>
         <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>
-      <a class="item" href="#/admin/credits"><div class="thumb">💳</div><div class="item-body">
+      <a class="item" href="#/admin/credits"><div class="thumb">${ic('card')}</div><div class="item-body">
         <div class="item-title">Créditos do intérprete (empresas)</div>
         <div class="item-sub">Saldos e consumo de cada empresa, cortesias, pacotes e pagamentos do Asaas</div></div></a>
-      <a class="item" href="#/admin/models"><div class="thumb">🧪</div><div class="item-body">
+      <a class="item" href="#/admin/models"><div class="thumb">${ic('flask')}</div><div class="item-body">
         <div class="item-title">Teste de modelos de leitura</div>
         <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
     <h2>Equipe (${company.members.length})</h2>
