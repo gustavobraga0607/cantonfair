@@ -16,6 +16,8 @@
     { id: 'hangzhou', name: 'Hangzhou', zh: '杭州', lat: 30.274, lng: 120.155 },
     { id: 'shanghai', name: 'Xangai', zh: '上海', lat: 31.230, lng: 121.474 },
     { id: 'beijing', name: 'Pequim', zh: '北京', lat: 39.904, lng: 116.407 },
+    { id: 'wuhan', name: 'Wuhan', zh: '武汉', lat: 30.593, lng: 114.305 },
+    { id: 'jinan', name: 'Jinan', zh: '济南', lat: 36.651, lng: 117.120 },
   ];
 
   const P = (city, cat, name, zh, lat, lng, desc) => ({ city, cat, name, zh, lat, lng, desc });
@@ -102,6 +104,29 @@
     P('beijing', 'cultura', 'Distrito de arte 798', '798艺术区', 39.9840, 116.4950, 'Antigas fábricas convertidas em galerias de arte contemporânea.'),
     P('beijing', 'compras', 'Silk Market', '秀水街', 39.9087, 116.4440, 'Mercado de roupas, seda e souvenirs. Pechinche bastante.'),
     P('beijing', 'gastronomia', 'Pato laqueado', '北京烤鸭 全聚德 前门店', 39.8970, 116.3980, 'Prove o pato de Pequim no tradicional Quanjude, perto de Qianmen.'),
+
+    // Wuhan
+    P('wuhan', 'turismo', 'Torre do Grou Amarelo', '黄鹤楼', 30.5446, 114.3025, 'Torre símbolo de Wuhan, cantada em poemas clássicos, com vista do rio Yangtzé.'),
+    P('wuhan', 'turismo', 'Ponte do Rio Yangtzé', '武汉长江大桥', 30.5500, 114.2880, 'Primeira ponte sobre o Yangtzé (1957). Dá para atravessar a pé e ver o rio.'),
+    P('wuhan', 'turismo', 'Orla de Hankou', '汉口江滩', 30.5900, 114.3000, 'Calçadão à beira do Yangtzé com prédios históricos da antiga concessão. Bonito à noite.'),
+    P('wuhan', 'cultura', 'Museu Provincial de Hubei', '湖北省博物馆', 30.5610, 114.3650, 'Guarda os sinos de bronze do Marquês Yi, com mais de 2.400 anos. Entrada gratuita com passaporte.'),
+    P('wuhan', 'cultura', 'Templo Guiyuan', '归元寺', 30.5480, 114.2620, 'Templo budista com um salão de 500 estátuas de arhats.'),
+    P('wuhan', 'natureza', 'Lago Leste', '东湖', 30.5530, 114.4020, 'Grande lago urbano com trilhas, ciclovia e a área de Moshan. Ótimo para caminhar.'),
+    P('wuhan', 'gastronomia', 'Beco Hubu', '户部巷', 30.5490, 114.2990, 'Rua de comida de rua e café da manhã. Prove o macarrão seco quente (热干面), prato típico.'),
+    P('wuhan', 'compras', 'Rua Jianghan', '江汉路步行街', 30.5800, 114.2880, 'Principal rua comercial, com prédios do início do século XX.'),
+    P('wuhan', 'compras', 'Chu River & Han Street', '楚河汉街', 30.5620, 114.3410, 'Rua de compras e restaurantes à beira de um canal, com lojas modernas.'),
+    P('wuhan', 'compras', 'Hanzhengjie – atacado', '汉正街', 30.5720, 114.2700, 'Tradicional polo atacadista de Wuhan: roupas, calçados, utilidades e pequenas mercadorias.'),
+
+    // Jinan
+    P('jinan', 'natureza', 'Fonte Baotu', '趵突泉', 36.6610, 117.0160, 'A mais famosa das 72 fontes de Jinan, a "cidade das fontes". Parque no centro.'),
+    P('jinan', 'natureza', 'Lago Daming', '大明湖', 36.6750, 117.0240, 'Lago no centro histórico, com pavilhões, barcos e passeio à beira d\'água.'),
+    P('jinan', 'natureza', 'Fonte do Tigre Negro', '黑虎泉', 36.6600, 117.0280, 'Fonte junto ao fosso da antiga muralha; moradores enchem garrafas com a água.'),
+    P('jinan', 'natureza', 'Parque Wulongtan', '五龙潭', 36.6660, 117.0120, 'Parque tranquilo com várias fontes de água cristalina.'),
+    P('jinan', 'cultura', 'Montanha dos Mil Budas', '千佛山', 36.6390, 117.0300, 'Colina com templos e budas esculpidos na rocha, e vista da cidade.'),
+    P('jinan', 'cultura', 'Museu de Shandong', '山东博物馆', 36.6610, 117.0960, 'Grande museu provincial com peças da cultura de Confúcio e de Shandong.'),
+    P('jinan', 'gastronomia', 'Rua Furong', '芙蓉街', 36.6680, 117.0210, 'Viela antiga cheia de comida de rua, perto do Lago Daming.'),
+    P('jinan', 'compras', 'Kuanhouli', '宽厚里', 36.6630, 117.0200, 'Rua de pedestres com lojas, bares e lanches no estilo antigo, ao lado da Fonte Baotu.'),
+    P('jinan', 'natureza', 'Monte Tai', '泰山', 36.2560, 117.1010, 'Montanha sagrada da China, em Tai\'an, a cerca de 20 min de trem-bala. Subida com teleférico.'),
   ];
 
   const TOURISM = { CITIES, PLACES };
