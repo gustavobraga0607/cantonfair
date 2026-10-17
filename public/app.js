@@ -2576,7 +2576,7 @@ async function viewTourism(query) {
     $app.innerHTML = `${subnavHtml('tourism')}<div class="empty">Atualizando o app… feche e abra de novo para ver o turismo.</div>`;
     return;
   }
-  const { CITIES, PLACES } = window.TOURISM;
+  const { CITIES, PLACES, PHOTOS = {} } = window.TOURISM;
   let saved = null;
   try { saved = localStorage.getItem('cfb.tourCity'); } catch { /* sem armazenamento */ }
   let cityId = query.get('city') || null;
@@ -2615,14 +2615,20 @@ async function viewTourism(query) {
           ${cats.map((k) => `<button type="button" class="tour-cat${cat === k ? ' active' : ''}" data-cat="${k}">${ic(TOUR_CATS[k][0])} ${TOUR_CATS[k][1]}</button>`).join('')}
         </div>
       </div>
-      <div class="list">${list.map((p, i) => `
-        <div class="card tour-item">
+      <div class="list">${list.map((p, i) => {
+        const ph = PHOTOS[p.zh];
+        return `
+        <div class="card tour-item${ph ? ' has-photo' : ''}">
+          ${ph ? `<figure class="tour-photo">
+            <img src="/tourism/${ph[0]}.webp" alt="${esc(p.name)}" loading="lazy" decoding="async" width="480" height="270" data-photo="${ph[0]}">
+            <figcaption><a href="https://commons.wikimedia.org/wiki/File:${encodeURIComponent(ph[3].replace(/ /g, '_'))}" target="_blank" rel="noopener">Foto: ${esc(ph[1] || 'Wikimedia Commons')} · ${esc(ph[2])}</a></figcaption>
+          </figure>` : ''}
           <div class="tour-top">
-            <div class="thumb">${ic(TOUR_CATS[p.cat][0])}</div>
+            ${ph ? '' : `<div class="thumb">${ic(TOUR_CATS[p.cat][0])}</div>`}
             <div class="item-body">
               <div class="item-title">${esc(p.name)}</div>
               <div class="tour-zh">${esc(p.zh)}</div>
-              <div class="item-sub">${TOUR_CATS[p.cat][1]}${p.km != null ? ` · <b>${fmtKm(p.km)}</b>` : ''}</div>
+              <div class="item-sub">${ph ? ic(TOUR_CATS[p.cat][0]) + ' ' : ''}${TOUR_CATS[p.cat][1]}${p.km != null ? ` · <b>${fmtKm(p.km)}</b>` : ''}</div>
             </div>
           </div>
           <p class="tour-desc">${esc(p.desc)}</p>
@@ -2631,7 +2637,8 @@ async function viewTourism(query) {
             <button type="button" class="btn small" data-taxi="${i}">${ic('car')} Mostrar ao taxista</button>
             <a class="btn small" href="${esc(otherMapLink(p))}">${ic('map')} Outro mapa</a>
           </div>
-        </div>`).join('')}
+        </div>`;
+      }).join('')}
       </div>
       <p class="hint">“Como chegar” abre o Amap (高德地图), o mapa que funciona na China. Sem o app instalado, abre a versão web.
         Google Maps não funciona na China sem VPN.</p>`;
@@ -2644,6 +2651,7 @@ async function viewTourism(query) {
     });
     document.getElementById('tour-locate').addEventListener('click', () => locate(true));
     $app.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { cat = b.dataset.cat; render(); }));
+    $app.querySelectorAll('[data-photo]').forEach((img) => img.addEventListener('click', () => openLightbox(img.src)));
     $app.querySelectorAll('[data-taxi]').forEach((b) => b.addEventListener('click', () => showTaxiCard(list[Number(b.dataset.taxi)], city)));
   }
 

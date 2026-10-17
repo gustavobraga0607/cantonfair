@@ -547,3 +547,10 @@ body.map-mode main { display: none; }
 .taxi-city { font-size: 1.5rem; color: var(--muted); }
 .map-toolbar .subnav a { padding: 7px 4px; }
 @media (max-width: 420px) { .map-open-label { display: none; } .map-toolbar { gap: 6px; padding: 8px; } }
+.tour-item.has-photo { padding: 0 14px 14px; overflow: hidden; }
+.tour-photo { position: relative; margin: 0 -14px; aspect-ratio: 16 / 9; background: var(--neutral-bg); }
+.tour-photo img { display: block; width: 100%; height: 100%; object-fit: cover; cursor: zoom-in; }
+.tour-photo figcaption { position: absolute; right: 0; bottom: 0; max-width: 100%; padding: 2px 6px; font-size: .62rem;
+  background: rgb(0 0 0 / .45); color: #fff; border-top-left-radius: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tour-photo figcaption a { color: inherit; text-decoration: none; }
+.tour-item .item-sub .ic { width: 1em; height: 1em; vertical-align: -.12em; }

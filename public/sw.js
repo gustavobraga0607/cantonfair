@@ -6,7 +6,7 @@
 // - Dados (/api/...): sempre busca na rede; sem conexão (comum na feira), mostra a última
 //   versão salva. O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v38';
+const VERSION = 'v39';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';
@@ -88,7 +88,7 @@ self.addEventListener('fetch', (event) => {
     // Downloads e diagnóstico não passam pelo cache.
     if (url.pathname.endsWith('/file') || url.pathname === '/api/health') return;
     event.respondWith(networkFirst(request));
-  } else if (url.pathname.startsWith('/uploads/')) {
+  } else if (url.pathname.startsWith('/uploads/') || url.pathname.startsWith('/tourism/')) {
     event.respondWith(cacheFirst(request));
   } else if (request.mode === 'navigate') {
     // Rotas do app usam "#/..."; toda navegação abre o index.

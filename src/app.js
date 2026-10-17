@@ -32,6 +32,7 @@ const STATIC_TYPES = {
   '.webmanifest': 'application/manifest+json',
   '.json': 'application/json',
   '.png': 'image/png',
+  '.webp': 'image/webp',
 };
 
 // Cabeçalhos de segurança: só scripts do próprio site, mapa da feira em iframe,
