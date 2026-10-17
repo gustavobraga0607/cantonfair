@@ -288,7 +288,7 @@ input.autofilled, textarea.autofilled, select.autofilled { background: var(--goo
 .btn.wa-btn { background: #25d366; border-color: #25d366; color: #063b1c; gap: 6px; }
 .btn.wa-btn svg { width: 16px; height: 16px; }
 .msg-icons { display: inline-flex; gap: 4px; vertical-align: middle; }
-.msg-icons .msg-badge { padding: 3px; cursor: pointer; }
+.msg-icons .msg-badge { padding: 3px; }
 .btn.wc-btn { background: #07c160; border-color: #07c160; color: #fff; gap: 6px; }
 .btn.wc-btn svg { width: 16px; height: 16px; }
 .msg-icons .msg-badge svg { width: 13px; height: 13px; }

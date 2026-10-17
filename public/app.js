@@ -676,7 +676,7 @@ async function viewSuppliers() {
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             ${pendingTag(s)}
-            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone && (s.phone_whatsapp || s.phone_wechat) ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" role="button" tabindex="0" data-msg="${k}" data-phone="${esc(s.phone)}" title="${k === 'wechat' ? 'Copiar o número e abrir o WeChat' : 'Abrir conversa no WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone && (s.phone_whatsapp || s.phone_wechat) ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -685,7 +685,6 @@ async function viewSuppliers() {
   render();
   bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
-  bindMsgButtons();
 }
 
 async function viewSupplier(id) {
@@ -754,7 +753,7 @@ function waNumber(phone) {
 }
 const waLink = (phone) => `https://wa.me/${waNumber(phone)}`;
 
-// Ícones de WhatsApp/WeChat clicáveis (um único ouvinte em $app, que é reaproveitado entre telas).
+// Botões de WhatsApp/WeChat da ficha do fornecedor (um único ouvinte em $app, reaproveitado entre telas).
 // O WeChat não tem link para abrir a conversa com um número: copia o número e abre o app,
 // para colar em "Adicionar contatos".
 function bindMsgButtons() {
