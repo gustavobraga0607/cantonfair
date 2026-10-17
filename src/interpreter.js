@@ -114,7 +114,9 @@ function createAzureInterpreter({ speechKey, speechRegion, translatorKey, transl
 
   // Diagnóstico: confere as chaves sem gravar áudio (token da Speech + tradução de uma palavra).
   interpret.check = async () => {
-    const out = { speech: false, translator: false, speech_region: speechRegion, translator_region: tRegion };
+    // Só mostra a região se parecer nome de região (ex.: southeastasia) — nunca ecoa algo que possa ser chave.
+    const shown = (r) => (/^[a-z0-9]{2,24}$/.test(r) ? r : 'inválida (não parece nome de região)');
+    const out = { speech: false, translator: false, speech_region: shown(speechRegion), translator_region: shown(tRegion) };
     try {
       await call('token', `https://${speechRegion}.api.cognitive.microsoft.com/sts/v1.0/issueToken`, {
         method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': speechKey, 'Content-Length': '0' },
