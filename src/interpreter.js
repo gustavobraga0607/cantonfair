@@ -90,14 +90,14 @@ function createAzureInterpreter({ speechKey, speechRegion, translatorKey, transl
   }
 
   // Texto → voz (MP3).
-  async function speak(text, lang) {
+  async function speak(text, lang, format = 'audio-24khz-48kbitrate-mono-mp3') {
     const l = LANGS[lang];
     const ssml = `<speak version='1.0' xml:lang='${l.tts}'><voice name='${l.voice}'>${xmlEsc(text)}</voice></speak>`;
     const res = await call('voz', `https://${speechRegion}.tts.speech.microsoft.com/cognitiveservices/v1`, {
       method: 'POST',
       headers: {
         'Ocp-Apim-Subscription-Key': speechKey, 'Content-Type': 'application/ssml+xml',
-        'X-Microsoft-OutputFormat': 'audio-24khz-48kbitrate-mono-mp3', 'User-Agent': 'MissaoChina',
+        'X-Microsoft-OutputFormat': format, 'User-Agent': 'MissaoChina',
       },
       body: ssml,
     });
@@ -130,6 +130,12 @@ function createAzureInterpreter({ speechKey, speechRegion, translatorKey, transl
     for (const lang of Object.keys(LANGS)) {
       try { out[`voice_${lang}`] = (await speak(lang === 'zh' ? '你好' : 'ok', lang)).length > 1000; } catch (err) { out[`voice_${lang}`] = false; out.voice_error = err.message; }
     }
+    // Ciclo completo com uma fala sintetizada (WAV 16 kHz, como o celular envia).
+    try {
+      const wav = await speak('Qual é o preço para mil peças?', 'pt', 'riff-16khz-16bit-mono-pcm');
+      const r = await interpret(wav, 'pt', 'zh');
+      out.roundtrip = { heard: r.source, translated: r.translated, audio_bytes: r.audio?.length || 0 };
+    } catch (err) { out.roundtrip_error = err.message; }
     return out;
   };
   return interpret;
