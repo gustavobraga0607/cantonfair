@@ -2053,31 +2053,37 @@ async function recordToWav(blob) {
   });
 }
 
-// Player único do intérprete. O iPhone só deixa tocar áudio que começou num toque na tela; como a
-// tradução chega depois (resposta do servidor), o player é "destravado" com um som mudo no toque
-// e depois reaproveitado para a voz traduzida.
-let interpPlayer = null;
-// 0,1 s de silêncio (WAV 8 kHz, 16 bits) — um arquivo vazio não conta como reprodução no Safari.
-const SILENT_WAV = (() => {
-  const n = 800;
-  const v = new DataView(new ArrayBuffer(44 + n * 2));
-  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
-  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
-  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true);
-  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
-  return 'data:audio/wav;base64,' + btoa(String.fromCharCode(...new Uint8Array(v.buffer)));
-})();
+// Voz do intérprete pelo Web Audio (não depende da política de mídia da página nem de um
+// <audio> com data: URL). Celulares só liberam o som que começa num toque: o contexto é criado e
+// "destravado" no toque do botão e reaproveitado quando a tradução chega.
+let interpCtx = null;
+let interpSource = null;
 function unlockInterpAudio() {
-  if (!interpPlayer) { interpPlayer = new Audio(); interpPlayer.setAttribute('playsinline', ''); }
-  if (interpPlayer.dataset.unlocked) return;
-  interpPlayer.src = SILENT_WAV;
-  interpPlayer.play().then(() => { interpPlayer.dataset.unlocked = '1'; }).catch(() => {});
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!Ctx) return;
+  if (!interpCtx) interpCtx = new Ctx();
+  interpCtx.resume?.().catch(() => {});
+  const src = interpCtx.createBufferSource();
+  src.buffer = interpCtx.createBuffer(1, 1, 22050);
+  src.connect(interpCtx.destination);
+  src.start(0);
 }
-function playInterp(src) {
-  if (!interpPlayer) interpPlayer = new Audio();
-  interpPlayer.pause();
-  interpPlayer.src = src;
-  return interpPlayer.play();
+async function playInterp(dataUrl) {
+  const bytes = Uint8Array.from(atob(dataUrl.slice(dataUrl.indexOf(',') + 1)), (c) => c.charCodeAt(0));
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!interpCtx && Ctx) interpCtx = new Ctx();
+  if (interpCtx) {
+    if (interpCtx.state !== 'running') await interpCtx.resume().catch(() => {});
+    const buffer = await new Promise((resolve, reject) => interpCtx.decodeAudioData(bytes.buffer, resolve, reject));
+    try { interpSource?.stop(); } catch { /* já terminou */ }
+    interpSource = interpCtx.createBufferSource();
+    interpSource.buffer = buffer;
+    interpSource.connect(interpCtx.destination);
+    interpSource.start(0);
+    if (interpCtx.state === 'running') return;
+  }
+  // Reserva: player comum.
+  await new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))).play();
 }
 
 async function viewInterpreter() {
@@ -2129,6 +2135,7 @@ async function viewInterpreter() {
     });
     $app.querySelectorAll('.interp-btn').forEach((btn) => btn.addEventListener('click', () => toggle(btn.dataset.lang)));
     $app.querySelectorAll('[data-play]').forEach((b2) => b2.addEventListener('click', () => {
+      unlockInterpAudio();
       playInterp(log[Number(b2.dataset.play)].audio).catch(() => toast('Não consegui tocar o áudio. Confira o volume e o modo silencioso.'));
     }));
   }
