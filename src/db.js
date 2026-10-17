@@ -148,6 +148,41 @@ CREATE TABLE IF NOT EXISTS expenses (
 );
 CREATE INDEX IF NOT EXISTS idx_expenses_user ON expenses(user_id, spent_on);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_expenses_client_ref ON expenses(user_id, client_ref);
+
+-- Créditos do intérprete (por empresa): extrato de entradas (compra, cortesia) e saídas (uso), em segundos.
+CREATE TABLE IF NOT EXISTS credit_ledger (
+  id          {{ID}},
+  cnpj        TEXT NOT NULL REFERENCES companies(cnpj),
+  user_id     INTEGER REFERENCES users(id),
+  seconds     INTEGER NOT NULL,                 -- positivo = entrada; negativo = uso
+  kind        TEXT NOT NULL,                    -- purchase | grant | usage | refund
+  payment_id  INTEGER,
+  note        TEXT,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_credit_ledger_cnpj ON credit_ledger(cnpj, id);
+
+-- Compras de créditos pelo Asaas (Pix ou cartão).
+CREATE TABLE IF NOT EXISTS credit_payments (
+  id               {{ID}},
+  cnpj             TEXT NOT NULL REFERENCES companies(cnpj),
+  user_id          INTEGER REFERENCES users(id),
+  package_id       TEXT NOT NULL,
+  minutes          INTEGER NOT NULL,
+  value            {{REAL}} NOT NULL,           -- R$
+  method           TEXT NOT NULL,               -- pix | card
+  asaas_id         TEXT,
+  status           TEXT NOT NULL,               -- PENDING | CONFIRMED | RECEIVED | REFUNDED | ...
+  invoice_url      TEXT,
+  pix_payload      TEXT,
+  pix_image        TEXT,
+  pix_expires_at   TEXT,
+  credited_at      TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_payments_asaas ON credit_payments(asaas_id);
+CREATE INDEX IF NOT EXISTS idx_credit_payments_cnpj ON credit_payments(cnpj);
 `;
 
 const TYPES = {
@@ -173,6 +208,7 @@ const ADDED_COLUMNS = [
   // Identificador gerado no celular: reenviar um cadastro (sem internet, toque duplo) não duplica.
   ['suppliers', 'client_ref', 'TEXT'],
   ['products', 'client_ref', 'TEXT'],
+  ['companies', 'asaas_customer_id', 'TEXT'],
 ];
 // Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
 const DROPPED_NOT_NULL = [

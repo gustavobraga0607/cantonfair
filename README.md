@@ -75,6 +75,17 @@ Brasil e veja quais itens — e quais fornecedores — são mais vantajosos.
   passagens, feira, amostras, internet/telefone, compras, outros), data e forma de pagamento (cartão, dinheiro, Alipay,
   WeChat Pay). Mostra total em R$, total por categoria (toque para filtrar) e o extrato por dia; exporta planilha (CSV
   para Excel). Funciona sem internet como os demais cadastros.
+- **Intérprete por voz** (aba *Roteiro → Intérprete*): toque no idioma, fale (até 60 s) e toque de novo; o app mostra
+  o texto nos dois idiomas e fala a tradução (português ⇄ chinês ou inglês). O celular só fala com o nosso servidor, que
+  usa a Microsoft Azure (fala → texto, Translator, voz neural) — não depende de serviços bloqueados na China.
+  Variáveis: `AZURE_SPEECH_KEY`, `AZURE_SPEECH_REGION` (ex.: `southeastasia`); opcionais `AZURE_TRANSLATOR_KEY` /
+  `AZURE_TRANSLATOR_REGION` (sem elas usa a chave da Speech — use um recurso "Azure AI services", que vale para os dois).
+- **Créditos do intérprete** (pré-pagos, por empresa): o uso desconta os segundos de fala reconhecida do saldo da
+  empresa. Compra em *Conta → Créditos do intérprete* por **Pix** (QR Code no app) ou **cartão** (página segura do
+  Asaas); o crédito entra quando o Asaas confirma (webhook `PAYMENT_CONFIRMED`/`PAYMENT_RECEIVED`, conferido na API do
+  Asaas antes de creditar; cada pagamento credita uma vez; estorno retira). O administrador vê saldos e consumo,
+  dá créditos de cortesia e define os pacotes. Variáveis: `ASAAS_API_KEY`, `ASAAS_WEBHOOK_TOKEN` (o mesmo token
+  cadastrado no webhook do Asaas, apontado para `/api/asaas/webhook`), opcional `ASAAS_ENV=sandbox`.
 - **Mapa da feira**: aba "Mapa" com o mapa oficial dos pavilhões (365.cantonfair.org.cn) dentro do app,
   mantido carregado ao trocar de aba, e atalho para abrir no navegador.
 - **Ranking de vantagens**:

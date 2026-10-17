@@ -1956,6 +1956,298 @@ async function viewExpenseForm(id) {
   });
 }
 
+// ===================== intérprete por voz e créditos =====================
+// Toque para falar, toque de novo para parar: o áudio vai para o nosso servidor (que usa a Azure),
+// volta o texto nos dois idiomas e a tradução falada. Cobrado em segundos de áudio, dos créditos da empresa.
+
+const fmtDur = (s) => {
+  const v = Math.max(0, Math.floor(s));
+  const h = Math.floor(v / 3600);
+  const m = Math.floor((v % 3600) / 60);
+  return h ? `${h}h${String(m).padStart(2, '0')}min` : m ? `${m} min${v % 60 ? ` ${v % 60}s` : ''}` : `${v}s`;
+};
+const INTERP_PAIRS = { 'pt-zh': ['pt', 'zh'], 'pt-en': ['pt', 'en'] };
+const INTERP_LANG = {
+  pt: { flag: FLAG_BR, speak: 'Falar em português', name: 'Português' },
+  zh: { flag: FLAG_CN, speak: '说中文 (falar em chinês)', name: '中文' },
+  en: { flag: '🇺🇸', speak: 'Speak English', name: 'English' },
+};
+
+// Grava o microfone e devolve WAV 16 kHz mono (formato aceito pela Azure em qualquer celular).
+async function recordToWav(blob) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+  ctx.close?.();
+  const rate = 16000;
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(decoded.duration * rate)), rate);
+  const src = off.createBufferSource();
+  src.buffer = decoded;
+  src.connect(off.destination);
+  src.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+  const buf = new ArrayBuffer(44 + pcm.length * 2);
+  const v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + pcm.length * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, pcm[i])) * 0x7fff, true);
+  return new Promise((resolve) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result.replace(/^data:[^;]*;/, 'data:audio/wav;'));
+    r.readAsDataURL(new Blob([buf], { type: 'audio/wav' }));
+  });
+}
+
+async function viewInterpreter() {
+  setChrome({ title: 'Intérprete', tab: 'trip' });
+  loading();
+  const credits = await api('/api/credits').catch(() => null);
+  let balance = credits?.balance_seconds ?? 0;
+  let pair = 'pt-zh';
+  try { pair = localStorage.getItem('cfb.pair') || 'pt-zh'; } catch { /* sem armazenamento */ }
+  if (!INTERP_PAIRS[pair]) pair = 'pt-zh';
+  const log = [];
+  let recording = null; // { lang, recorder, stream, chunks, timer, started }
+  let busy = false;
+
+  const enabled = state.me?.features?.interpreter;
+  function render() {
+    const [a, b] = INTERP_PAIRS[pair];
+    $app.innerHTML = `
+      ${subnavHtml('interpreter')}
+      ${enabled ? '' : '<div class="ocr-status err">O intérprete ainda não foi configurado (chave da Azure na Vercel).</div>'}
+      <div class="card interp-head">
+        <div><div class="item-sub">Saldo da empresa</div><b class="interp-bal ${balance < 120 ? 'low' : ''}">${fmtDur(balance)}</b></div>
+        <select id="pair" aria-label="Idiomas">${Object.keys(INTERP_PAIRS).map((k) => {
+          const [x, y] = INTERP_PAIRS[k];
+          return `<option value="${k}"${k === pair ? ' selected' : ''}>${INTERP_LANG[x].name} ⇄ ${INTERP_LANG[y].name}</option>`;
+        }).join('')}</select>
+        <a class="btn small primary" href="#/credits">Comprar minutos</a>
+      </div>
+      <div class="interp-buttons">
+        ${[a, b].map((l) => `<button type="button" class="interp-btn${recording?.lang === l ? ' rec' : ''}" data-lang="${l}" ${busy || !enabled ? 'disabled' : ''}>
+          <span class="interp-flag">${INTERP_LANG[l].flag}</span>
+          <b>${recording?.lang === l ? '● Gravando… toque para traduzir' : INTERP_LANG[l].speak}</b>
+          ${recording?.lang === l ? '<small id="rec-time">0s</small>' : '<small>toque, fale e toque de novo</small>'}
+        </button>`).join('')}
+      </div>
+      ${busy ? '<div class="ocr-status busy">Traduzindo…</div>' : ''}
+      <div class="interp-log">${log.length ? log.map((m, i) => `
+        <div class="card interp-msg ${m.from}">
+          <div class="item-sub">${INTERP_LANG[m.from].flag} ${esc(m.source)}</div>
+          <div class="interp-tr">${INTERP_LANG[m.to].flag} ${esc(m.translated || '—')}</div>
+          ${m.audio ? `<button type="button" class="btn small" data-play="${i}">🔊 Ouvir de novo</button>` : ''}
+        </div>`).join('') : `<div class="empty">Toque no seu idioma, fale uma frase e toque de novo. O app mostra e fala a tradução.<br>
+          Para o fornecedor responder, ele toca no botão do idioma dele.<br><small>Cobrado só o tempo de fala (até 60 s por vez).</small></div>`}
+      </div>`;
+    document.getElementById('pair').addEventListener('change', (e) => {
+      pair = e.target.value;
+      try { localStorage.setItem('cfb.pair', pair); } catch { /* sem armazenamento */ }
+      render();
+    });
+    $app.querySelectorAll('.interp-btn').forEach((btn) => btn.addEventListener('click', () => toggle(btn.dataset.lang)));
+    $app.querySelectorAll('[data-play]').forEach((b2) => b2.addEventListener('click', () => new Audio(log[Number(b2.dataset.play)].audio).play()));
+  }
+
+  async function toggle(lang) {
+    if (recording) { stop(); return; }
+    if (balance <= 0) { toast('Sem créditos do intérprete. Compre minutos para continuar.'); return; }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+    } catch {
+      toast('Permita o uso do microfone para usar o intérprete.');
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
+    recorder.onstop = () => finish(lang, chunks, recorder.mimeType);
+    recording = { lang, recorder, stream, started: Date.now() };
+    recorder.start();
+    recording.timer = setInterval(() => {
+      const s = Math.floor((Date.now() - recording.started) / 1000);
+      const el = document.getElementById('rec-time');
+      if (el) el.textContent = `${s}s de 60s`;
+      if (s >= 60) stop();
+    }, 500);
+    render();
+  }
+  function stop() {
+    if (!recording) return;
+    clearInterval(recording.timer);
+    recording.recorder.stop();
+    recording.stream.getTracks().forEach((t) => t.stop());
+  }
+
+  async function finish(lang, chunks, mime) {
+    recording = null;
+    busy = true;
+    render();
+    const [a, b] = INTERP_PAIRS[pair];
+    const to = lang === a ? b : a;
+    try {
+      const audio = await recordToWav(new Blob(chunks, { type: mime }));
+      const r = await api('/api/interpreter', { method: 'POST', body: { from: lang, to, audio }, background: true, timeout: 45_000 });
+      balance = r.balance_seconds;
+      if (!r.source) toast('Não entendi. Fale mais perto do celular e tente de novo.');
+      else {
+        log.unshift({ from: lang, to, source: r.source, translated: r.translated, audio: r.audio });
+        if (r.audio) new Audio(r.audio).play().catch(() => {});
+      }
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      busy = false;
+      if (location.hash.startsWith('#/interpreter')) render();
+    }
+  }
+  render();
+}
+
+async function viewCredits() {
+  setChrome({ title: 'Créditos do intérprete', tab: 'account', back: '#/account' });
+  loading();
+  const c = await api('/api/credits');
+  const kinds = { purchase: 'Compra', grant: 'Cortesia', usage: 'Uso', refund: 'Estorno' };
+  $app.innerHTML = `
+    <div class="card exp-summary">
+      <div class="item-sub">Saldo da empresa (toda a equipe usa o mesmo saldo)</div>
+      <div class="exp-total">${fmtDur(c.balance_seconds)}</div>
+      <a class="btn small" href="#/interpreter" style="justify-self:start">🎙️ Abrir o intérprete</a>
+    </div>
+    <h2>Comprar minutos</h2>
+    ${c.payments_enabled ? '' : '<div class="ocr-status err">Pagamento ainda não configurado (chave do Asaas na Vercel). Fale com a BR Trading para liberar créditos.</div>'}
+    <div class="credit-packs">${c.packages.map((p) => `
+      <div class="card credit-pack">
+        <b>${fmtDur(p.minutes * 60)}</b>
+        <div class="exp-total" style="font-size:1.4rem">${brl(p.price)}</div>
+        <small class="item-sub">${brl(p.price / p.minutes)} por minuto de fala</small>
+        <div class="actions">
+          <button type="button" class="btn primary small" data-buy="${esc(p.id)}" data-method="pix" ${c.payments_enabled ? '' : 'disabled'}>Pix</button>
+          <button type="button" class="btn small" data-buy="${esc(p.id)}" data-method="card" ${c.payments_enabled ? '' : 'disabled'}>Cartão</button>
+        </div>
+      </div>`).join('')}</div>
+    <div id="checkout"></div>
+    ${c.pending.length ? `<h2>Pagamentos aguardando</h2><div class="list">${c.pending.map((p) => `
+      <button type="button" class="item" data-resume="${p.id}" style="text-align:left;width:100%">
+        <div class="thumb">⏳</div><div class="item-body"><div class="item-title">${fmtDur(p.minutes * 60)} · ${brl(p.value)}</div>
+        <div class="item-sub">${p.method === 'pix' ? 'Pix' : 'Cartão'} · ${dateBr(p.created_at)} · toque para ver</div></div></button>`).join('')}</div>` : ''}
+    <h2>Extrato</h2>
+    <div class="list">${c.ledger.length ? c.ledger.map((l) => `
+      <div class="item"><div class="thumb">${{ purchase: '💳', grant: '🎁', usage: '🎙️', refund: '↩️' }[l.kind] || '•'}</div>
+        <div class="item-body"><div class="item-title">${esc(kinds[l.kind] || l.kind)}${l.note ? ` · <span class="item-sub">${esc(l.note)}</span>` : ''}</div>
+          <div class="item-sub">${dateBr(l.created_at)}${l.user_name ? ` · ${esc(l.user_name)}` : ''}</div></div>
+        <div class="item-side"><b class="${l.seconds < 0 ? '' : 'pos'}">${l.seconds < 0 ? '−' : '+'}${fmtDur(Math.abs(l.seconds))}</b></div></div>`).join('')
+      : '<div class="empty">Nenhum movimento ainda.</div>'}</div>`;
+
+  let poll = null;
+  const hash = location.hash;
+  function showPayment(p) {
+    const box = document.getElementById('checkout');
+    box.innerHTML = `<div class="card stack checkout">
+      <h3 style="margin:0">${fmtDur(p.minutes * 60)} por ${brl(p.value)}</h3>
+      ${p.paid ? '<div class="ocr-status ok">✓ Pagamento confirmado! Os minutos já estão no saldo.</div>' : p.method === 'pix' && p.pix ? `
+        <img class="pix-qr" src="data:image/png;base64,${esc(p.pix.image)}" alt="QR Code Pix">
+        <div class="hint">Abra o app do banco → Pix → ler QR Code, ou copie o código:</div>
+        <div class="pix-code"><code>${esc(p.pix.payload)}</code><button type="button" class="btn small" id="copy-pix">Copiar</button></div>
+        <div class="ocr-status busy">Aguardando o pagamento… a confirmação aparece aqui sozinha.</div>` : `
+        <a class="btn primary" href="${esc(p.invoice_url)}" target="_blank" rel="noopener">Pagar com cartão (página segura do Asaas)</a>
+        <div class="ocr-status busy">Depois de pagar, volte para esta tela: a confirmação aparece aqui sozinha.</div>`}
+    </div>`;
+    document.getElementById('copy-pix')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(p.pix.payload); toast('Código Pix copiado.'); } catch { toast('Não foi possível copiar.'); }
+    });
+    box.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    clearTimeout(poll);
+    if (p.paid) { setTimeout(() => { if (location.hash === hash) viewCredits(); }, 2500); return; }
+    const started = Date.now();
+    const tick = async () => {
+      if (location.hash !== hash || Date.now() - started > 30 * 60_000) return;
+      try {
+        const r = await api(`/api/credits/payments/${p.id}`, { background: true });
+        if (r.paid) { toast('Pagamento confirmado!'); showPayment(r); return; }
+      } catch { /* tenta de novo */ }
+      poll = setTimeout(tick, 5000);
+    };
+    poll = setTimeout(tick, 5000);
+  }
+  $app.querySelectorAll('[data-buy]').forEach((b) => b.addEventListener('click', async () => {
+    $app.querySelectorAll('[data-buy]').forEach((x) => { x.disabled = true; });
+    try {
+      showPayment(await api('/api/credits/checkout', { method: 'POST', body: { package_id: b.dataset.buy, method: b.dataset.method } }));
+    } catch (err) { toast(err.message); } finally { $app.querySelectorAll('[data-buy]').forEach((x) => { x.disabled = !c.payments_enabled; }); }
+  }));
+  $app.querySelectorAll('[data-resume]').forEach((b) => b.addEventListener('click', async () => {
+    try { showPayment(await api(`/api/credits/payments/${b.dataset.resume}`)); } catch (err) { toast(err.message); }
+  }));
+}
+
+async function viewAdminCredits() {
+  if (!isAdmin()) { location.hash = '#/account'; return; }
+  setChrome({ title: 'Créditos do intérprete', tab: 'account', back: '#/account' });
+  loading();
+  const d = await api('/api/admin/credits');
+  const ok = (v, yes, no) => `<span class="${v ? 'pos' : 'neg'}">${v ? '✓ ' + yes : '✕ ' + no}</span>`;
+  $app.innerHTML = `
+    <div class="card stack">
+      <div>Intérprete (Azure): ${ok(d.interpreter_enabled, 'configurado', 'falta AZURE_SPEECH_KEY / AZURE_SPEECH_REGION')}</div>
+      <div>Pagamentos (Asaas): ${ok(d.payments_enabled, d.sandbox ? 'configurado (SANDBOX — testes)' : 'configurado (produção)', 'falta ASAAS_API_KEY')}</div>
+      <div>Webhook do Asaas: ${ok(d.webhook_configured, 'token configurado', 'falta ASAAS_WEBHOOK_TOKEN')}
+        <div class="hint">No Asaas: Integrações → Webhooks → URL <code>${esc(location.origin)}/api/asaas/webhook</code>, eventos de cobrança, mesmo token.</div></div>
+    </div>
+    <h2>Empresas</h2>
+    <div class="src-table-wrap card"><table class="bench-table"><tr><th>Empresa</th><th>Saldo</th><th>Usado</th><th>Pago</th></tr>
+      ${d.companies.map((c) => `<tr><td>${esc(c.name || c.cnpj)}</td><td><b>${fmtDur(c.balance_seconds)}</b></td><td>${fmtDur(c.used_seconds)}</td><td>${brl(c.paid)}</td></tr>`).join('')}
+    </table></div>
+    <h2>Dar créditos (cortesia ou ajuste)</h2>
+    <form class="card stack" id="grant" novalidate>
+      <div><label for="g-company">Empresa</label><select id="g-company">${d.companies.map((c) => `<option value="${esc(c.cnpj)}">${esc(c.name || c.cnpj)}</option>`).join('')}</select></div>
+      <div class="row"><div><label for="g-min">Minutos</label><input id="g-min" inputmode="numeric" placeholder="ex.: 30 (negativo para retirar)"></div>
+        <div><label for="g-note">Observação</label><input id="g-note" placeholder="ex.: Teste grátis"></div></div>
+      <button class="btn primary" type="submit">Lançar</button>
+    </form>
+    <h2>Pacotes à venda</h2>
+    <form class="card stack" id="packs" novalidate>
+      ${[0, 1, 2, 3].map((i) => {
+        const p = d.packages[i] || {};
+        return `<div class="row"><div><label>Minutos</label><input name="m${i}" inputmode="numeric" value="${p.minutes ?? ''}"></div>
+          <div><label>Preço (R$)</label><input name="p${i}" inputmode="decimal" value="${p.price != null ? String(p.price).replace('.', ',') : ''}"></div></div>`;
+      }).join('')}
+      <div class="hint">Deixe em branco para não oferecer. Custo aproximado da Azure: R$ 13 por hora de fala — inclua as taxas do Asaas e os impostos.</div>
+      <button class="btn primary" type="submit">Salvar pacotes</button>
+    </form>
+    <h2>Últimos pagamentos</h2>
+    <div class="list">${d.payments.length ? d.payments.map((p) => `
+      <div class="item"><div class="thumb">${p.paid ? '✅' : '⏳'}</div><div class="item-body">
+        <div class="item-title">${esc(p.company_name || p.cnpj)} · ${fmtDur(p.minutes * 60)} · ${brl(p.value)}</div>
+        <div class="item-sub">${p.method === 'pix' ? 'Pix' : 'Cartão'} · ${esc(p.status)} · ${dateBr(p.created_at)}</div></div></div>`).join('')
+      : '<div class="empty">Nenhum pagamento ainda.</div>'}</div>`;
+  document.getElementById('grant').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const minutes = parseInt(document.getElementById('g-min').value, 10);
+    if (!minutes) { toast('Informe os minutos.'); return; }
+    try {
+      await api('/api/admin/credits/grant', { method: 'POST', body: { cnpj: document.getElementById('g-company').value, minutes, note: document.getElementById('g-note').value } });
+      toast('Créditos lançados.');
+      viewAdminCredits();
+    } catch (err) { toast(err.message); }
+  });
+  document.getElementById('packs').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const f = e.target;
+    const packages = [0, 1, 2, 3].map((i) => ({ minutes: parseNum(f[`m${i}`].value, { thousands: true }), price: parseNum(f[`p${i}`].value, { thousands: true }) }))
+      .filter((p) => p.minutes || p.price);
+    try {
+      await api('/api/admin/credits/packages', { method: 'PUT', body: { packages } });
+      toast('Pacotes salvos.');
+      viewAdminCredits();
+    } catch (err) { toast(err.message); }
+  });
+}
+
 // ===================== fila de envio (sem internet) =====================
 
 async function viewOutbox() {
@@ -2110,7 +2402,7 @@ function dateRange(a, b) {
 }
 
 const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Roteiro">
-  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa da feira</a></nav>`;
+  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">🎙️ Intérprete</a></nav>`;
 
 async function viewTrip(id) {
   setChrome({ title: 'Roteiro de viagem', tab: 'trip', back: id && isAdmin() ? '#/trip' : null });
@@ -2681,7 +2973,10 @@ async function viewAccount() {
       ${user.is_admin ? `<p class="hint" style="margin:0">Você pode ver e editar fornecedores e produtos de todas as ${state.me.companies.length} empresas cadastradas. Use o filtro de empresa no topo das listas.</p>` : ''}
       <div><div class="item-sub">Empresa</div><div class="item-title">${esc(company.name || 'Empresa')}</div><div class="item-sub">CNPJ ${esc(company.cnpj_formatted)}</div></div>
     </div>
-    <a class="item" href="#/expenses" style="margin-top:14px"><div class="thumb">🧾</div><div class="item-body">
+    <a class="item" href="#/credits" style="margin-top:14px"><div class="thumb">🎙️</div><div class="item-body">
+      <div class="item-title">Créditos do intérprete</div>
+      <div class="item-sub">Saldo de minutos de tradução por voz e compra por Pix ou cartão</div></div></a>
+    <a class="item" href="#/expenses" style="margin-top:10px"><div class="thumb">🧾</div><div class="item-body">
       <div class="item-title">Controle de viagem</div>
       <div class="item-sub">Lance e categorize as despesas da viagem — seu extrato pessoal</div></div></a>
     <h2 id="cambio">Câmbio para estimativas</h2>
@@ -2691,6 +2986,9 @@ async function viewAccount() {
       <a class="item" href="#/admin"><div class="thumb">👥</div><div class="item-body">
         <div class="item-title">Usuários e empresas</div>
         <div class="item-sub">Ver todos os cadastros, mudar a empresa de um usuário, excluir usuários e empresas</div></div></a>
+      <a class="item" href="#/admin/credits"><div class="thumb">💳</div><div class="item-body">
+        <div class="item-title">Créditos do intérprete (empresas)</div>
+        <div class="item-sub">Saldos e consumo de cada empresa, cortesias, pacotes e pagamentos do Asaas</div></div></a>
       <a class="item" href="#/admin/models"><div class="thumb">🧪</div><div class="item-body">
         <div class="item-title">Teste de modelos de leitura</div>
         <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
@@ -2729,6 +3027,9 @@ const routes = [
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
   [/^\/products\/scan$/, (m, q) => viewProductScan(q)],
   [/^\/outbox$/, viewOutbox],
+  [/^\/interpreter$/, viewInterpreter],
+  [/^\/credits$/, viewCredits],
+  [/^\/admin\/credits$/, viewAdminCredits],
   [/^\/expenses$/, (m, q) => viewExpenses(q)],
   [/^\/expenses\/new$/, () => viewExpenseForm(null)],
   [/^\/expenses\/(\d+)\/edit$/, (m) => viewExpenseForm(m[1])],

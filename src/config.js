@@ -5,6 +5,8 @@ const { open } = require('./db');
 const { createApp } = require('./app');
 const { cardReaderFromEnv, productReaderFromEnv, benchReadersFromEnv } = require('./ocr');
 const { createFxService } = require('./fx');
+const { asaasFromEnv } = require('./asaas');
+const { interpreterFromEnv } = require('./interpreter');
 
 // Administradores: veem e editam fornecedores e produtos de todas as empresas.
 // Pode ser substituído pela variável ADMIN_EMAILS (e-mails separados por vírgula).
@@ -42,6 +44,9 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
     readCard: cardReaderFromEnv(),
     readProducts: productReaderFromEnv(),
+    asaas: asaasFromEnv(),
+    asaasWebhookToken: process.env.ASAAS_WEBHOOK_TOKEN || null,
+    interpret: interpreterFromEnv(),
     benchReaders: benchReadersFromEnv(),
     fx,
     background,

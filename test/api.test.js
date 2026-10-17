@@ -13,11 +13,11 @@ const { createFxService } = require('../src/fx');
 const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
 
 // Por padrão os testes usam SQLite; defina TEST_DATABASE_URL para rodar contra Postgres.
-async function setup({ adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fxQuote = null } = {}) {
+async function setup({ adminEmails = [], readCard = null, readProducts = null, benchReaders = null, asaas = null, interpret = null, asaasWebhookToken = null, fxQuote = null } = {}) {
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
+    await db.run('DROP TABLE IF EXISTS credit_ledger, credit_payments, expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -25,7 +25,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
     db = open({ dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-')) });
   }
   const lookup = async (c) => (c === '33000167000101' ? { status: 'not_found' } : { status: 'found', name: 'EMPRESA TESTE LTDA' });
-  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts, benchReaders, fetchCny: async () => ({ rate: 0.71, source: 'teste' }),
+  const server = http.createServer(createApp({ db, publicDir: path.join(__dirname, '..', 'public'), cnpjLookup: lookup, adminEmails, readCard, readProducts, benchReaders, asaas, interpret, asaasWebhookToken, fetchCny: async () => ({ rate: 0.71, source: 'teste' }),
     fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
@@ -450,6 +450,121 @@ test('controle de viagem: cada usuário tem o próprio extrato, com conversão p
   // excluir o usuário apaga o extrato dele
   const users = (await admin('GET', '/api/admin/users')).body;
   assert.equal((await admin('DELETE', `/api/admin/users/${users.find((u) => u.email === 'a@x.com').id}`)).status, 200);
+});
+
+// WAV PCM 16 bits, mono, 16 kHz, com a duração pedida.
+function wav(seconds) {
+  const data = Buffer.alloc(Math.round(seconds * 16000) * 2);
+  const h = Buffer.alloc(44);
+  h.write('RIFF', 0); h.writeUInt32LE(36 + data.length, 4); h.write('WAVE', 8); h.write('fmt ', 12); h.writeUInt32LE(16, 16);
+  h.writeUInt16LE(1, 20); h.writeUInt16LE(1, 22); h.writeUInt32LE(16000, 24); h.writeUInt32LE(32000, 28); h.writeUInt16LE(2, 32); h.writeUInt16LE(16, 34);
+  h.write('data', 36); h.writeUInt32LE(data.length, 40);
+  return 'data:audio/wav;base64,' + Buffer.concat([h, data]).toString('base64');
+}
+
+test('créditos do intérprete: compra pelo Asaas (Pix), webhook, uso cobrado por segundo e cortesia', async (t) => {
+  const remote = {}; // cobranças "no Asaas"
+  const calls = [];
+  const asaas = {
+    sandbox: true,
+    createCustomer: async (c) => { calls.push(['customer', c]); return { id: 'cus_1' }; },
+    createPayment: async (p) => { calls.push(['payment', p]); const id = `pay_${Object.keys(remote).length + 1}`; remote[id] = { id, status: 'PENDING', invoiceUrl: `https://asaas/i/${id}` }; return remote[id]; },
+    getPayment: async (id) => remote[id],
+    pixQrCode: async () => ({ payload: '00020126PIXCOPIAECOLA', encodedImage: 'iVBORw0KGgo=', expirationDate: '2026-10-20 23:59:59' }),
+  };
+  const interpret = async (audio, from, to) => (audio.length > 50000
+    ? { source: 'Qual o preço?', translated: '价格是多少？', audio: Buffer.from('mp3') } : { source: '', translated: '', audio: null });
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'], asaas, interpret, asaasWebhookToken: 'tok-123' });
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  const admin = client(base);
+  let r = await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  assert.equal(r.body.features.interpreter, true);
+  assert.equal(r.body.features.payments, true);
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
+
+  r = await a('GET', '/api/credits');
+  assert.equal(r.body.balance_seconds, 0);
+  assert.deepEqual(r.body.packages.map((p) => p.minutes), [60, 180]);
+
+  // sem saldo, o intérprete não traduz
+  r = await a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: wav(3.2) });
+  assert.equal(r.status, 402);
+
+  // compra por Pix
+  assert.equal((await a('POST', '/api/credits/checkout', { package_id: 'nao-existe' })).status, 400);
+  r = await a('POST', '/api/credits/checkout', { package_id: 'p60', method: 'pix' });
+  assert.equal(r.status, 201);
+  assert.equal(r.body.pix.payload, '00020126PIXCOPIAECOLA');
+  assert.equal(r.body.paid, false);
+  const payId = r.body.id;
+  assert.deepEqual(calls[0], ['customer', { name: 'EMPRESA TESTE LTDA', cpfCnpj: '11222333000181', email: 'a@x.com' }]);
+  assert.equal(calls[1][1].billingType, 'PIX');
+  assert.equal(calls[1][1].value, 29);
+  // outra empresa não vê o pagamento
+  assert.equal((await b('GET', `/api/credits/payments/${payId}`)).status, 404);
+
+  // webhook com token errado é recusado
+  const hook = (token, body) => fetch(`${base}/api/asaas/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'asaas-access-token': token }, body: JSON.stringify(body) });
+  assert.equal((await hook('errado', { event: 'PAYMENT_RECEIVED', payment: { id: 'pay_1' } })).status, 401);
+  // webhook "pago" mas o Asaas ainda diz PENDING: não credita (o app confere na API)
+  assert.equal((await hook('tok-123', { event: 'PAYMENT_RECEIVED', payment: { id: 'pay_1' } })).status, 200);
+  assert.equal((await a('GET', '/api/credits')).body.balance_seconds, 0);
+  // pago de verdade: credita uma vez, mesmo com webhooks repetidos
+  remote.pay_1.status = 'RECEIVED';
+  for (let i = 0; i < 3; i++) assert.equal((await hook('tok-123', { event: 'PAYMENT_RECEIVED', payment: { id: 'pay_1' } })).status, 200);
+  assert.equal((await a('GET', '/api/credits')).body.balance_seconds, 3600);
+  r = await a('GET', `/api/credits/payments/${payId}`);
+  assert.equal(r.body.paid, true);
+  assert.equal(r.body.balance_seconds, 3600);
+  // cobrança de outro sistema é ignorada
+  assert.equal((await hook('tok-123', { event: 'PAYMENT_RECEIVED', payment: { id: 'pay_x' } })).status, 200);
+
+  // cartão: sem webhook, a própria consulta da tela confirma
+  r = await a('POST', '/api/credits/checkout', { package_id: 'p180', method: 'card' });
+  assert.equal(r.body.invoice_url, 'https://asaas/i/pay_2');
+  assert.equal(calls.filter((c) => c[0] === 'customer').length, 1, 'cliente do Asaas criado uma vez por empresa');
+  remote.pay_2.status = 'CONFIRMED';
+  r = await a('GET', `/api/credits/payments/${r.body.id}`);
+  assert.equal(r.body.paid, true);
+  assert.equal(r.body.balance_seconds, 3600 + 180 * 60);
+
+  // uso: cobra os segundos do áudio (arredonda para cima); fala não reconhecida não cobra
+  r = await a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: wav(3.2) });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.translated, '价格是多少？');
+  assert.match(r.body.audio, /^data:audio\/mpeg;base64,/);
+  assert.equal(r.body.charged_seconds, 4);
+  assert.equal(r.body.balance_seconds, 3600 + 10800 - 4);
+  r = await a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: wav(1) });
+  assert.equal(r.body.charged_seconds, 0);
+  assert.equal((await a('POST', '/api/interpreter', { from: 'pt', to: 'pt', audio: wav(1) })).status, 400);
+  assert.equal((await a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: 'data:audio/wav;base64,AAAA' })).status, 400);
+  assert.equal((await a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: wav(65) })).status, 400, 'máximo 60 s por vez');
+
+  // estorno retira os créditos daquela compra
+  remote.pay_1.status = 'REFUNDED';
+  await hook('tok-123', { event: 'PAYMENT_REFUNDED', payment: { id: 'pay_1' } });
+  r = await a('GET', '/api/credits');
+  assert.equal(r.body.balance_seconds, 10800 - 4);
+  assert.deepEqual(r.body.ledger.map((l) => l.kind), ['refund', 'usage', 'purchase', 'purchase']);
+
+  // administrador: cortesia, pacotes e visão geral
+  assert.equal((await a('POST', '/api/admin/credits/grant', { cnpj: '11444777000161', minutes: 30 })).status, 403);
+  r = await admin('POST', '/api/admin/credits/grant', { cnpj: '11444777000161', minutes: 30, note: 'Teste grátis' });
+  assert.equal(r.body.balance_seconds, 1800);
+  assert.equal((await b('GET', '/api/credits')).body.ledger[0].note, 'Teste grátis');
+  assert.equal((await admin('PUT', '/api/admin/credits/packages', { packages: [{ minutes: 30, price: 0 }] })).status, 400);
+  r = await admin('PUT', '/api/admin/credits/packages', { packages: [{ minutes: 30, price: 15 }, { minutes: 120, price: 49.9 }] });
+  assert.deepEqual(r.body.packages.map((p) => p.id), ['p30', 'p120']);
+  assert.deepEqual((await a('GET', '/api/credits')).body.packages.map((p) => p.price), [15, 49.9]);
+  r = await admin('GET', '/api/admin/credits');
+  const ca = r.body.companies.find((c) => c.cnpj === '11222333000181');
+  assert.equal(ca.used_seconds, 4);
+  assert.equal(ca.paid, 29 + 79);
+  assert.equal(r.body.webhook_configured, true);
 });
 
 test('leitor de cartões desligado sem chave de API', async (t) => {

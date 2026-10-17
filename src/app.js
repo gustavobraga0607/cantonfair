@@ -10,6 +10,7 @@ const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight 
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
 const { fetchCnyBrl } = require('./fx');
+const { registerCredits } = require('./credits');
 const { parseItineraryXlsx, normalizeDays } = require('./itinerary');
 const PROVINCES = require('../public/provinces');
 
@@ -53,7 +54,7 @@ class HttpError extends Error {
 const now = () => new Date().toISOString();
 
 // background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
-function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, fx = null, background = (p) => p.catch(() => {}) }) {
+function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, asaas = null, interpret = null, asaasWebhookToken = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
@@ -359,7 +360,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       fx: fxStatus,
       settings,
       companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
-      features: { card_ocr: Boolean(readCard), product_ocr: Boolean(readProducts) },
+      features: { card_ocr: Boolean(readCard), product_ocr: Boolean(readProducts), interpreter: Boolean(interpret), payments: Boolean(asaas) },
     };
   }
 
@@ -852,6 +853,11 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await removeImage(q, p.cnpj, p.photo);
     });
     return { ok: true };
+  });
+
+  registerCredits({
+    route, db, HttpError, str, num, now, toId, isAdmin, asaas, interpret, webhookToken: asaasWebhookToken,
+    getCompany: (cnpj) => db.get('SELECT * FROM companies WHERE cnpj = ?', [cnpj]),
   });
 
   // --- controle de viagem (despesas de cada usuário) ---

@@ -481,3 +481,28 @@ body.map-mode main { display: none; }
 .exp-cat-opt small { font-size: .72rem; font-weight: 500; color: var(--muted); line-height: 1.15; }
 .exp-cat-opt input:checked + span { border-color: var(--text); background: var(--neutral-bg); box-shadow: inset 0 0 0 1px var(--text); }
 .exp-cat-opt input:focus-visible + span { outline: 2px solid var(--text); outline-offset: 2px; }
+
+/* Intérprete e créditos */
+.interp-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
+.interp-head > div { flex: 1; min-width: 110px; }
+.interp-head select { width: auto; flex: 1; min-width: 150px; }
+.interp-bal { font-size: 1.3rem; } .interp-bal.low { color: var(--danger); }
+.interp-buttons { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
+.interp-btn { display: grid; justify-items: center; gap: 6px; padding: 22px 10px; border-radius: 16px; border: 2px solid var(--border); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; min-height: 150px; text-align: center; }
+.interp-btn .interp-flag { font-size: 2rem; } .interp-btn .interp-flag .flag { width: 48px; height: 32px; }
+.interp-btn small { color: var(--muted); }
+.interp-btn.rec { border-color: var(--danger); background: var(--bad-bg); animation: interp-pulse 1.2s ease-in-out infinite; }
+.interp-btn:disabled { opacity: .5; cursor: default; }
+@keyframes interp-pulse { 50% { box-shadow: 0 0 0 6px rgb(185 28 28 / .15); } }
+.interp-log { display: grid; gap: 10px; }
+.interp-msg { display: grid; gap: 6px; }
+.interp-msg .flag { width: 18px; height: 12px; vertical-align: -1px; }
+.interp-tr { font-size: 1.35rem; font-weight: 600; line-height: 1.35; }
+.credit-packs { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.credit-pack { display: grid; gap: 4px; }
+.checkout { margin-top: 12px; justify-items: stretch; }
+.pix-qr { width: 220px; height: 220px; justify-self: center; image-rendering: pixelated; background: #fff; padding: 8px; border-radius: 8px; }
+.pix-code { display: flex; gap: 8px; align-items: center; }
+.pix-code code { flex: 1; min-width: 0; overflow-wrap: anywhere; font-size: .72rem; background: var(--neutral-bg); padding: 8px; border-radius: 8px; max-height: 80px; overflow-y: auto; }
+.pos { color: var(--good); } .neg { color: var(--danger); }
+.src-table-wrap { overflow-x: auto; }
