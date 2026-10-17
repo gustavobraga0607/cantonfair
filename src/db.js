@@ -224,6 +224,14 @@ const CLEANUP_SQL = [
   "DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role = 'operator')",
   "DELETE FROM expenses WHERE user_id IN (SELECT id FROM users WHERE role = 'operator')",
   "DELETE FROM users WHERE role = 'operator'",
+  // Cortesia única: R$ 10 em minutos do intérprete (20 min no pacote de R$ 29/60 min) para a
+  // empresa dos administradores já cadastrados. A nota impede que seja creditado duas vezes.
+  `INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, note, created_at)
+   SELECT u.cnpj, MIN(u.id), 1200, 'grant', 'Cortesia de R$ 10 (20 min) para o administrador', '2026-10-17T12:00:00.000Z'
+   FROM users u
+   WHERE u.role = 'admin' AND u.created_at < '2026-10-18'
+     AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.cnpj = u.cnpj AND l.note = 'Cortesia de R$ 10 (20 min) para o administrador')
+   GROUP BY u.cnpj`,
 ];
 
 // Índices criados depois (bancos existentes também recebem).

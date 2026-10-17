@@ -426,6 +426,10 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   chip.title = fxFailing() ? 'Cotação automática indisponível — toque para ajustar' : 'Câmbio usado nas estimativas — toque para ajustar';
   chip.onclick = () => { location.hash = '#/account?cambio'; };
   chip.hidden = !state.me;
+  // Atalho para o intérprete ao lado da cotação (destacado quando já está nele).
+  const interp = document.getElementById('interp-btn');
+  interp.hidden = !state.me;
+  interp.classList.toggle('active', location.hash.startsWith('#/interpreter'));
 }
 
 const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</div>'; };
