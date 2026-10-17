@@ -5,6 +5,27 @@
 const { appFromEnv } = require('../src/config');
 
 const { db, handler, fx, dbVar } = appFromEnv({ requirePostgres: true });
+const { asaasFromEnv } = require('../src/asaas');
+const { interpreterFromEnv } = require('../src/interpreter');
+
+// /api/health?check=1 testa de verdade as chaves do Asaas e da Azure (resultado guardado por 5 min).
+let checkCache = null;
+async function checkIntegrations() {
+  if (checkCache && Date.now() - checkCache.at < 5 * 60_000) return checkCache.result;
+  const asaas = asaasFromEnv();
+  const interpret = interpreterFromEnv();
+  const result = {
+    asaas: asaas ? { configured: true, env: asaas.sandbox ? 'sandbox' : 'production' } : { configured: false },
+    asaas_webhook_token: Boolean(process.env.ASAAS_WEBHOOK_TOKEN),
+    interpreter: interpret ? { configured: true } : { configured: false },
+  };
+  if (asaas) {
+    try { await asaas.ping(); result.asaas.key_ok = true; } catch (err) { result.asaas.key_ok = false; result.asaas.error = err.message; }
+  }
+  if (interpret) Object.assign(result.interpreter, await interpret.check());
+  checkCache = { at: Date.now(), result };
+  return result;
+}
 // Região do Neon tirada do endereço do banco (ex.: ep-xxx.sa-east-1.aws.neon.tech → sa-east-1).
 const dbRegion = (() => {
   try {
@@ -48,6 +69,9 @@ module.exports = async (req, res) => {
       return json(res, 200, {
         ok: true, database: 'postgres', env: dbVar, card_ocr: Boolean(process.env.ANTHROPIC_API_KEY), fx: quote,
         db_ms: dbMs, db_region: dbRegion, fn_region: process.env.VERCEL_REGION || null,
+        payments: Boolean(process.env.ASAAS_API_KEY),
+        interpreter: Boolean(process.env.AZURE_SPEECH_KEY && process.env.AZURE_SPEECH_REGION),
+        ...(url.searchParams.get('check') ? { integrations: await checkIntegrations() } : {}),
       });
     } catch (err) {
       console.error(err);

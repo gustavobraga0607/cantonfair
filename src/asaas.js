@@ -40,6 +40,8 @@ function createAsaas({ apiKey, env, fetchImpl = globalThis.fetch } = {}) {
 
   return {
     sandbox,
+    // Só confere se a chave é aceita (consulta o saldo, sem criar nada).
+    ping: () => request('GET', '/finance/balance'),
     createCustomer: ({ name, cpfCnpj, email }) => request('POST', '/customers', { name, cpfCnpj, email, notificationDisabled: true }),
     // billingType: PIX ou CREDIT_CARD (o cartão é pago na página segura do Asaas — invoiceUrl).
     createPayment: ({ customer, billingType, value, dueDate, description, externalReference }) =>

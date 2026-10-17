@@ -104,13 +104,29 @@ function createAzureInterpreter({ speechKey, speechRegion, translatorKey, transl
     return Buffer.from(await res.arrayBuffer());
   }
 
-  return async function interpret(wav, from, to) {
+  async function interpret(wav, from, to) {
     const source = await recognize(wav, from);
     if (!source) return { source: '', translated: '', audio: null };
     const translated = await translate(source, from, to);
     const audio = translated ? await speak(translated, to) : null;
     return { source, translated, audio };
+  }
+
+  // Diagnóstico: confere as chaves sem gravar áudio (token da Speech + tradução de uma palavra).
+  interpret.check = async () => {
+    const out = { speech: false, translator: false, speech_region: speechRegion, translator_region: tRegion };
+    try {
+      await call('token', `https://${speechRegion}.api.cognitive.microsoft.com/sts/v1.0/issueToken`, {
+        method: 'POST', headers: { 'Ocp-Apim-Subscription-Key': speechKey, 'Content-Length': '0' },
+      });
+      out.speech = true;
+    } catch (err) { out.speech_error = err.message; }
+    try {
+      out.translator = (await translate('olá', 'pt', 'zh')).length > 0;
+    } catch (err) { out.translator_error = err.message; }
+    return out;
   };
+  return interpret;
 }
 
 function interpreterFromEnv(env = process.env) {
