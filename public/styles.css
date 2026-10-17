@@ -520,3 +520,30 @@ body.map-mode main { display: none; }
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .thumb .ic { width: 1.5rem; height: 1.5rem; vertical-align: 0; }
 .trip-line > span:first-child .ic { vertical-align: -.22em; color: var(--muted); }
+
+/* turismo */
+.tour-head { display: grid; gap: 10px; margin-bottom: 12px; }
+.tour-where { display: flex; gap: 8px; align-items: flex-start; font-size: .9rem; color: var(--muted); }
+.tour-where b { color: var(--text); }
+.tour-where .ic { margin-top: 2px; }
+.tour-head .row { display: flex; gap: 8px; }
+.tour-head .row select { flex: 1; min-width: 0; }
+.tour-head .row .btn { flex: none; gap: 6px; }
+.tour-cats { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.tour-cat { flex: none; border: 1px solid var(--border); background: var(--surface); color: var(--muted); border-radius: 999px;
+  padding: 5px 12px; font: inherit; font-size: .82rem; cursor: pointer; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+.tour-cat.active { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.tour-item { display: grid; gap: 8px; }
+.tour-top { display: flex; gap: 12px; align-items: center; }
+.tour-top .thumb { width: 52px; height: 52px; }
+.tour-zh { font-size: .95rem; }
+.tour-desc { margin: 0; font-size: .9rem; color: var(--text); }
+.tour-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.tour-actions .btn { gap: 5px; }
+.taxi-card { position: fixed; inset: 0; z-index: 50; background: rgb(0 0 0 / .6); display: grid; place-items: center; padding: 16px; }
+.taxi-inner { background: var(--surface); border-radius: 16px; padding: 28px 20px 20px; width: 100%; max-width: 480px; display: grid; gap: 10px; text-align: center; }
+.taxi-ask { font-size: 1.3rem; }
+.taxi-place { font-size: 2.6rem; font-weight: 700; line-height: 1.2; overflow-wrap: anywhere; }
+.taxi-city { font-size: 1.5rem; color: var(--muted); }
+.map-toolbar .subnav a { padding: 7px 4px; }
+@media (max-width: 420px) { .map-open-label { display: none; } .map-toolbar { gap: 6px; padding: 8px; } }

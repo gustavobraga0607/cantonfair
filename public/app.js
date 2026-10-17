@@ -75,6 +75,10 @@ const ICON_PATHS = {
   van: '<path d="M3 6h11l4 4h3v7H3z"/><path d="M14 6v4h4"/><circle cx="7" cy="17" r="2"/><circle cx="17" cy="17" r="2"/>',
   walk: '<circle cx="13" cy="4.5" r="1.5"/><path d="m10 21 2-6 3 3v3M8 12l2-3.5 3-1.5 2 3 3 1M12 15l1-7"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
+  leaf: '<path d="M5 19c0-8 5-14 15-15-1 10-7 15-15 15z"/><path d="m5 19 8-8"/>',
+  navigation: '<path d="M3 11 21 3l-8 18-2-8z"/>',
+  locate: '<circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2"/>',
+  map: '<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>',
   wifiOff: '<path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01M3 3l18 18"/>',
 };
 const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
@@ -2542,7 +2546,151 @@ function dateRange(a, b) {
 }
 
 const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Roteiro">
-  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">Intérprete</a></nav>`;
+  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">Intérprete</a><a href="#/tourism" class="${active === 'tourism' ? 'active' : ''}">Turismo</a></nav>`;
+
+// ===================== turismo =====================
+
+const TOUR_CATS = {
+  turismo: ['pin', 'Pontos turísticos'], cultura: ['landmark', 'Cultura e história'], compras: ['bag', 'Compras'],
+  gastronomia: ['utensils', 'Gastronomia'], natureza: ['leaf', 'Parques e natureza'],
+};
+// Distância em linha reta (km).
+function kmBetween(a, b) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+const fmtKm = (km) => (km < 1 ? `${Math.max(50, Math.round(km * 20) * 50)} m` : `${km.toLocaleString('pt-BR', { maximumFractionDigits: km < 10 ? 1 : 0 })} km`);
+// Amap (高德): o mapa usado na China. Busca pelo nome em chinês, abre o app se estiver instalado.
+const amapLink = (p, city) => `https://uri.amap.com/search?keyword=${encodeURIComponent(p.zh)}&city=${encodeURIComponent(city.zh)}&callnative=1&src=missaochina`;
+const otherMapLink = (p) => (/iPhone|iPad|Macintosh/.test(navigator.userAgent)
+  ? `https://maps.apple.com/?q=${encodeURIComponent(p.zh)}&ll=${p.lat},${p.lng}`
+  : `geo:0,0?q=${p.lat},${p.lng}(${encodeURIComponent(p.zh)})`);
+
+// Última localização conhecida (para não pedir o GPS de novo a cada visita à tela).
+let tourPos = null;
+
+async function viewTourism(query) {
+  setChrome({ title: 'Turismo', tab: 'trip' });
+  const { CITIES, PLACES } = window.TOURISM;
+  let saved = null;
+  try { saved = localStorage.getItem('cfb.tourCity'); } catch { /* sem armazenamento */ }
+  let cityId = query.get('city') || null;
+  let cat = '';
+  let locating = false;
+  let locError = '';
+
+  const nearestCity = (pos) => CITIES.map((c) => ({ c, km: kmBetween(pos, c) })).sort((a, b) => a.km - b.km)[0];
+  const currentCity = () => CITIES.find((c) => c.id === cityId) || CITIES.find((c) => c.id === saved) || CITIES[0];
+
+  function render() {
+    const city = currentCity();
+    const near = tourPos && nearestCity(tourPos);
+    const here = near && near.c.id === city.id && near.km < 80;
+    let list = PLACES.filter((p) => p.city === city.id && (!cat || p.cat === cat))
+      .map((p) => ({ ...p, km: here ? kmBetween(tourPos, p) : null }));
+    if (here) list = list.sort((a, b) => a.km - b.km);
+    const cats = Object.keys(TOUR_CATS).filter((k) => PLACES.some((p) => p.city === city.id && p.cat === k));
+    $app.innerHTML = `
+      ${subnavHtml('tourism')}
+      <div class="card tour-head">
+        <div class="tour-where">
+          ${ic('locate')}
+          <div>${locating ? 'Procurando sua localização…'
+            : here ? `Você está em <b>${esc(city.name)}</b> · pontos ordenados pelo mais perto`
+            : near && near.km < 80 ? `Você está em ${esc(near.c.name)} · mostrando ${esc(city.name)}`
+            : near ? `Você está longe das cidades da lista (a ${fmtKm(near.km)} de ${esc(near.c.name)}).`
+            : locError || 'Ative a localização para ver o que está mais perto de você.'}</div>
+        </div>
+        <div class="row">
+          <select id="tour-city" aria-label="Cidade">${CITIES.map((c) => `<option value="${c.id}"${c.id === city.id ? ' selected' : ''}>${esc(c.name)} · ${c.zh}</option>`).join('')}</select>
+          <button type="button" class="btn" id="tour-locate"${locating ? ' disabled' : ''}>${ic('locate')} Perto de mim</button>
+        </div>
+        <div class="tour-cats">
+          <button type="button" class="tour-cat${cat ? '' : ' active'}" data-cat="">Todos</button>
+          ${cats.map((k) => `<button type="button" class="tour-cat${cat === k ? ' active' : ''}" data-cat="${k}">${ic(TOUR_CATS[k][0])} ${TOUR_CATS[k][1]}</button>`).join('')}
+        </div>
+      </div>
+      <div class="list">${list.map((p, i) => `
+        <div class="card tour-item">
+          <div class="tour-top">
+            <div class="thumb">${ic(TOUR_CATS[p.cat][0])}</div>
+            <div class="item-body">
+              <div class="item-title">${esc(p.name)}</div>
+              <div class="tour-zh">${esc(p.zh)}</div>
+              <div class="item-sub">${TOUR_CATS[p.cat][1]}${p.km != null ? ` · <b>${fmtKm(p.km)}</b>` : ''}</div>
+            </div>
+          </div>
+          <p class="tour-desc">${esc(p.desc)}</p>
+          <div class="tour-actions">
+            <a class="btn small primary" href="${esc(amapLink(p, city))}" target="_blank" rel="noopener">${ic('navigation')} Como chegar</a>
+            <button type="button" class="btn small" data-taxi="${i}">${ic('car')} Mostrar ao taxista</button>
+            <a class="btn small" href="${esc(otherMapLink(p))}">${ic('map')} Outro mapa</a>
+          </div>
+        </div>`).join('')}
+      </div>
+      <p class="hint">“Como chegar” abre o Amap (高德地图), o mapa que funciona na China. Sem o app instalado, abre a versão web.
+        Google Maps não funciona na China sem VPN.</p>`;
+
+    document.getElementById('tour-city').addEventListener('change', (e) => {
+      cityId = e.target.value;
+      try { localStorage.setItem('cfb.tourCity', cityId); } catch { /* sem armazenamento */ }
+      cat = '';
+      render();
+    });
+    document.getElementById('tour-locate').addEventListener('click', () => locate(true));
+    $app.querySelectorAll('[data-cat]').forEach((b) => b.addEventListener('click', () => { cat = b.dataset.cat; render(); }));
+    $app.querySelectorAll('[data-taxi]').forEach((b) => b.addEventListener('click', () => showTaxiCard(list[Number(b.dataset.taxi)], city)));
+  }
+
+  function locate(userAsked) {
+    if (!navigator.geolocation) { locError = 'Este celular não informa a localização. Escolha a cidade.'; render(); return; }
+    locating = true;
+    render();
+    navigator.geolocation.getCurrentPosition((pos) => {
+      tourPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+      const near = nearestCity(tourPos);
+      // Na cidade (ou perto dela): mostra essa cidade, a não ser que o usuário já tenha escolhido outra agora.
+      if (near.km < 80 && (userAsked || !query.get('city'))) cityId = near.c.id;
+      locating = false;
+      if (location.hash.startsWith('#/tourism')) render();
+    }, (err) => {
+      locating = false;
+      locError = err.code === 1
+        ? 'Localização não permitida. Libere nas configurações do navegador ou escolha a cidade.'
+        : 'Não consegui obter a localização agora. Escolha a cidade ou tente de novo ao ar livre.';
+      if (location.hash.startsWith('#/tourism')) render();
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 5 * 60_000 });
+  }
+
+  render();
+  // Já tinha permitido antes (ou já localizou nesta sessão): atualiza sem perguntar.
+  const perm = await navigator.permissions?.query({ name: 'geolocation' }).catch(() => null);
+  if (!location.hash.startsWith('#/tourism')) return;
+  if (perm?.state === 'denied') {
+    locError = 'Localização bloqueada para este app. Libere nas configurações do navegador ou escolha a cidade.';
+    render();
+  } else locate(false);
+}
+
+// Cartão grande em chinês para mostrar ao motorista de táxi/DiDi.
+function showTaxiCard(p, city) {
+  const box = document.createElement('div');
+  box.className = 'taxi-card';
+  box.setAttribute('role', 'dialog');
+  box.innerHTML = `
+    <div class="taxi-inner">
+      <div class="taxi-ask">您好，请带我去这里</div>
+      <div class="taxi-place">${esc(p.zh)}</div>
+      <div class="taxi-city">${esc(city.zh)}</div>
+      <div class="item-sub">${esc(p.name)} · ${esc(city.name)}</div>
+      <div class="item-sub">“Olá, por favor me leve até aqui”</div>
+      <button type="button" class="btn block">Fechar</button>
+    </div>`;
+  box.addEventListener('click', (e) => { if (e.target === box || e.target.closest('button')) box.remove(); });
+  window.addEventListener('hashchange', () => box.remove(), { once: true });
+  document.body.appendChild(box);
+}
 
 async function viewTrip(id) {
   setChrome({ title: 'Roteiro de viagem', tab: 'trip', back: id && isAdmin() ? '#/trip' : null });
@@ -3168,6 +3316,7 @@ const routes = [
   [/^\/products\/scan$/, (m, q) => viewProductScan(q)],
   [/^\/outbox$/, viewOutbox],
   [/^\/interpreter$/, viewInterpreter],
+  [/^\/tourism$/, (m, q) => viewTourism(q)],
   [/^\/credits$/, viewCredits],
   [/^\/admin\/credits$/, viewAdminCredits],
   [/^\/expenses$/, (m, q) => viewExpenses(q)],
