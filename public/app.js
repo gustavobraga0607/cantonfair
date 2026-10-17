@@ -2053,6 +2053,33 @@ async function recordToWav(blob) {
   });
 }
 
+// Player único do intérprete. O iPhone só deixa tocar áudio que começou num toque na tela; como a
+// tradução chega depois (resposta do servidor), o player é "destravado" com um som mudo no toque
+// e depois reaproveitado para a voz traduzida.
+let interpPlayer = null;
+// 0,1 s de silêncio (WAV 8 kHz, 16 bits) — um arquivo vazio não conta como reprodução no Safari.
+const SILENT_WAV = (() => {
+  const n = 800;
+  const v = new DataView(new ArrayBuffer(44 + n * 2));
+  const w = (o, t) => { for (let i = 0; i < t.length; i++) v.setUint8(o + i, t.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt '); v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 8000, true); v.setUint32(28, 16000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true); w(36, 'data'); v.setUint32(40, n * 2, true);
+  return 'data:audio/wav;base64,' + btoa(String.fromCharCode(...new Uint8Array(v.buffer)));
+})();
+function unlockInterpAudio() {
+  if (!interpPlayer) { interpPlayer = new Audio(); interpPlayer.setAttribute('playsinline', ''); }
+  if (interpPlayer.dataset.unlocked) return;
+  interpPlayer.src = SILENT_WAV;
+  interpPlayer.play().then(() => { interpPlayer.dataset.unlocked = '1'; }).catch(() => {});
+}
+function playInterp(src) {
+  if (!interpPlayer) interpPlayer = new Audio();
+  interpPlayer.pause();
+  interpPlayer.src = src;
+  return interpPlayer.play();
+}
+
 async function viewInterpreter() {
   setChrome({ title: 'Intérprete', tab: 'trip' });
   loading();
@@ -2101,10 +2128,13 @@ async function viewInterpreter() {
       render();
     });
     $app.querySelectorAll('.interp-btn').forEach((btn) => btn.addEventListener('click', () => toggle(btn.dataset.lang)));
-    $app.querySelectorAll('[data-play]').forEach((b2) => b2.addEventListener('click', () => new Audio(log[Number(b2.dataset.play)].audio).play()));
+    $app.querySelectorAll('[data-play]').forEach((b2) => b2.addEventListener('click', () => {
+      playInterp(log[Number(b2.dataset.play)].audio).catch(() => toast('Não consegui tocar o áudio. Confira o volume e o modo silencioso.'));
+    }));
   }
 
   async function toggle(lang) {
+    unlockInterpAudio();
     if (recording) { stop(); return; }
     if (balance <= 0) { toast('Sem créditos do intérprete. Compre minutos para continuar.'); return; }
     let stream;
@@ -2148,7 +2178,7 @@ async function viewInterpreter() {
       if (!r.source) toast('Não entendi. Fale mais perto do celular e tente de novo.');
       else {
         log.unshift({ from: lang, to, source: r.source, translated: r.translated, audio: r.audio });
-        if (r.audio) new Audio(r.audio).play().catch(() => {});
+        if (r.audio) playInterp(r.audio).catch(() => toast('Toque em "Ouvir de novo" para escutar a tradução.'));
       }
     } catch (err) {
       toast(err.message);
