@@ -1841,6 +1841,16 @@ const EXPENSE_CATS = [
 ];
 const PAYMENTS = [['cartao', 'Cartão', 'Cartão'], ['dinheiro', 'Dinheiro', 'Dinheiro'], ['alipay', 'Alipay', 'Alipay'], ['wechat', 'WeChat Pay', 'WeChat Pay'], ['outro', 'Outro', 'Outro']];
 const CURRENCY_SYMBOL = { CNY: '¥', BRL: 'R$', USD: 'US$' };
+// Custos estimados sobre os gastos em moeda estrangeira (yuan e dólar): IOF do cartão/câmbio
+// e a taxa de conversão cobrada pela operadora/banco.
+const IOF_RATE = 0.035;
+const FX_FEE_RATE = 0.0065;
+function expenseFees(list) {
+  const foreign = list.filter((e) => e.currency !== 'BRL').reduce((s, e) => s + e.amount_brl, 0);
+  const iof = Math.round(foreign * IOF_RATE * 100) / 100;
+  const fx = Math.round(foreign * FX_FEE_RATE * 100) / 100;
+  return { foreign, iof, fx };
+}
 const catInfo = (k) => EXPENSE_CATS.find((c) => c[0] === k) || EXPENSE_CATS[EXPENSE_CATS.length - 1];
 const moneyIn = (n, cur) => (cur === 'BRL' ? brl(n) : `${CURRENCY_SYMBOL[cur]} ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
 const fmtDay = (iso) => {
@@ -1873,6 +1883,7 @@ async function viewExpenses(query) {
   const filter = query.get('cat') || '';
   const list = filter ? all.filter((e) => e.category === filter) : all;
   const total = all.reduce((s, e) => s + e.amount_brl, 0);
+  const fees = expenseFees(all);
   const byCat = EXPENSE_CATS.map(([k, icon, label]) => ({ k, icon, label, sum: all.filter((e) => e.category === k).reduce((s, e) => s + e.amount_brl, 0) }))
     .filter((c) => c.sum > 0).sort((a, b) => b.sum - a.sum);
   const days = [...new Set(list.map((e) => e.spent_on))].sort().reverse();
@@ -1883,6 +1894,12 @@ async function viewExpenses(query) {
       <div class="item-sub">Total gasto na viagem</div>
       <div class="exp-total">${brl(total)}</div>
       <div class="item-sub">${all.length} lançamento(s)${all.some((e) => e.currency !== 'BRL') ? ' · valores em yuan e dólar convertidos pelo câmbio do lançamento' : ''}</div>
+      <div class="exp-fees">
+        <div><span>IOF estimado (${pct(IOF_RATE * 100)})</span><b>${brl(fees.iof)}</b></div>
+        <div><span>Taxas de conversão estimadas (${pct(FX_FEE_RATE * 100)})</span><b>${brl(fees.fx)}</b></div>
+        <div class="exp-fees-total"><span>Total com IOF e taxas</span><b>${brl(total + fees.iof + fees.fx)}</b></div>
+        <div class="item-sub">Calculados sobre os gastos em yuan e dólar (${brl(fees.foreign)}). Gastos lançados em reais não pagam IOF.</div>
+      </div>
       ${byCat.length ? `<div class="exp-cats">${byCat.map((c) => `
         <a class="exp-cat${filter === c.k ? ' active' : ''}" href="#/expenses${filter === c.k ? '' : `?cat=${c.k}`}">
           <span>${c.icon} ${esc(c.label)}</span><b>${brl(c.sum)}</b>
@@ -1925,7 +1942,12 @@ function exportExpenses(list) {
       (PAYMENTS.find((p) => p[0] === e.payment) || [])[2] || '', e.currency, num(e.amount),
       e.currency === 'BRL' ? '1' : String(e.rate_brl).replace('.', ','), num(e.amount_brl),
     ]));
-  rows.push(['', '', '', '', '', '', 'Total', num(list.reduce((s, e) => s + e.amount_brl, 0))]);
+  const total = list.reduce((s, e) => s + e.amount_brl, 0);
+  const fees = expenseFees(list);
+  rows.push(['', '', '', '', '', '', 'Total', num(total)]);
+  rows.push(['', '', '', '', '', '', `IOF estimado (${pct(IOF_RATE * 100)})`, num(fees.iof)]);
+  rows.push(['', '', '', '', '', '', `Taxas de conversão estimadas (${pct(FX_FEE_RATE * 100)})`, num(fees.fx)]);
+  rows.push(['', '', '', '', '', '', 'Total com IOF e taxas', num(total + fees.iof + fees.fx)]);
   const csv = '\ufeff' + rows.map((r) => r.map(cell).join(';')).join('\r\n');
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
