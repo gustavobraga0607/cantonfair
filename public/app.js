@@ -1019,23 +1019,8 @@ function applyCardToForm(form, card) {
   return filled;
 }
 
-// Leitura que terminou depois de o fornecedor ser salvo: completa só os campos que ficaram vazios.
-async function applyCardToSaved(supplierId, card) {
-  const s = await api(`/api/suppliers/${supplierId}`, { background: true, fresh: true });
-  const phone = s.phone || card.phone || card.whatsapp || '';
-  const notes = mergeNotes(s.notes, cardExtras(card, phone));
-  const body = {
-    name: s.name, contact_name: s.contact_name || card.contact_name || '', phone,
-    phone_whatsapp: s.phone ? s.phone_whatsapp : !!card.phone_whatsapp, phone_wechat: s.phone ? s.phone_wechat : !!card.phone_wechat,
-    booth: s.booth || card.booth || '', address: s.address || card.address || '', province: s.province || card.province || '', notes: notes.text,
-  };
-  const changed = ['contact_name', 'phone', 'booth', 'address', 'province'].some((k) => (body[k] || '') !== (s[k] || '')) || notes.changed;
-  if (changed) await api(`/api/suppliers/${supplierId}`, { method: 'PUT', body, background: true });
-  return changed;
-}
-
-// Leitura do cartão no formulário: dados e recorte em paralelo; nenhum dos dois bloqueia o "Salvar".
-// Devolve o "trabalho" para o formulário continuar em segundo plano se o usuário salvar antes do fim.
+// Leitura do cartão no formulário: dados e recorte em paralelo. O "Salvar" espera só a leitura dos dados;
+// o recorte pode terminar depois (o formulário continua o trabalho em segundo plano).
 function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = {}) {
   const box = document.getElementById('ocr-status');
   const seq = ++ocrSeq;
@@ -1043,12 +1028,20 @@ function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = 
   const current = () => seq === ocrSeq && !job.saved && document.body.contains(form);
   const show = (cls, text) => { if (!current()) return; box.hidden = false; box.className = `ocr-status ${cls}`; box.textContent = text; };
   const parts = [];
+  const submit = form.querySelector('button[type=submit]');
   const update = () => {
-    if (!job.readDone || !job.cropDone) { show('busy', readFields ? 'Lendo o cartão de visita… (pode salvar; o que faltar é completado depois)' : 'Endireitando a foto do cartão…'); return; }
+    if (!job.readDone) { show('busy', 'Lendo o cartão de visita…'); return; }
+    if (!job.cropDone) {
+      const read = job.readError || parts.join(' ');
+      show(job.readError ? 'err' : 'busy', `${read ? `${read} ` : ''}Endireitando a foto… (já pode salvar; o recorte é aplicado em seguida)`);
+      return;
+    }
     if (job.readError && !parts.length) { show('err', job.readError); return; }
     show(parts.length ? 'ok' : 'err', parts.length ? parts.join(' ') : 'Não consegui encontrar as bordas do cartão nesta foto.');
   };
-  job.read = readFields && state.me?.features?.card_ocr
+  const reading = readFields && state.me?.features?.card_ocr;
+  if (reading) submit.disabled = true;
+  job.read = reading
     ? api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 60_000 : 1, background: true })
       .then((card) => {
         if (current()) {
@@ -1063,8 +1056,9 @@ function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = 
           : err.message;
         return null;
       })
-      .finally(() => { job.readDone = true; update(); })
+      .finally(() => { job.readDone = true; if (seq === ocrSeq) submit.disabled = false; update(); })
     : Promise.resolve(null).finally(() => { job.readDone = true; });
+  if (!reading) job.readDone = true;
   job.crop = onCrop
     ? cropBusinessCard(dataUrl).catch(() => null).then((cropped) => {
       if (cropped && current()) { onCrop(cropped); parts.push('A foto foi endireitada e recortada.'); }
@@ -1075,7 +1069,7 @@ function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = 
   return job;
 }
 
-// O usuário salvou antes de a leitura/recorte do cartão terminar: o que faltar é aplicado ao cadastro salvo.
+// O usuário salvou antes de o recorte do cartão terminar: a foto recortada é aplicada ao cadastro salvo.
 // samePhoto = a foto salva é a do trabalho (senão o recorte é descartado).
 function finishCardJob(job, supplierId, samePhoto) {
   if (!job || job.saved) return;
@@ -1087,11 +1081,6 @@ function finishCardJob(job, supplierId, samePhoto) {
       await api(`/api/suppliers/${supplierId}/card-photo`, { method: 'PUT', body: { photo: cropped, photo_thumb: await makeThumb(cropped) }, background: true });
       toast('Foto do cartão endireitada e recortada.');
       refresh();
-    }).catch(() => {});
-  }
-  if (!job.readDone) {
-    job.read.then(async (card) => {
-      if (card && await applyCardToSaved(supplierId, card)) { toast('Dados do cartão completados no fornecedor.'); refresh(); }
     }).catch(() => {});
   }
 }
@@ -1213,6 +1202,7 @@ async function viewSupplierForm(id) {
     e.preventDefault();
     const box = document.getElementById('err');
     box.hidden = true;
+    if (cardJob && !cardJob.readDone) return; // espera a leitura dos dados do cartão
     if (!form.name.value.trim()) { box.textContent = 'Informe o nome do fornecedor.'; box.hidden = false; return; }
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
