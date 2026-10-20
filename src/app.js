@@ -78,15 +78,21 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return new Promise((resolve, reject) => {
       let size = 0;
       const chunks = [];
+      let tooBig = false;
       req.on('data', (c) => {
+        if (tooBig) return; // descarta o resto (sem fechar a conexão, para o 413 chegar ao app)
         size += c.length;
-        if (size > MAX_BODY) { reject(new HttpError(413, 'Arquivo muito grande.')); req.destroy(); return; }
+        if (size > MAX_BODY) { tooBig = true; chunks.length = 0; reject(new HttpError(413, 'Arquivo muito grande.')); return; }
         chunks.push(c);
       });
       req.on('end', () => {
+        if (tooBig) return;
         if (!chunks.length) return resolve({});
-        try { resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))); }
-        catch { reject(new HttpError(400, 'JSON inválido.')); }
+        let v;
+        try { v = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+        catch { return reject(new HttpError(400, 'JSON inválido.')); }
+        if (v === null || typeof v !== 'object' || Array.isArray(v)) return reject(new HttpError(400, 'JSON inválido.'));
+        resolve(v);
       });
       req.on('error', reject);
     });
@@ -300,6 +306,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const seen = new Set();
     const out = [];
     for (const [i, o] of list.entries()) {
+      if (!o || typeof o !== 'object') throw new HttpError(400, `Oferta ${i + 1} inválida.`);
       const supplierId = num(o.supplier_id, `fornecedor da oferta ${i + 1}`, { required: true, integer: true });
       if (seen.has(supplierId)) throw new HttpError(400, 'O mesmo fornecedor foi informado mais de uma vez.');
       seen.add(supplierId);
@@ -345,12 +352,12 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     routes.push({ method, re, keys, handler, pub });
   };
 
-  // Papel efetivo: o definido no banco ou "admin" para e-mails em ADMIN_EMAILS.
+  // Papel efetivo: "admin" só para e-mails em ADMIN_EMAILS (tirar o e-mail da lista tira o acesso).
   function withRole(user) {
-    return { ...user, role: ADMIN_EMAILS.has(String(user.email).toLowerCase()) ? 'admin' : (user.role || 'user') };
+    return { ...user, role: ADMIN_EMAILS.has(String(user.email).toLowerCase()) ? 'admin' : 'user' };
   }
 
-  // Grava no banco o papel de administrador dos e-mails configurados.
+  // Grava no banco o papel atual (informativo; quem decide é ADMIN_EMAILS).
   async function syncRole(user) {
     const u = withRole(user);
     if (u.role !== (user.role || 'user')) await db.run('UPDATE users SET role = ? WHERE id = ?', [u.role, u.id]);
@@ -456,10 +463,13 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const email = str(body.email, 200).toLowerCase();
     const password = typeof body.password === 'string' ? body.password : '';
     const key = `${clientIp(req)}|${email}`;
-    if (!loginLimiter.hit(key) || !emailLimiter.hit(email)) throw new HttpError(429, 'Muitas tentativas. Tente novamente em alguns minutos.');
+    if (!loginLimiter.hit(key)) throw new HttpError(429, 'Muitas tentativas. Tente novamente em alguns minutos.');
     const user = await db.get('SELECT * FROM users WHERE email = ?', [email]);
     // Sempre calcula o hash (mesmo sem usuário) para o tempo de resposta não revelar e-mails cadastrados.
-    if (!(await auth.verifyPassword(password, user?.password_hash)) || !user) {
+    const ok = (await auth.verifyPassword(password, user?.password_hash)) && user;
+    // Limite por e-mail (de qualquer IP): conta só erros, e a senha certa sempre entra.
+    if (!ok) {
+      if (!emailLimiter.hit(email)) throw new HttpError(429, 'Muitas tentativas. Tente novamente em alguns minutos.');
       throw new HttpError(401, 'E-mail ou senha incorretos.');
     }
     loginLimiter.clear(key);
@@ -543,6 +553,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   const USER_REFS = [
     ['suppliers', 'created_by'], ['suppliers', 'updated_by'], ['products', 'created_by'], ['products', 'updated_by'],
     ['itineraries', 'created_by'], ['itineraries', 'updated_by'], ['app_settings', 'updated_by'],
+    ['credit_ledger', 'user_id'], ['credit_payments', 'user_id'],
   ];
 
   route('GET', '/api/admin/users', async ({ user }) => {
@@ -622,6 +633,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await q.run('DELETE FROM products WHERE cnpj = ?', [cnpj]);
       await q.run('DELETE FROM suppliers WHERE cnpj = ?', [cnpj]);
       await q.run('DELETE FROM itineraries WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM credit_ledger WHERE cnpj = ?', [cnpj]);
+      await q.run('DELETE FROM credit_payments WHERE cnpj = ?', [cnpj]);
       await q.run('DELETE FROM images WHERE cnpj = ?', [cnpj]);
       await q.run('DELETE FROM companies WHERE cnpj = ?', [cnpj]);
     });
@@ -1372,7 +1385,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         if (r.method !== req.method) continue;
         const m = r.re.exec(pathname);
         if (!m) continue;
-        const params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])]));
+        let params;
+        try { params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); }
+        catch { throw new HttpError(404, 'Não encontrado.'); }
         const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
         if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
         const user = sessionUser && withRole(sessionUser);

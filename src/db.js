@@ -323,6 +323,7 @@ function sqlite(dataDir) {
     async all(sql, params = []) { return conn.prepare(sql).all(...clean(params)); },
     async get(sql, params = []) { return conn.prepare(sql).get(...clean(params)); },
     async run(sql, params = []) { return conn.prepare(sql).run(...clean(params)); },
+    async lock() {}, // transações já são em fila (uma conexão só)
   };
   return {
     ...q,
@@ -360,6 +361,8 @@ function postgres(connectionString) {
     async all(sql, params = []) { return (await c.query(toPg(sql), clean(params))).rows; },
     async get(sql, params = []) { return (await c.query(toPg(sql), clean(params))).rows[0]; },
     async run(sql, params = []) { const r = await c.query(toPg(sql), clean(params)); return { changes: r.rowCount }; },
+    // Trava por chave até o fim da transação (duas requisições da mesma empresa/cobrança esperam a vez).
+    async lock(key) { await c.query('SELECT pg_advisory_xact_lock(hashtext($1))', [String(key)]); },
   });
 
   let ready;

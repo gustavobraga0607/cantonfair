@@ -53,33 +53,37 @@ function registerCredits({ route, db, HttpError, str, num, now, toId, isAdmin, a
   }
 
   // Atualiza a cobrança com o status do Asaas e credita (uma vez) quando paga.
+  // Status e crédito na mesma transação: não fica cobrança "paga" sem os minutos.
   async function applyStatus(p, status) {
     const t = now();
-    await db.run('UPDATE credit_payments SET status = ?, updated_at = ? WHERE id = ?', [status, t, p.id]);
-    if (PAID.includes(status) && !p.credited_at) {
-      await db.tx(async (q) => {
+    await db.tx(async (q) => {
+      await q.lock(`payment:${p.id}`);
+      await q.run('UPDATE credit_payments SET status = ?, updated_at = ? WHERE id = ?', [status, t, p.id]);
+      const cur = await q.get('SELECT credited_at FROM credit_payments WHERE id = ?', [p.id]);
+      if (PAID.includes(status) && !cur.credited_at) {
         // Só credita se ainda não creditou (protege contra dois webhooks ao mesmo tempo).
         const r = await q.run('UPDATE credit_payments SET credited_at = ? WHERE id = ? AND credited_at IS NULL', [t, p.id]);
         if (!r.changes) return;
         await q.run(`INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, payment_id, note, created_at)
                      VALUES (?, ?, ?, 'purchase', ?, ?, ?)`,
         [p.cnpj, p.user_id, Number(p.minutes) * 60, p.id, `Compra de ${p.minutes} min (${p.method === 'pix' ? 'Pix' : 'cartão'})`, t]);
-      });
-    } else if (REVERSED.includes(status) && p.credited_at) {
-      await db.tx(async (q) => {
+      } else if (REVERSED.includes(status) && cur.credited_at) {
         const done = await q.get("SELECT 1 AS x FROM credit_ledger WHERE payment_id = ? AND kind = 'refund'", [p.id]);
         if (done) return;
         await q.run(`INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, payment_id, note, created_at)
                      VALUES (?, ?, ?, 'refund', ?, ?, ?)`, [p.cnpj, p.user_id, -Number(p.minutes) * 60, p.id, `Estorno da compra (${status})`, t]);
-      });
-    }
+      }
+    });
     return db.get('SELECT * FROM credit_payments WHERE id = ?', [p.id]);
   }
 
   async function syncPayment(p) {
     if (!asaas || !p.asaas_id) return p;
     const remote = await asaas.getPayment(p.asaas_id);
-    return remote?.status && remote.status !== p.status ? applyStatus(p, remote.status) : p;
+    if (!remote?.status) return p;
+    // Também reaplica se ficou pago sem crédito (ex.: função interrompida entre os dois passos).
+    const stuck = PAID.includes(remote.status) && !p.credited_at;
+    return remote.status !== p.status || stuck ? applyStatus(p, remote.status) : p;
   }
 
   const wrapAsaas = (fn) => fn().catch((err) => { if (err instanceof AsaasError) throw new HttpError(err.status, err.message); throw err; });
@@ -182,21 +186,27 @@ function registerCredits({ route, db, HttpError, str, num, now, toId, isAdmin, a
     if (!info || info.seconds <= 0) throw new HttpError(400, 'Áudio inválido.');
     if (info.seconds > MAX_SECONDS + 1) throw new HttpError(400, `Fale no máximo ${MAX_SECONDS} segundos por vez.`);
     const seconds = Math.max(1, Math.ceil(info.seconds));
-    const bal = await balance(user.cnpj);
-    if (bal < seconds) throw new HttpError(402, 'Créditos do intérprete insuficientes. Compre mais minutos em Conta → Créditos do intérprete.');
+    // Reserva os segundos antes de chamar o Azure (pedidos ao mesmo tempo não passam do saldo).
+    const reserved = await db.tx(async (q) => {
+      await q.lock(`credits:${user.cnpj}`);
+      const row = await q.get('SELECT COALESCE(SUM(seconds), 0) AS s FROM credit_ledger WHERE cnpj = ?', [user.cnpj]);
+      if (Number(row?.s || 0) < seconds) return null;
+      return q.get(`INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, note, created_at) VALUES (?, ?, ?, 'usage', ?, ?) RETURNING id`,
+        [user.cnpj, user.id, -seconds, `Intérprete ${LANGS[from].label} → ${LANGS[to].label}`, now()]);
+    });
+    if (!reserved) throw new HttpError(402, 'Créditos do intérprete insuficientes. Compre mais minutos em Conta → Créditos do intérprete.');
+    const refund = () => db.run('DELETE FROM credit_ledger WHERE id = ?', [reserved.id]);
 
     let out;
     try {
       out = await interpret(wav, from, to);
     } catch (err) {
+      await refund();
       if (err instanceof InterpreterError) throw new HttpError(err.status, err.message);
       throw err;
     }
     // Só cobra quando houve fala reconhecida.
-    if (out.source) {
-      await db.run(`INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, note, created_at) VALUES (?, ?, ?, 'usage', ?, ?)`,
-        [user.cnpj, user.id, -seconds, `Intérprete ${LANGS[from].label} → ${LANGS[to].label}`, now()]);
-    }
+    if (!out.source) await refund();
     return {
       source: out.source, translated: out.translated,
       audio: out.audio ? `data:audio/mpeg;base64,${out.audio.toString('base64')}` : null,

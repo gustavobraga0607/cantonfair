@@ -24,6 +24,8 @@ function findDatabaseUrl(env = process.env) {
 
 // Monta o handler HTTP a partir das variáveis de ambiente (usado pelo
 // servidor local e pela função da Vercel).
+const adminEmailsFromEnv = () => (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+
 function appFromEnv({ publicDir, requirePostgres = false } = {}) {
   const found = findDatabaseUrl();
   if (!found && requirePostgres) return { db: null, handler: null, dbVar: null };
@@ -41,7 +43,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     publicDir,
     cnpjOnlineCheck: process.env.CNPJ_ONLINE_CHECK !== 'false',
     secureCookies: process.env.SECURE_COOKIES === 'true' || Boolean(process.env.VERCEL),
-    adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
+    adminEmails: adminEmailsFromEnv(),
     readCard: cardReaderFromEnv(),
     readCorners: cornerReaderFromEnv(),
     readProducts: productReaderFromEnv(),
@@ -55,4 +57,4 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
   return { db, handler, fx, dbVar: found?.name ?? null };
 }
 
-module.exports = { appFromEnv, findDatabaseUrl };
+module.exports = { appFromEnv, findDatabaseUrl, adminEmailsFromEnv };

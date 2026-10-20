@@ -6,7 +6,7 @@
 // - Dados (/api/...): sempre busca na rede; sem conexão (comum na feira), mostra a última
 //   versão salva. O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v55';
+const VERSION = 'v56';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';
@@ -37,11 +37,23 @@ async function trimImages() {
   for (const req of keys.slice(0, Math.max(0, keys.length - MAX_IMAGES))) await cache.delete(req);
 }
 
+// Respostas da API guardadas para uso offline: mantém só as mais recentes.
+const MAX_DATA = 300;
+let dataPuts = 0;
+async function trimData(cache) {
+  const keys = await cache.keys();
+  for (const req of keys.slice(0, Math.max(0, keys.length - MAX_DATA))) await cache.delete(req);
+}
+
 async function networkFirst(request) {
   const cache = await caches.open(DATA);
   try {
     const res = await fetch(request);
-    if (res.ok) cache.put(request, res.clone());
+    if (res.ok) {
+      // Regrava no fim da lista (as mais usadas ficam) e confere o limite a cada 20 gravações.
+      const copy = res.clone();
+      cache.delete(request).then(() => cache.put(request, copy)).then(() => { if (++dataPuts % 20 === 0) trimData(cache); }).catch(() => {});
+    }
     return res;
   } catch {
     const cached = await cache.match(request);

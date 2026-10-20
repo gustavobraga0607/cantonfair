@@ -2,16 +2,29 @@
 
 // Função serverless da Vercel: atende /api/* e /uploads/*.
 // Os arquivos de public/ são servidos diretamente pela CDN da Vercel.
-const { appFromEnv } = require('../src/config');
+const { appFromEnv, adminEmailsFromEnv } = require('../src/config');
+const auth = require('../src/auth');
 
 const { db, handler, fx, dbVar } = appFromEnv({ requirePostgres: true });
 const { asaasFromEnv } = require('../src/asaas');
 const { interpreterFromEnv } = require('../src/interpreter');
 
 // /api/health?check=1 testa de verdade as chaves do Asaas e da Azure (resultado guardado por 5 min).
+// Só para administradores logados (as chamadas custam e as mensagens de erro são internas).
 let checkCache = null;
-async function checkIntegrations() {
+let checkRunning = null;
+async function isAdminRequest(req) {
+  const sid = /(?:^|;\s*)sid=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+  let token = sid;
+  try { token = sid && decodeURIComponent(sid); } catch { /* usa como veio */ }
+  const user = await auth.getSessionUser(db, token).catch(() => null);
+  return Boolean(user && adminEmailsFromEnv().includes(String(user.email).toLowerCase()));
+}
+function checkIntegrations() {
   if (checkCache && Date.now() - checkCache.at < 5 * 60_000) return checkCache.result;
+  return (checkRunning ??= runChecks().finally(() => { checkRunning = null; }));
+}
+async function runChecks() {
   const asaas = asaasFromEnv();
   const interpret = interpreterFromEnv();
   const result = {
@@ -71,7 +84,9 @@ module.exports = async (req, res) => {
         db_ms: dbMs, db_region: dbRegion, fn_region: process.env.VERCEL_REGION || null,
         payments: Boolean(process.env.ASAAS_API_KEY),
         interpreter: Boolean(process.env.AZURE_SPEECH_KEY && process.env.AZURE_SPEECH_REGION),
-        ...(url.searchParams.get('check') ? { integrations: await checkIntegrations() } : {}),
+        ...(url.searchParams.get('check')
+          ? { integrations: (await isAdminRequest(req)) ? await checkIntegrations() : 'entre no app como administrador para ver' }
+          : {}),
       });
     } catch (err) {
       console.error(err);

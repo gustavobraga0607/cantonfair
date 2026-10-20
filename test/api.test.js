@@ -1050,3 +1050,31 @@ test('cartão endireitado: troca a foto, guarda a original e permite desfazer', 
   assert.equal((await a('DELETE', `/api/suppliers/${s.id}`)).status, 200);
   assert.equal(await images(), 0);
 });
+
+test('revisão 3: saldo do intérprete não fica negativo com pedidos ao mesmo tempo; excluir usuário com créditos; corpo inválido', async (t) => {
+  let calls = 0;
+  const interpret = async () => { calls++; await new Promise((r) => setTimeout(r, 50)); return { source: 'oi', translated: '你好', audio: null }; };
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'], interpret });
+  t.after(close);
+  const admin = client(base);
+  const a = client(base);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11444777000161' });
+  const me = (await a('POST', '/api/register', { name: 'Ana', email: 'ana@x.com', password: '12345678', cnpj: '11222333000181' })).body;
+  await admin('POST', '/api/admin/credits/grant', { cnpj: '11222333000181', minutes: 1 });
+  const rs = await Promise.all(Array.from({ length: 12 }, () => a('POST', '/api/interpreter', { from: 'pt', to: 'zh', audio: wav(10) })));
+  assert.equal(rs.filter((r) => r.status === 200).length, 6, '60 s de saldo = 6 pedidos de 10 s');
+  assert.equal(calls, 6);
+  assert.equal((await a('GET', '/api/credits')).body.balance_seconds, 0);
+
+
+  // usuário com histórico de créditos pode ser excluído
+  assert.equal((await admin('DELETE', `/api/admin/users/${me.user.id}`)).status, 200);
+  assert.equal((await admin('DELETE', '/api/admin/companies/11222333000181')).status, 200, 'empresa com créditos também');
+
+  // corpo "null", oferta nula e parâmetro malformado não dão erro 500
+  const sid = await (async () => { const r = await fetch(base + '/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'chefe@br.com', password: '12345678' }) }); return r.headers.get('set-cookie').split(';')[0]; })();
+  const withCookie = (method, url, body) => fetch(base + url, { method, headers: { 'Content-Type': 'application/json', Cookie: sid }, body });
+  assert.equal((await withCookie('POST', '/api/suppliers', 'null')).status, 400);
+  assert.equal((await withCookie('POST', '/api/products', JSON.stringify({ name: 'P', offers: [null] }))).status, 400);
+  assert.equal((await withCookie('GET', '/api/suppliers/%E0')).status, 404);
+});

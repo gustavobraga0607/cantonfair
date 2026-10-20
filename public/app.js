@@ -175,7 +175,7 @@ async function api(path, { method = 'GET', body, background = false, timeout = 0
     location.hash = '#/login';
     throw new Error(data.error || 'Sessão expirada.');
   }
-  if (!res.ok) throw new Error(data.error || `Erro ${res.status}`);
+  if (!res.ok) throw Object.assign(new Error(data.error || `Erro ${res.status}`), { status: res.status });
   if (method === 'GET' && !background && nav !== navSeq) throw new StaleNavigation();
   return data;
 }
@@ -303,7 +303,9 @@ async function pendingProducts(company) {
 }
 
 let flushing = false;
-async function flushOutbox() {
+// Erro definitivo (dado recusado pelo servidor): não reenvia sozinho a cada 30 s; só pelo "Enviar agora".
+const permanentError = (status) => status >= 400 && status < 500 && status !== 408 && status !== 429;
+async function flushOutbox({ manual = false } = {}) {
   if (flushing || !state.me) return;
   flushing = true;
   let sent = 0;
@@ -311,7 +313,7 @@ async function flushOutbox() {
     for (const { ref } of await outboxAll()) {
       // Relê o item: o envio de um fornecedor pode ter atualizado os itens que dependem dele.
       const item = await outboxTx('readonly', (st) => st.get(ref)).catch(() => null);
-      if (!item) continue;
+      if (!item || (!manual && permanentError(item.error_status))) continue;
       try {
         if (resolveTempIds(item.kind, item.body, await tempIdMap())) {
           const waiting = (await outboxAll()).some((i) => i.kind === 'supplier'
@@ -332,7 +334,7 @@ async function flushOutbox() {
         sent++;
       } catch (err) {
         if (err instanceof OfflineError || !state.me) break; // sem sinal ou sessão expirada: tenta depois
-        await outboxPut({ ...item, error: err.message });
+        await outboxPut({ ...item, error: err.message, error_status: err.status || null });
       }
     }
     // Mapas de ids com mais de 30 dias não servem mais.
@@ -346,8 +348,8 @@ async function flushOutbox() {
   if (sent) {
     state.suppliers = null;
     toast(`${sent} cadastro(s) feito(s) sem internet foram enviados.`);
-    // Atualiza a tela atual, a não ser que o usuário esteja preenchendo um formulário.
-    if (!/\/(new|edit|scan)\b/.test(location.hash)) router();
+    // Atualiza só listas e detalhes (formulários, importação, intérprete etc. não perdem o que está na tela).
+    if (/^#\/(suppliers|products|ranking|outbox)(\/\d+)?(\?|$)/.test(location.hash) || location.hash === '' || location.hash === '#/') router();
   }
 }
 
@@ -522,11 +524,13 @@ const loading = () => { $app.innerHTML = '<div class="spinner">Carregando…</di
 // Inclui os fornecedores cadastrados sem internet (ainda na fila), com id provisório negativo.
 // Sem internet e sem lista salva no celular: devolve só os da fila (marcado com .offline).
 async function getSuppliers(company) {
+  const nav = navSeq;
   const [list, pending] = await Promise.all([
     api('/api/suppliers' + (company ? `?company=${encodeURIComponent(company)}` : scopeQS()))
       .catch((err) => { if (err instanceof OfflineError) return Object.assign([], { offline: true }); throw err; }),
     pendingSuppliers(company || (isAdmin() ? getScope() : null)),
   ]);
+  if (nav !== navSeq) throw new StaleNavigation(); // a fila (com fotos) pode demorar a ser lida
   return Object.assign([...pending, ...list], { offline: Boolean(list.offline) });
 }
 const offlineNote = (what) => `<div class="ocr-status err" style="margin-bottom:12px">${ic('wifiOff')} Sem internet e sem ${what} salvos neste celular.
@@ -1024,8 +1028,10 @@ function applyCardToForm(form, card) {
 function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = {}) {
   const box = document.getElementById('ocr-status');
   const seq = ++ocrSeq;
-  const job = { photo: dataUrl, saved: false, readDone: !readFields, cropDone: !onCrop };
-  const current = () => seq === ocrSeq && !job.saved && document.body.contains(form);
+  const cropping = Boolean(onCrop && state.me?.features?.card_crop);
+  // submitting: o "Salvar" já leu a foto do formulário; um recorte que chegar depois vai direto ao cadastro salvo.
+  const job = { photo: dataUrl, saved: false, submitting: false, applied: false, readDone: !readFields, cropDone: !cropping };
+  const current = () => seq === ocrSeq && !job.saved && !job.submitting && document.body.contains(form);
   const show = (cls, text) => { if (!current()) return; box.hidden = false; box.className = `ocr-status ${cls}`; box.textContent = text; };
   const parts = [];
   const submit = form.querySelector('button[type=submit]');
@@ -1059,9 +1065,9 @@ function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = 
       .finally(() => { job.readDone = true; if (seq === ocrSeq) submit.disabled = false; update(); })
     : Promise.resolve(null).finally(() => { job.readDone = true; });
   if (!reading) job.readDone = true;
-  job.crop = onCrop
+  job.crop = cropping
     ? cropBusinessCard(dataUrl).catch(() => null).then((cropped) => {
-      if (cropped && current()) { onCrop(cropped); parts.push('A foto foi endireitada e recortada.'); }
+      if (cropped && current()) { onCrop(cropped); job.applied = true; parts.push('A foto foi endireitada e recortada.'); }
       return cropped;
     }).finally(() => { job.cropDone = true; update(); })
     : Promise.resolve(null);
@@ -1075,7 +1081,7 @@ function finishCardJob(job, supplierId, samePhoto) {
   if (!job || job.saved) return;
   job.saved = true;
   const refresh = () => { state.suppliers = null; if (location.hash === `#/suppliers/${supplierId}`) router(); };
-  if (!job.cropDone && samePhoto) {
+  if (!job.applied && samePhoto) {
     job.crop.then(async (cropped) => {
       if (!cropped) return;
       await api(`/api/suppliers/${supplierId}/card-photo`, { method: 'PUT', body: { photo: cropped, photo_thumb: await makeThumb(cropped) }, background: true });
@@ -1204,6 +1210,7 @@ async function viewSupplierForm(id) {
     box.hidden = true;
     if (cardJob && !cardJob.readDone) return; // espera a leitura dos dados do cartão
     if (!form.name.value.trim()) { box.textContent = 'Informe o nome do fornecedor.'; box.hidden = false; return; }
+    if (cardJob) cardJob.submitting = true;
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
     try {
@@ -1237,6 +1244,7 @@ async function viewSupplierForm(id) {
       toast('Sem internet: fornecedor guardado no celular. Ele será enviado quando a conexão voltar.');
       location.hash = '#/suppliers';
     } catch (err) {
+      if (cardJob) cardJob.submitting = false;
       box.textContent = err.message;
       box.hidden = false;
     } finally {
@@ -1270,10 +1278,12 @@ function savingBadge(priceBrl, estimated) {
 async function viewProducts() {
   setChrome({ title: 'Produtos', tab: 'products', fab: true });
   loading();
+  const nav = navSeq;
   const [saved, pending] = await Promise.all([
     api('/api/products' + scopeQS()).catch((err) => { if (err instanceof OfflineError) return Object.assign([], { offline: true }); throw err; }),
     pendingProducts(isAdmin() ? getScope() : null),
   ]);
+  if (nav !== navSeq) return;
   const list = [...pending, ...saved];
   $app.innerHTML = `
     ${saved.offline ? offlineNote('produtos') : ''}
@@ -1514,7 +1524,7 @@ const sameNumbers = (a, b) => {
   return nums(a) === nums(b);
 };
 function similarProducts(name, products, { exclude = null, min = 0.6 } = {}) {
-  return products.filter((p) => p.id !== exclude)
+  return products.filter((p) => exclude == null || p.id !== exclude)
     .map((p) => ({ p, score: nameSimilarity(name, p.name) }))
     .filter((x) => x.score >= min)
     .sort((x, y) => y.score - x.score).slice(0, 3)
@@ -1622,7 +1632,8 @@ async function viewProductForm(id, query) {
     lastPhoto = d;
     if (fromSupplier) {
       const o = offers.find((x) => Number(x.supplier_id) === fromSupplier.id) || offers[0];
-      if (o.newPhotos.length + (o.photos?.length || 0) < 12) o.newPhotos.push(d);
+      if (o.newPhotos.length + (o.photos?.length || 0) >= 12) { toast('Limite de 12 fotos por fornecedor neste produto.'); return; }
+      o.newPhotos.push(d);
       renderOffers();
       toast('Foto adicionada às fotos deste fornecedor.');
     } else {
@@ -1955,17 +1966,21 @@ async function viewProductForm(id, query) {
     const units = parseNum(form.units_per_40hq.value, { thousands: true });
     if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('Unidades por container 40HQ deve ser um número inteiro.');
     const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, notes: form.notes.value, offers: payloadOffers };
-    if (photo !== undefined) body.photo = photo;
-    if (photo) body.photo_thumb = await makeThumb(photo);
-    if (isAdmin() && !editing) body.company = company;
     const btn = form.querySelector('button[type=submit]');
+    if (btn.disabled) return; // segundo toque enquanto o primeiro ainda prepara a foto
     btn.disabled = true;
+    if (photo !== undefined) body.photo = photo;
+    if (photo) body.photo_thumb = await makeThumb(photo).catch(() => null);
+    if (isAdmin() && !editing) body.company = company;
     // Fotos por fornecedor: enviadas uma a uma depois de salvar o produto.
     const syncPhotos = async (productId) => {
       const jobs = [];
+      // Fornecedor que estava na fila e foi enviado com o formulário aberto: usa o id real.
+      const ids = await tempIdMap();
       for (const o of offers) {
-        const sid = Number(o.supplier_id);
-        if (!payloadOffers.some((x) => x.supplier_id === sid)) continue;
+        const formId = Number(o.supplier_id);
+        if (!payloadOffers.some((x) => x.supplier_id === formId)) continue;
+        const sid = ids.get(formId) ?? formId;
         for (const pid of o.delPhotos) jobs.push(() => api(`/api/products/${productId}/photos/${pid}`, { method: 'DELETE' }));
         for (const d of o.newPhotos) jobs.push(async () => api(`/api/products/${productId}/photos`, { method: 'POST', body: { supplier_id: sid, photo: d, photo_thumb: await makeThumb(d) } }));
       }
@@ -2583,6 +2598,7 @@ async function viewModelTest() {
     renderSummary(0);
     let done = 0;
     for (const s of samples) {
+      if (!location.hash.startsWith('#/admin/models')) return; // saiu da tela: para de gastar
       e.target.textContent = `Lendo foto ${done + 1} de ${samples.length}…`;
       let r;
       try { r = await api(`/api/admin/ocr-bench/${s.id}`, { method: 'POST', body: {}, background: true }); } catch (err) { toast(err.message); break; }
@@ -2736,7 +2752,11 @@ async function viewExpenses(query) {
 // Planilha (CSV) que abre no Excel em português: separador ";" e vírgula decimal.
 function exportExpenses(list) {
   const num = (n) => Number(n).toFixed(2).replace('.', ',');
-  const cell = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  // Texto começando com = + - @ seria lido como fórmula pelo Excel: vai com apóstrofo na frente.
+  const cell = (v) => {
+    const t = typeof v === 'string' && /^[=+\-@\t\r]/.test(v) && !/^-?\d/.test(v) ? `'${v}` : String(v ?? '');
+    return `"${t.replace(/"/g, '""')}"`;
+  };
   const rows = [['Data', 'Descrição', 'Categoria', 'Pagamento', 'Moeda', 'Valor', 'Câmbio (R$)', 'Valor em R$']]
     .concat([...list].sort((a, b) => a.spent_on.localeCompare(b.spent_on)).map((e) => [
       e.spent_on.split('-').reverse().join('/'), e.description, catInfo(e.category)[2],
@@ -2764,7 +2784,9 @@ async function viewExpenseForm(id) {
   const editing = id != null;
   setChrome({ title: editing ? 'Editar despesa' : 'Lançar despesa', back: '#/expenses', tab: 'account', form: true });
   loading();
+  const nav = navSeq;
   const [list, rates] = await Promise.all([editing ? api('/api/expenses') : null, expenseRates()]);
+  if (nav !== navSeq) return; // saiu da tela enquanto buscava a cotação
   const e = editing ? list.find((x) => x.id === Number(id)) : null;
   if (editing && !e) throw new Error('Despesa não encontrada.');
   let lastCur = 'CNY';
@@ -2888,11 +2910,19 @@ const INTERP_LANG = {
 // Grava o microfone e devolve WAV 16 kHz mono (formato aceito pela Azure em qualquer celular).
 async function recordToWav(blob) {
   const Ctx = window.AudioContext || window.webkitAudioContext;
+  if (!blob.size) throw new Error('Não captei áudio. Toque, fale e toque de novo.');
   const ctx = new Ctx();
   const data = await blob.arrayBuffer();
-  // Forma com callbacks: funciona também no Safari mais antigo.
-  const decoded = await new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
-  ctx.close?.();
+  // Forma com callbacks: funciona também no Safari mais antigo. O contexto é sempre fechado
+  // (o iPhone só permite poucos abertos).
+  let decoded;
+  try {
+    decoded = await new Promise((resolve, reject) => ctx.decodeAudioData(data, resolve, reject));
+  } catch {
+    throw new Error('Não captei áudio. Toque, fale e toque de novo.');
+  } finally {
+    ctx.close?.().catch?.(() => {});
+  }
   // Mistura os canais e reduz para 16 kHz fazendo a média de cada janela — sem OfflineAudioContext,
   // que no Safari recusa taxas abaixo de 22.050 Hz.
   const rate = 16000;
@@ -2949,24 +2979,37 @@ async function playInterp(dataUrl) {
     interpSource = interpCtx.createBufferSource();
     interpSource.buffer = buffer;
     interpSource.connect(interpCtx.destination);
-    interpSource.start(0);
-    if (interpCtx.state === 'running') return;
+    // Só toca por aqui com o contexto ativo; senão usa o player comum (evita tocar duas vezes).
+    if (interpCtx.state === 'running') { interpSource.start(0); return; }
   }
   // Reserva: player comum.
-  await new Audio(URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }))).play();
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'audio/mpeg' }));
+  const player = new Audio(url);
+  player.addEventListener('ended', () => URL.revokeObjectURL(url), { once: true });
+  await player.play();
 }
+
+// Gravação em andamento do intérprete; parada ao trocar de tela.
+let activeInterpStop = null;
+function stopInterpRecording() { const f = activeInterpStop; activeInterpStop = null; f?.(); }
+window.addEventListener('hashchange', () => { if (!location.hash.startsWith('#/interpreter')) stopInterpRecording(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopInterpRecording(); });
 
 async function viewInterpreter() {
   setChrome({ title: 'Intérprete', tab: 'trip' });
   loading();
-  const credits = await api('/api/credits').catch(() => null);
+  const credits = await api('/api/credits').catch((err) => { if (err instanceof StaleNavigation) throw err; return null; });
   let balance = credits?.balance_seconds ?? 0;
+  stopInterpRecording(); // gravação de uma visita anterior (não deveria sobrar, mas garante)
   let pair = 'pt-zh';
   try { pair = localStorage.getItem('cfb.pair') || 'pt-zh'; } catch { /* sem armazenamento */ }
   if (!INTERP_PAIRS[pair]) pair = 'pt-zh';
   const log = [];
   let recording = null; // { lang, recorder, stream, chunks, timer, started }
+  let starting = false; // pedindo o microfone (evita abrir dois com dois toques)
   let busy = false;
+  const page = navSeq;
+  const here = () => page === navSeq && location.hash.startsWith('#/interpreter');
 
   const enabled = state.me?.features?.interpreter;
   function render() {
@@ -3013,6 +3056,7 @@ async function viewInterpreter() {
   async function toggle(lang) {
     unlockInterpAudio();
     if (recording) { stop(); return; }
+    if (starting) return;
     if (balance <= 0) { toast('Sem créditos do intérprete. Compre minutos para continuar.'); return; }
     if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
       toast('Este navegador não grava áudio. No iPhone, atualize para o iOS 14.5 ou mais novo e use o Safari.');
@@ -3020,18 +3064,25 @@ async function viewInterpreter() {
     }
     let stream;
     setAudioSession('play-and-record');
+    starting = true;
     try {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
     } catch {
       setAudioSession('playback');
       toast('Permita o uso do microfone para usar o intérprete.');
       return;
+    } finally {
+      starting = false;
     }
+    // Saiu da tela enquanto o celular pedia o microfone: fecha na hora.
+    if (!here()) { stream.getTracks().forEach((t) => t.stop()); setAudioSession('playback'); return; }
     const recorder = new MediaRecorder(stream);
     const chunks = [];
     recorder.ondataavailable = (e) => { if (e.data.size) chunks.push(e.data); };
-    recorder.onstop = () => finish(lang, chunks, recorder.mimeType);
+    recorder.onstop = () => { if (!recording?.discard) finish(lang, chunks, recorder.mimeType); else recording = null; };
     recording = { lang, recorder, stream, started: Date.now() };
+    // Ao sair da tela: para o microfone e descarta o áudio (não cobra nem toca em outra tela).
+    activeInterpStop = () => { if (recording) { recording.discard = true; stop(); } };
     recorder.start();
     recording.timer = setInterval(() => {
       const s = Math.floor((Date.now() - recording.started) / 1000);
@@ -3043,6 +3094,7 @@ async function viewInterpreter() {
   }
   function stop() {
     if (!recording) return;
+    activeInterpStop = null;
     clearInterval(recording.timer);
     recording.recorder.stop();
     recording.stream.getTracks().forEach((t) => t.stop());
@@ -3059,6 +3111,7 @@ async function viewInterpreter() {
       const audio = await recordToWav(new Blob(chunks, { type: mime }));
       const r = await api('/api/interpreter', { method: 'POST', body: { from: lang, to, audio }, background: true, timeout: 45_000 });
       balance = r.balance_seconds;
+      if (!here()) return; // tradução chegou depois de o usuário sair: não toca em outra tela
       if (!r.source) toast('Não entendi. Fale mais perto do celular e tente de novo.');
       else {
         log.unshift({ from: lang, to, source: r.source, translated: r.translated, audio: r.audio });
@@ -3068,7 +3121,7 @@ async function viewInterpreter() {
       toast(err.message);
     } finally {
       busy = false;
-      if (location.hash.startsWith('#/interpreter')) render();
+      if (here()) render();
     }
   }
   render();
@@ -3196,11 +3249,14 @@ async function viewAdminCredits() {
     e.preventDefault();
     const minutes = parseInt(document.getElementById('g-min').value, 10);
     if (!minutes) { toast('Informe os minutos.'); return; }
+    const btn = e.target.querySelector('button[type=submit]');
+    if (btn.disabled) return;
+    btn.disabled = true;
     try {
       await api('/api/admin/credits/grant', { method: 'POST', body: { cnpj: document.getElementById('g-company').value, minutes, note: document.getElementById('g-note').value } });
       toast('Créditos lançados.');
       viewAdminCredits();
-    } catch (err) { toast(err.message); }
+    } catch (err) { toast(err.message); btn.disabled = false; }
   });
   document.getElementById('packs').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -3238,7 +3294,7 @@ async function viewOutbox() {
   document.getElementById('send-now').addEventListener('click', async (e) => {
     if (!navigator.onLine) { toast('Ainda sem internet.'); return; }
     e.target.disabled = true;
-    await flushOutbox();
+    await flushOutbox({ manual: true });
     if (location.hash.startsWith('#/outbox')) viewOutbox();
   });
   $app.querySelectorAll('[data-discard]').forEach((b) => b.addEventListener('click', async () => {
@@ -3505,7 +3561,7 @@ async function viewTourism(query) {
   if (perm?.state === 'denied') {
     locError = 'Localização bloqueada para este app. Libere nas configurações do navegador ou escolha a cidade.';
     render();
-  } else locate(false);
+  } else if (perm?.state === 'granted' || tourPos) locate(false); // senão espera o toque em "Usar minha localização"
 }
 
 // Cartão grande em chinês para mostrar ao motorista de táxi/DiDi.
@@ -4136,15 +4192,19 @@ async function viewAccount() {
     if (v) document.getElementById('app-version').textContent = `Versão ${v.slice(6)}`;
   }).catch(() => {});
   document.getElementById('app-update').addEventListener('click', async (e) => {
-    e.currentTarget.disabled = true;
-    e.currentTarget.textContent = 'Atualizando…';
+    const upBtn = e.currentTarget;
+    upBtn.disabled = true;
+    upBtn.textContent = 'Atualizando…';
     try {
       const reg = await navigator.serviceWorker?.getRegistration();
-      await reg?.update().catch(() => {});
+      // Sem internet não apaga nada (o app precisa das telas guardadas para abrir offline).
+      const ok = navigator.onLine && reg ? await reg.update().then(() => true, () => false) : false;
       // Apaga só as telas guardadas (cadastros pendentes e dados salvos continuam).
-      for (const k of await caches.keys()) if (k.startsWith('shell-')) await caches.delete(k);
+      if (ok) for (const k of await caches.keys()) if (k.startsWith('shell-')) await caches.delete(k);
+      else if (!navigator.onLine) toast('Sem internet: a atualização fica para quando a conexão voltar.');
     } catch { /* sem suporte: só recarrega */ }
-    location.reload();
+    if (navigator.onLine) location.reload();
+    else { upBtn.disabled = false; upBtn.textContent = 'Atualizar o app'; }
   });
   renderMyCard();
   renderRateCard();
@@ -4153,8 +4213,11 @@ async function viewAccount() {
   document.getElementById('logout').addEventListener('click', async () => {
     const pending = await outboxAll();
     if (pending.length && !confirm(`Há ${pending.length} cadastro(s) feitos sem internet que ainda não foram enviados. Se sair agora, eles serão perdidos. Sair mesmo assim?`)) return;
+    // Sem internet o servidor não encerra a sessão: não apaga nada e avisa.
+    try { await api('/api/logout', { method: 'POST', body: {}, timeout: 15_000 }); } catch (err) {
+      if (err instanceof OfflineError) { toast('Sem internet: não foi possível sair agora. Tente quando a conexão voltar.'); return; }
+    }
     for (const i of pending) await outboxDelete(i.ref).catch(() => {});
-    await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
     navigator.serviceWorker?.controller?.postMessage('logout'); // apaga dados e fotos salvos offline
     state.me = null;
     state.suppliers = null;
@@ -4228,11 +4291,17 @@ router();
 // Service worker: abre o app na hora e mantém os últimos dados disponíveis sem internet.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {
   // Versão nova do app publicada: recarrega uma vez para usá-la (sem esperar o usuário reabrir).
+  // Só recarrega numa tela sem nada por salvar (listas e detalhes); senão espera o usuário sair dela.
   const hadController = !!navigator.serviceWorker.controller;
   let reloaded = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if (hadController && !reloaded) { reloaded = true; location.reload(); }
-  });
+  const safeToReload = () => !location.hash || location.hash === '#/'
+    || /^#\/(suppliers|products|ranking|outbox|trip|expenses|tourism)(\/\d+)?(\?|$)/.test(location.hash);
+  const reloadWhenSafe = () => {
+    if (reloaded) return;
+    if (safeToReload()) { reloaded = true; location.reload(); return; }
+    window.addEventListener('hashchange', reloadWhenSafe, { once: true });
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) reloadWhenSafe(); });
   window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').then((reg) => {
     // App instalado costuma ficar aberto por dias: procura versão nova sempre que volta à tela.
     document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
