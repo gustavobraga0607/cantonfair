@@ -4,9 +4,12 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { estimateBrl, buildRanking } = require('../src/calc');
 
-test('preço estimado = US$ × (1 + %) × câmbio', () => {
-  assert.equal(estimateBrl(10, 80, 5), 90);
-  assert.equal(estimateBrl(10, 0, 5), 50);
+test('preço estimado = (preço × câmbio da moeda + frete US$ × câmbio do dólar) × (1 + %)', () => {
+  const rates = { USD: 5, CNY: 0.7 };
+  assert.equal(estimateBrl(10, 'USD', 80, rates), 90);
+  assert.equal(estimateBrl(10, 'USD', 0, rates), 50);
+  assert.equal(estimateBrl(100, 'CNY', 0, rates), 70);
+  assert.equal(Math.round(estimateBrl(100, 'CNY', 50, rates, 2) * 100) / 100, 120, '(70 + 2 × 5) × 1,5');
 });
 
 test('ranking escolhe o fornecedor mais barato e ordena pela economia', () => {
@@ -16,12 +19,12 @@ test('ranking escolhe o fornecedor mais barato e ordena pela economia', () => {
     { id: 3, name: 'Sem preço BR', price_brl: null },
   ];
   const offers = [
-    { product_id: 1, supplier_id: 10, supplier_name: 'A', price_usd: 10, nationalization_pct: 100 }, // 100
-    { product_id: 1, supplier_id: 11, supplier_name: 'B', price_usd: 5, nationalization_pct: 100 },  // 50
-    { product_id: 2, supplier_id: 10, supplier_name: 'A', price_usd: 4, nationalization_pct: 50 },   // 30
-    { product_id: 3, supplier_id: 10, supplier_name: 'A', price_usd: 1, nationalization_pct: 0 },
+    { product_id: 1, supplier_id: 10, supplier_name: 'A', price: 10, nationalization_pct: 100 }, // 100
+    { product_id: 1, supplier_id: 11, supplier_name: 'B', price: 5, nationalization_pct: 100 },  // 50
+    { product_id: 2, supplier_id: 10, supplier_name: 'A', price: 4, nationalization_pct: 50 },   // 30
+    { product_id: 3, supplier_id: 10, supplier_name: 'A', price: 1, nationalization_pct: 0 },
   ];
-  const r = buildRanking(products, offers, 5);
+  const r = buildRanking(products, offers.map((o) => ({ ...o, currency: 'USD' })), { USD: 5, CNY: 0.7 });
   assert.deepEqual(r.map((x) => x.product_id), [1, 2, 3]);
   assert.equal(r[0].best.supplier_name, 'B');
   assert.equal(r[0].saving_pct, 50);
@@ -41,15 +44,15 @@ test('frete por unidade entra no estimado, exceto quando o Incoterm já inclui o
   assert.equal(offerFreight('CIF', 0.35), 0);
   assert.equal(offerFreight('ddp', 0.35), 0);
   // (10 + 0,5) × 1,8 × 5 = 94,5
-  assert.equal(Math.round(estimateBrl(10, 80, 5, 0.5) * 100) / 100, 94.5);
+  assert.equal(Math.round(estimateBrl(10, 'USD', 80, { USD: 5, CNY: 0.7 }, 0.5) * 100) / 100, 94.5);
 
   // ranking: FOB mais barato no papel perde para CIF quando o frete é somado
   const products = [{ id: 1, name: 'P', price_brl: 100, units_per_40hq: 1000 }];
   const offers = [
-    { product_id: 1, supplier_id: 1, supplier_name: 'FOB', incoterm: 'FOB', price_usd: 10, nationalization_pct: 0 },
-    { product_id: 1, supplier_id: 2, supplier_name: 'CIF', incoterm: 'CIF', price_usd: 11, nationalization_pct: 0 },
+    { product_id: 1, supplier_id: 1, supplier_name: 'FOB', incoterm: 'FOB', price: 10, currency: 'USD', nationalization_pct: 0 },
+    { product_id: 1, supplier_id: 2, supplier_name: 'CIF', incoterm: 'CIF', price: 11, currency: 'USD', nationalization_pct: 0 },
   ];
-  const [r] = buildRanking(products, offers, 5, 3000); // frete 3/un.
+  const [r] = buildRanking(products, offers, { USD: 5, CNY: 0.7 }, 3000); // frete 3/un.
   assert.equal(r.best.supplier_name, 'CIF');
   assert.equal(r.best.estimated_brl, 55);
   assert.equal(r.options[1].estimated_brl, 65);

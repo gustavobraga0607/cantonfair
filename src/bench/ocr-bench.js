@@ -31,16 +31,21 @@ function scoreCard(exp, out) {
 function scoreProducts(exp, out) {
   const list = out.products || [];
   const checks = { 'quantidade de produtos': () => list.length === exp.count };
+  // Preço esperado com a moeda: em dólar (price_usd, valor exato) ou em yuan (price_note = começo do valor, ex.: "16").
+  const priceOk = (e, p) => {
+    if (e.price_usd != null) return p.price === e.price_usd && p.currency === 'USD';
+    if (e.price_note) return p.currency === 'CNY' && String(p.price ?? '').startsWith(String(e.price_note).replace(/[^\d.]/g, ''));
+    return p.price == null;
+  };
   const used = new Set();
   exp.items.forEach((e, i) => {
-    let j = list.findIndex((p, k) => !used.has(k) && e.price_usd != null && p.price_usd === e.price_usd);
+    let j = list.findIndex((p, k) => !used.has(k) && (e.price_usd != null || e.price_note) && priceOk(e, p));
     if (j < 0) j = list.findIndex((p, k) => !used.has(k) && k >= i);
     if (j >= 0) used.add(j);
     const p = j >= 0 ? list[j] : {};
     const n = `item ${i + 1}`;
     checks[`${n}: nome em português`] = () => has(p.name, e.name);
-    checks[`${n}: preço US$`] = () => (e.price_usd == null ? p.price_usd == null : p.price_usd === e.price_usd);
-    if (e.price_note) checks[`${n}: preço em yuan nas observações`] = () => String(p.price_note || '').includes(e.price_note);
+    checks[`${n}: preço e moeda`] = () => priceOk(e, p);
     checks[`${n}: MOQ`] = () => p.moq === e.moq;
     if (e.incoterm) checks[`${n}: Incoterm`] = () => p.incoterm === e.incoterm;
     if (e.units_per_40hq) checks[`${n}: unidades/40HQ`] = () => p.units_per_40hq === e.units_per_40hq;

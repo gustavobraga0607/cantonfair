@@ -938,3 +938,44 @@ test('várias fotos por produto, separadas por fornecedor', async (t) => {
   assert.equal(await images(), 0);
   assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM offer_photos')).n), 0);
 });
+
+test('preços em RMB (padrão) ou US$ e câmbio do yuan', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  let r = await a('PUT', '/api/settings', { exchange_rate: 5, cny_rate: 0.7 });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.company.cny_rate, 0.7);
+  assert.equal(r.body.company.rate_mode, 'manual');
+  assert.equal((await a('PUT', '/api/settings', { exchange_rate: 5, cny_rate: 0 })).status, 400);
+
+  const s1 = (await a('POST', '/api/suppliers', { name: 'Yuan' })).body;
+  const s2 = (await a('POST', '/api/suppliers', { name: 'Dólar' })).body;
+  const s3 = (await a('POST', '/api/suppliers', { name: 'Antigo' })).body;
+  r = await a('POST', '/api/products', { name: 'Copo', price_brl: 200, offers: [
+    { supplier_id: s1.id, price: 100, nationalization_pct: 50 },                    // moeda padrão: RMB → 100 × 0,7 × 1,5 = 105
+    { supplier_id: s2.id, price: 10, currency: 'USD', nationalization_pct: 50 },    // 10 × 5 × 1,5 = 75
+    { supplier_id: s3.id, price_usd: 12, nationalization_pct: 0 },                  // cadastro antigo (celular): US$ → 60
+  ] });
+  assert.equal(r.status, 201);
+  const byName = Object.fromEntries(r.body.offers.map((o) => [o.supplier_name, o]));
+  assert.equal(byName.Yuan.currency, 'CNY');
+  assert.equal(byName.Yuan.estimated_brl, 105);
+  assert.equal(byName['Dólar'].currency, 'USD');
+  assert.equal(byName['Dólar'].estimated_brl, 75);
+  assert.equal(byName.Antigo.currency, 'USD');
+  assert.equal(byName.Antigo.estimated_brl, 60);
+  assert.equal(r.body.offers[0].supplier_name, 'Antigo', 'mais barato primeiro');
+  assert.equal(r.body.cny_rate, 0.7);
+  assert.equal((await a('POST', '/api/products', { name: 'X', offers: [{ supplier_id: s1.id, price: 1, currency: 'EUR' }] })).status, 400);
+
+  // ranking e ficha do fornecedor usam a mesma conta
+  const rank = (await a('GET', '/api/ranking')).body;
+  assert.equal(rank.cny_rate, 0.7);
+  assert.equal(rank.items[0].best.estimated_brl, 60);
+  const sup = (await a('GET', `/api/suppliers/${s1.id}`)).body;
+  assert.equal(sup.products[0].currency, 'CNY');
+  assert.equal(sup.products[0].price, 100);
+  assert.equal(sup.products[0].estimated_brl, 105);
+});

@@ -163,7 +163,11 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   // ---------- consultas ----------
 
-  const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate, rate_mode, rate_source, rate_updated_at FROM companies WHERE cnpj = ?', [cnpj]);
+  const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate, cny_rate, rate_mode, rate_source, rate_updated_at FROM companies WHERE cnpj = ?', [cnpj]);
+  // Câmbios da empresa: R$ por ¥ (preços em RMB) e R$ por US$ (preços em dólar e frete).
+  // Sem cotação do yuan ainda: estimada pelo dólar (1 US$ ≈ 7,2 ¥) até a próxima atualização.
+  const ratesOf = (c) => ({ USD: Number(c.exchange_rate), CNY: Number(c.cny_rate) || round4(Number(c.exchange_rate) / 7.2) });
+  const CURRENCIES_OFFER = ['CNY', 'USD'];
 
   // ---------- permissões ----------
   // Usuário comum: enxerga apenas o próprio CNPJ.
@@ -217,7 +221,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   async function loadProduct(cnpj, id) {
     const p = await db.get(`
-      SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate FROM products p
+      SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate, c.cny_rate FROM products p
       LEFT JOIN users u ON u.id = p.updated_by
       JOIN companies c ON c.cnpj = p.cnpj
       WHERE p.id = ?${companyFilter('p', cnpj)}`, [toId(id), ...companyParam(cnpj)]);
@@ -233,13 +237,15 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   async function offersFor(cnpj, productIds) {
     if (!productIds.length) return [];
-    return db.all(`
+    const rows = await db.all(`
       SELECT o.*, s.name AS supplier_name, s.booth AS supplier_booth
       FROM offers o
       JOIN suppliers s ON s.id = o.supplier_id
       JOIN products p ON p.id = o.product_id
       WHERE o.product_id IN (${productIds.map(() => '?').join(',')})${companyFilter('p', cnpj)}
     `, [...productIds, ...companyParam(cnpj)]);
+    // A coluna price_usd guarda o preço na moeda da oferta (currency).
+    return rows.map(({ price_usd: price, ...o }) => ({ ...o, price: Number(price), currency: o.currency || 'USD' }));
   }
 
   // Frete internacional do container 40HQ (US$), definido pelo administrador.
@@ -252,7 +258,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return freightCache.value;
   }
 
-  function productOut(p, offers, rate, freight = 0, photos = null) {
+  function productOut(p, offers, rates, freight = 0, photos = null) {
     const perUnit = freightPerUnit(freight, p.units_per_40hq);
     const opts = offers
       .map((o) => ({ ...o, freight: offerFreight(o.incoterm, perUnit) }))
@@ -261,19 +267,20 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         supplier_id: o.supplier_id,
         supplier_name: o.supplier_name,
         supplier_booth: o.supplier_booth,
-        price_usd: o.price_usd,
+        price: o.price,
+        currency: o.currency,
         moq: o.moq,
         incoterm: o.incoterm,
         nationalization_pct: o.nationalization_pct,
         freight_usd: round4(o.freight),
-        estimated_brl: round2(estimateBrl(o.price_usd, o.nationalization_pct, rate, o.freight)),
+        estimated_brl: round2(estimateBrl(o.price, o.currency, o.nationalization_pct, rates, o.freight)),
         ...(photos ? { photos: photos.filter((ph) => ph.supplier_id === o.supplier_id).map((ph) => ({ id: ph.id, url: photoUrl(ph.image_id) })) } : {}),
       }))
       .sort((a, b) => a.estimated_brl - b.estimated_brl);
     return {
       id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? null,
       photo: photoUrl(p.photo), list_photo: photoUrl(p.list_photo ?? p.photo), offers: opts,
-      company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rate,
+      company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rates.USD, cny_rate: rates.CNY,
       created_at: p.created_at, updated_at: p.updated_at, updated_by_name: p.updated_by_name ?? null,
     };
   }
@@ -281,7 +288,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   async function productResponse(cnpj, id) {
     const p = await loadProduct(cnpj, id);
     const photos = await db.all('SELECT id, supplier_id, image_id FROM offer_photos WHERE product_id = ? ORDER BY id', [p.id]);
-    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate, await freight40hq(), photos);
+    return productOut(p, await offersFor(p.cnpj, [p.id]), ratesOf(p), await freight40hq(), photos);
   }
 
   // Normaliza a lista de ofertas enviada pelo cliente e garante que os
@@ -296,9 +303,14 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       seen.add(supplierId);
       const incoterm = str(o.incoterm, 10).toUpperCase() || null;
       if (incoterm && !INCOTERMS.includes(incoterm)) throw new HttpError(400, `Incoterm inválido: ${incoterm}.`);
+      // Preço em RMB (padrão) ou US$. Cadastros antigos guardados no celular ainda mandam price_usd.
+      const legacy = o.price === undefined && o.price_usd !== undefined;
+      const currency = legacy ? 'USD' : String(o.currency || 'CNY').toUpperCase();
+      if (!CURRENCIES_OFFER.includes(currency)) throw new HttpError(400, `Moeda inválida na oferta ${i + 1}.`);
       out.push({
         supplier_id: supplierId,
-        price_usd: num(o.price_usd, `preço em US$ da oferta ${i + 1}`, { required: true }),
+        price: num(legacy ? o.price_usd : o.price, `preço da oferta ${i + 1}`, { required: true }),
+        currency,
         moq: num(o.moq, `MOQ da oferta ${i + 1}`, { integer: true }),
         incoterm,
         nationalization_pct: num(o.nationalization_pct, `% de nacionalização da oferta ${i + 1}`) ?? 0,
@@ -316,9 +328,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   async function replaceOffers(q, productId, offers) {
     await q.run('DELETE FROM offers WHERE product_id = ?', [productId]);
     if (!offers.length) return;
-    await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, moq, incoterm, nationalization_pct)
-                 VALUES ${offers.map(() => '(?, ?, ?, ?, ?, ?)').join(', ')}`,
-      offers.flatMap((o) => [productId, o.supplier_id, o.price_usd, o.moq, o.incoterm, o.nationalization_pct]));
+    await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, currency, moq, incoterm, nationalization_pct)
+                 VALUES ${offers.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+      offers.flatMap((o) => [productId, o.supplier_id, o.price, o.currency, o.moq, o.incoterm, o.nationalization_pct]));
   }
 
   // ---------- rotas ----------
@@ -357,7 +369,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const [company, members, companies, fxStatus, settings] = await Promise.all([
       getCompany(user.cnpj),
       db.all('SELECT name, email FROM users WHERE cnpj = ? ORDER BY lower(name)', [user.cnpj]),
-      isAdmin(user) ? db.all('SELECT cnpj, name, exchange_rate FROM companies ORDER BY lower(coalesce(name, cnpj))') : undefined,
+      isAdmin(user) ? db.all('SELECT cnpj, name, exchange_rate, cny_rate FROM companies ORDER BY lower(coalesce(name, cnpj))') : undefined,
       fx ? fx.read() : null,
       getSettings(),
     ]);
@@ -368,12 +380,12 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       },
       company: {
         cnpj: company.cnpj, cnpj_formatted: cnpjUtil.format(company.cnpj),
-        name: company.name, exchange_rate: company.exchange_rate, members,
+        name: company.name, exchange_rate: company.exchange_rate, cny_rate: ratesOf(company).CNY, cny_estimated: !company.cny_rate, members,
         rate_mode: company.rate_mode, rate_source: company.rate_source, rate_updated_at: company.rate_updated_at,
       },
       fx: fxStatus,
       settings,
-      companies: companies?.map((c) => ({ ...c, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
+      companies: companies?.map((c) => ({ ...c, cny_rate: ratesOf(c).CNY, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
       features: { card_ocr: Boolean(readCard), product_ocr: Boolean(readProducts), interpreter: Boolean(interpret), payments: Boolean(asaas) },
     };
   }
@@ -422,9 +434,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     let userId;
     try {
       userId = await db.tx(async (q) => {
-        await q.run(`INSERT INTO companies (cnpj, name, exchange_rate, rate_source, rate_updated_at, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (cnpj) DO NOTHING`,
-          [cnpj, companyName, quote?.rate ?? 5.5, quote?.rate ? quote.source : null, quote?.rate ? quote.quoted_at : null, now()]);
+        await q.run(`INSERT INTO companies (cnpj, name, exchange_rate, cny_rate, rate_source, rate_updated_at, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (cnpj) DO NOTHING`,
+          [cnpj, companyName, quote?.rate ?? 5.5, quote?.cny_rate ?? null, quote?.rate ? quote.source : null, quote?.rate ? quote.quoted_at : null, now()]);
         const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, role, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
           [name, email, passwordHash, cnpj, role, now()]);
         return row.id;
@@ -468,17 +480,20 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       if (!fx) throw new HttpError(400, 'Cotação automática desativada neste servidor.');
       const q = await fx.ensureFresh();
       if (q.rate) {
-        await db.run(`UPDATE companies SET rate_mode = 'auto', exchange_rate = ?, rate_source = ?, rate_updated_at = ? WHERE cnpj = ?`,
-          [q.rate, q.source, q.quoted_at, user.cnpj]);
+        await db.run(`UPDATE companies SET rate_mode = 'auto', exchange_rate = ?, cny_rate = COALESCE(?, cny_rate), rate_source = ?, rate_updated_at = ? WHERE cnpj = ?`,
+          [q.rate, q.cny_rate ?? null, q.source, q.quoted_at, user.cnpj]);
       } else {
         await db.run(`UPDATE companies SET rate_mode = 'auto' WHERE cnpj = ?`, [user.cnpj]);
       }
       return meOut(user);
     }
-    const rate = num(body.exchange_rate, 'Câmbio', { required: true });
-    if (rate <= 0 || rate > 100) throw new HttpError(400, 'Câmbio inválido.');
-    await db.run(`UPDATE companies SET exchange_rate = ?, rate_mode = 'manual', rate_source = 'Manual', rate_updated_at = ? WHERE cnpj = ?`,
-      [rate, now(), user.cnpj]);
+    const company = await getCompany(user.cnpj);
+    const rate = body.exchange_rate === undefined ? company.exchange_rate : num(body.exchange_rate, 'Câmbio do dólar', { required: true });
+    if (rate <= 0 || rate > 100) throw new HttpError(400, 'Câmbio do dólar inválido.');
+    const cny = body.cny_rate === undefined ? ratesOf(company).CNY : num(body.cny_rate, 'Câmbio do yuan', { required: true });
+    if (cny <= 0 || cny > 20) throw new HttpError(400, 'Câmbio do yuan inválido.');
+    await db.run(`UPDATE companies SET exchange_rate = ?, cny_rate = ?, rate_mode = 'manual', rate_source = 'Manual', rate_updated_at = ? WHERE cnpj = ?`,
+      [rate, cny, now(), user.cnpj]);
     return meOut(user);
   });
 
@@ -636,12 +651,13 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const company = await getCompany(s.cnpj);
     const freight = await freight40hq();
     const products = (await db.all(`
-      SELECT p.id, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
+      SELECT p.id, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, o.price_usd AS price, o.currency, o.moq, o.incoterm, o.nationalization_pct
       FROM offers o JOIN products p ON p.id = o.product_id
       WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
       .map((r) => ({
         ...r, photo: photoUrl(r.photo),
-        estimated_brl: round2(estimateBrl(r.price_usd, r.nationalization_pct, company.exchange_rate,
+        price: Number(r.price), currency: r.currency || 'USD',
+        estimated_brl: round2(estimateBrl(Number(r.price), r.currency || 'USD', r.nationalization_pct, ratesOf(company),
           offerFreight(r.incoterm, freightPerUnit(freight, r.units_per_40hq)))),
       }));
     return { ...supplierOut(s), products };
@@ -800,14 +816,14 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       return rows.map((r) => ({ id: r.id, name: r.name, company_cnpj: r.cnpj, offer_count: Number(r.offer_count) }));
     }
     const products = await db.all(`
-      SELECT p.*, ${listPhotoSql('p')} AS list_photo, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate
+      SELECT p.*, ${listPhotoSql('p')} AS list_photo, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate, c.cny_rate
       FROM products p LEFT JOIN users u ON u.id = p.updated_by
       JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));
     const freight = await freight40hq();
     const byProduct = Map.groupBy(offers, (o) => o.product_id);
-    return products.map((p) => productOut(p, byProduct.get(p.id) || [], p.exchange_rate, freight));
+    return products.map((p) => productOut(p, byProduct.get(p.id) || [], ratesOf(p), freight));
   });
 
   route('GET', '/api/products/:id', ({ user, params }) => productResponse(accessCnpj(user), params.id));
@@ -993,11 +1009,13 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       if (q) cnyCache = { ...q, at: Date.now() };
     }
     const usd = Number(company?.exchange_rate) || null;
+    // Câmbio manual da empresa vale também para as despesas; senão, a cotação do dia.
+    const manual = company?.rate_mode === 'manual' && company.cny_rate;
     return {
       USD: usd, BRL: 1,
       // Sem cotação do yuan: estimativa pelo dólar (1 US$ ≈ 7,2 ¥), avisada na tela.
-      CNY: cnyCache?.rate ?? (usd ? Math.round((usd / 7.2) * 10000) / 10000 : null),
-      cny_source: cnyCache ? cnyCache.source : 'estimado pelo dólar',
+      CNY: manual ? Number(company.cny_rate) : cnyCache?.rate ?? (company?.cny_rate ? Number(company.cny_rate) : usd ? round4(usd / 7.2) : null),
+      cny_source: manual ? 'câmbio manual da empresa' : cnyCache ? cnyCache.source : company?.cny_rate ? 'última cotação' : 'estimado pelo dólar',
     };
   });
 
@@ -1125,7 +1143,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   route('GET', '/api/ranking', async ({ user, query }) => {
     const cnpj = listCnpj(user, query);
     const products = await db.all(`
-      SELECT p.id, p.cnpj, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, c.name AS company_name, c.exchange_rate
+      SELECT p.id, p.cnpj, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, c.name AS company_name, c.exchange_rate, c.cny_rate
       FROM products p JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)}`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));
@@ -1140,7 +1158,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const items = [];
     for (const list of byCompany.values()) {
       const ids = new Set(list.map((p) => p.id));
-      const ranked = buildRanking(list, offers.filter((o) => ids.has(o.product_id)), list[0].exchange_rate, freight);
+      const ranked = buildRanking(list, offers.filter((o) => ids.has(o.product_id)), ratesOf(list[0]), freight);
       const meta = new Map(list.map((p) => [p.id, p]));
       for (const r of ranked) {
         items.push({ ...r, photo: photoUrl(r.photo), company_cnpj: meta.get(r.product_id).cnpj, company_name: meta.get(r.product_id).company_name });
@@ -1175,6 +1193,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const own = (cnpj && await getCompany(cnpj)) || await getCompany(user.cnpj);
     return {
       exchange_rate: own.exchange_rate,
+      cny_rate: ratesOf(own).CNY,
       company: cnpj ? { cnpj, name: own.name } : null,
       items,
       suppliers: supplierRanking,

@@ -11,7 +11,7 @@ const SCHEMA = `
 CREATE TABLE IF NOT EXISTS companies (
   cnpj          TEXT PRIMARY KEY,
   name          TEXT,
-  exchange_rate {{REAL}} NOT NULL DEFAULT 5.5,   -- R$ por US$ usado nas estimativas
+  exchange_rate {{REAL}} NOT NULL DEFAULT 5.5,   -- R$ por US$ (preços em dólar e frete)
   rate_mode     TEXT NOT NULL DEFAULT 'auto',   -- 'auto' (cotação do dia) | 'manual'
   rate_source   TEXT,                           -- de onde veio o câmbio atual
   rate_updated_at TEXT,
@@ -208,6 +208,10 @@ const ADDED_COLUMNS = [
   ['companies', 'rate_mode', "TEXT NOT NULL DEFAULT 'auto'"],
   ['companies', 'rate_source', 'TEXT'],
   ['companies', 'rate_updated_at', 'TEXT'],
+  // Câmbio do yuan (R$ por ¥), usado nos preços em RMB.
+  ['companies', 'cny_rate', '{{REAL}}'],
+  // Moeda do preço da oferta (a coluna price_usd guarda o preço nessa moeda). Ofertas antigas eram em US$.
+  ['offers', 'currency', "TEXT NOT NULL DEFAULT 'USD'"],
   ['suppliers', 'contact_name', 'TEXT'],
   ['suppliers', 'phone', 'TEXT'],
   ['suppliers', 'phone_whatsapp', 'INTEGER NOT NULL DEFAULT 0'],

@@ -576,3 +576,11 @@ body.map-mode main { display: none; }
 .offer-photo-add.busy { pointer-events: none; opacity: .7; }
 .offer .offer-photos-label { margin-top: 12px; font-size: .85rem; font-weight: 600; }
 .offer .offer-photos { margin-top: 6px; }
+
+/* toque longo e menu de ações */
+#list .item[data-product] { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; transition: transform .15s, background-color .15s; }
+#list .item.pressing { transform: scale(.98); background: var(--neutral-bg); }
+.sheet-backdrop { position: fixed; inset: 0; z-index: 60; background: rgb(0 0 0 / .45); display: flex; align-items: flex-end; justify-content: center; }
+.sheet { background: var(--surface); width: 100%; max-width: 520px; border-radius: 16px 16px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
+  display: grid; gap: 8px; }
+.sheet-title { font-weight: 600; text-align: center; padding: 4px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

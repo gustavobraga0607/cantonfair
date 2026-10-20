@@ -58,10 +58,15 @@ const RETRY_MS = 5 * 60_000;      // após falha, espera 5 min para tentar de no
 
 // Guarda a última cotação no banco (compartilhada entre as instâncias da Vercel)
 // e aplica o valor às empresas em modo automático.
-function createFxService({ db, fetchQuote = fetchUsdBrl, now = () => Date.now() }) {
+// fetchCnyQuote: cotação do yuan (R$ por ¥), buscada junto com a do dólar.
+function createFxService({ db, fetchQuote = fetchUsdBrl, fetchCnyQuote = null, now = () => Date.now() }) {
   let inflight = null;
 
-  const read = () => db.get('SELECT * FROM fx_quotes WHERE pair = ?', ['USD-BRL']);
+  const read = async () => {
+    const row = await db.get('SELECT * FROM fx_quotes WHERE pair = ?', ['USD-BRL']);
+    const cny = await db.get('SELECT rate FROM fx_quotes WHERE pair = ?', ['CNY-BRL']);
+    return row ? { ...row, cny_rate: cny?.rate ?? null } : row;
+  };
 
   async function refresh() {
     const t = new Date(now()).toISOString();
@@ -74,6 +79,13 @@ function createFxService({ db, fetchQuote = fetchUsdBrl, now = () => Date.now() 
         [q.rate, q.source, q.quoted_at, t]);
       await db.run(`UPDATE companies SET exchange_rate = ?, rate_source = ?, rate_updated_at = ? WHERE rate_mode = 'auto'`,
         [q.rate, q.source, q.quoted_at]);
+      const c = fetchCnyQuote ? await fetchCnyQuote().catch(() => null) : null;
+      if (c?.rate) {
+        await db.run(`INSERT INTO fx_quotes (pair, rate, source, quoted_at, fetched_at) VALUES ('CNY-BRL', ?, ?, ?, ?)
+                      ON CONFLICT (pair) DO UPDATE SET rate = excluded.rate, source = excluded.source,
+                        quoted_at = excluded.quoted_at, fetched_at = excluded.fetched_at`, [c.rate, c.source, t, t]);
+        await db.run(`UPDATE companies SET cny_rate = ? WHERE rate_mode = 'auto'`, [c.rate]);
+      }
     } catch (err) {
       console.warn('Cotação do dólar indisponível:', err.message);
       await db.run(`INSERT INTO fx_quotes (pair, error, error_at) VALUES ('USD-BRL', ?, ?)
@@ -99,6 +111,7 @@ function createFxService({ db, fetchQuote = fetchUsdBrl, now = () => Date.now() 
     return {
       ok: Boolean(row?.rate) && !failed,
       rate: row?.rate ?? null,
+      cny_rate: row?.cny_rate ?? null,
       source: row?.source ?? null,
       quoted_at: row?.quoted_at ?? null,
       fetched_at: row?.fetched_at ?? null,

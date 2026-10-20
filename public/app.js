@@ -23,7 +23,15 @@ const parseNum = (v, { thousands = false } = {}) => {
 };
 // Estimado no Brasil (R$) = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio.
 // Arredonda para centavos igual ao servidor, para o valor do formulário bater com o salvo.
-const estimate = (priceUsd, nat, rate, freight = 0) => Math.round((priceUsd + (freight || 0)) * (1 + (nat || 0) / 100) * rate * 100) / 100;
+// Preço do fornecedor em RMB (padrão) ou US$; frete por unidade sempre em US$.
+// rates = { CNY: R$ por ¥, USD: R$ por US$ }.
+const estimate = (price, currency, nat, rates, freightUsd = 0) => Math.round(
+  (price * (currency === 'USD' ? rates.USD : rates.CNY) + (freightUsd || 0) * rates.USD) * (1 + (nat || 0) / 100) * 100) / 100;
+const ratesOf = (x) => ({ USD: Number(x.exchange_rate), CNY: Number(x.cny_rate) || Number(x.exchange_rate) / 7.2 });
+const CUR_LABEL = { CNY: '¥', USD: 'US$' };
+const priceIn = (n, cur) => (n == null ? '—' : `${CUR_LABEL[cur] || '¥'} ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`);
+const curSelect = (cur) => `<select data-k="currency" class="cur-select" aria-label="Moeda">
+  <option value="CNY"${cur === 'USD' ? '' : ' selected'}>¥ RMB (yuan)</option><option value="USD"${cur === 'USD' ? ' selected' : ''}>US$ (dólar)</option></select>`;
 // Incoterms em que o preço já inclui o frete internacional (não soma o frete de novo).
 const FREIGHT_INCLUDED = ['CFR', 'CIF', 'CPT', 'CIP', 'DAP', 'DPU', 'DDP'];
 const offerFreight = (incoterm, perUnit) => (FREIGHT_INCLUDED.includes(String(incoterm || '').toUpperCase()) ? 0 : perUnit || 0);
@@ -83,7 +91,8 @@ const ICON_PATHS = {
 };
 const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
 const FLAG_US = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Estados Unidos"><rect width="30" height="20" fill="#fff"/><path d="M0 0h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V7.7H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V20H0z" fill="#B22234"/><rect width="12" height="10.77" fill="#3C3B6E"/></svg>';
-const FORMULA = 'Estimado = (US$ + frete por unidade) × (1 + % nacionalização) × câmbio';
+const FORMULA = 'Estimado = (preço × câmbio da moeda + frete por unidade × câmbio do dólar) × (1 + % nacionalização)';
+const ratesText = (x) => `¥1 = R$ ${fmtRate(ratesOf(x).CNY)} · US$1 = R$ ${fmtRate(ratesOf(x).USD)}`;
 const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
 function formatCnpj(v) {
@@ -227,7 +236,7 @@ async function createOrQueue(kind, body, label) {
 async function addOfferToProduct(productId, offer, { units, background = false } = {}) {
   const p = await api(`/api/products/${productId}`, { background: true, fresh: true, timeout: 25_000 });
   const offers = p.offers.filter((o) => o.supplier_id !== offer.supplier_id).map((o) => ({
-    supplier_id: o.supplier_id, price_usd: o.price_usd, moq: o.moq, incoterm: o.incoterm, nationalization_pct: o.nationalization_pct,
+    supplier_id: o.supplier_id, price: o.price, currency: o.currency, moq: o.moq, incoterm: o.incoterm, nationalization_pct: o.nationalization_pct,
   }));
   offers.push(offer);
   return api(`/api/products/${productId}`, {
@@ -473,7 +482,7 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   document.querySelectorAll('.tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.tab === tab));
   const chip = document.getElementById('rate-chip');
   chip.innerHTML = state.me
-    ? `${fxFailing() ? ic('alert') + ' ' : ''}<span class="rate-long">US$1 = </span>${brl(state.me.company.exchange_rate)}${state.me.company.rate_mode === 'manual' ? ' <small>manual</small>' : ''}`
+    ? `${fxFailing() ? ic('alert') + ' ' : ''}¥1 = R$${fmtRate(ratesOf(state.me.company).CNY)}${state.me.company.rate_mode === 'manual' ? ' <small>manual</small>' : ''}`
     : '';
   chip.classList.toggle('warn', fxFailing());
   chip.title = fxFailing() ? 'Cotação automática indisponível — toque para ajustar' : 'Câmbio usado nas estimativas — toque para ajustar';
@@ -727,7 +736,7 @@ async function viewSupplier(id) {
         ${thumbImg(p.photo)}
         <div class="item-body">
           <div class="item-title">${esc(p.name)}</div>
-          <div class="item-sub">${usd(p.price_usd)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
+          <div class="item-sub">${priceIn(p.price, p.currency)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
         </div>
         <div class="item-side"><div>${brl(p.estimated_brl)}</div><div class="item-sub">estimado</div></div>
       </a>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
@@ -1023,7 +1032,7 @@ async function viewProducts() {
         }
         const b = bestOffer(p);
         return `
-        <a class="item" href="#/products/${p.id}">
+        <a class="item" href="#/products/${p.id}" data-product="${p.id}">
           ${thumbImg(p.list_photo || p.photo)}
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
@@ -1041,6 +1050,75 @@ async function viewProducts() {
   render();
   bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
+  // Pressionar e segurar um produto: opção de excluir.
+  onLongPress(document.getElementById('list'), '[data-product]', (el) => {
+    const p = list.find((x) => x.id === Number(el.dataset.product));
+    if (!p) return;
+    actionSheet(p.name, [{ label: 'Excluir produto', danger: true, run: async () => {
+      if (!confirm(`Excluir "${p.name}"? As ofertas e as fotos dele também serão apagadas.`)) return;
+      try {
+        await api(`/api/products/${p.id}`, { method: 'DELETE' });
+        list.splice(list.indexOf(p), 1);
+        render(document.getElementById('q').value);
+        toast('Produto excluído.');
+      } catch (err) { toast(err.message); }
+    } }]);
+  });
+}
+
+// Toque longo (≈0,6 s) num item da lista. O toque curto continua abrindo o item normalmente.
+function onLongPress(container, selector, handler) {
+  let timer = null;
+  let start = null;
+  let fired = false;
+  const cancel = () => { clearTimeout(timer); timer = null; };
+  container.addEventListener('pointerdown', (e) => {
+    const el = e.target.closest(selector);
+    if (!el || (e.pointerType === 'mouse' && e.button !== 0)) return;
+    fired = false;
+    start = { x: e.clientX, y: e.clientY };
+    el.classList.add('pressing');
+    timer = setTimeout(() => {
+      timer = null;
+      fired = true;
+      el.classList.remove('pressing');
+      navigator.vibrate?.(30);
+      handler(el);
+    }, 600);
+  });
+  container.addEventListener('pointermove', (e) => {
+    if (timer && start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) {
+      cancel();
+      container.querySelectorAll('.pressing').forEach((x) => x.classList.remove('pressing'));
+    }
+  });
+  for (const ev of ['pointerup', 'pointercancel', 'pointerleave']) {
+    container.addEventListener(ev, () => { cancel(); container.querySelectorAll('.pressing').forEach((x) => x.classList.remove('pressing')); });
+  }
+  // Depois do toque longo, o clique que vem em seguida não abre o item; o menu do navegador também não aparece.
+  container.addEventListener('click', (e) => { if (fired && e.target.closest(selector)) { e.preventDefault(); fired = false; } }, true);
+  container.addEventListener('contextmenu', (e) => { if (e.target.closest(selector)) e.preventDefault(); });
+}
+
+// Menu de ações que sobe da parte de baixo da tela.
+function actionSheet(title, actions) {
+  const box = document.createElement('div');
+  box.className = 'sheet-backdrop';
+  box.innerHTML = `<div class="sheet" role="dialog" aria-label="${esc(title)}">
+    <div class="sheet-title">${esc(title)}</div>
+    ${actions.map((a, i) => `<button type="button" class="btn block${a.danger ? ' danger' : ''}" data-act="${i}">${a.danger ? ic('trash') + ' ' : ''}${esc(a.label)}</button>`).join('')}
+    <button type="button" class="btn block" data-act="cancel">Cancelar</button>
+  </div>`;
+  const close = () => box.remove();
+  box.addEventListener('click', (e) => {
+    if (e.target === box) return close();
+    const b = e.target.closest('[data-act]');
+    if (!b) return;
+    close();
+    if (b.dataset.act !== 'cancel') actions[Number(b.dataset.act)].run();
+  });
+  window.addEventListener('hashchange', close, { once: true });
+  document.body.appendChild(box);
 }
 
 async function viewProduct(id) {
@@ -1062,7 +1140,7 @@ async function viewProduct(id) {
       <div>${savingBadge(p.price_brl, b?.estimated_brl)}</div>
       ${p.units_per_40hq ? `<div><div class="item-sub">Container 40HQ</div>
         <div>${p.units_per_40hq.toLocaleString('pt-BR')} unidades${freightPerUnit(p.units_per_40hq) != null
-          ? ` · frete por unidade <b>${usd(freightPerUnit(p.units_per_40hq))}</b> (${brl(freightPerUnit(p.units_per_40hq) * p.exchange_rate)})` : ''}</div></div>` : ''}
+          ? ` · frete por unidade <b>${usd(freightPerUnit(p.units_per_40hq))}</b> (${brl(freightPerUnit(p.units_per_40hq) * ratesOf(p).USD)})` : ''}</div></div>` : ''}
       ${p.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(p.notes)}</div></div>` : ''}
       <a class="btn" href="#/products/${p.id}/edit">Editar</a>
     </div>
@@ -1078,7 +1156,7 @@ async function viewProduct(id) {
           ${i === 0 ? '<span class="badge good">melhor preço</span>' : ''}
         </a>
         <div class="compare four">
-          <div>US$<b>${o.price_usd.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</b></div>
+          <div>Preço<b>${priceIn(o.price, o.currency)}</b></div>
           <div>MOQ<b>${o.moq ?? '—'}</b></div>
           <div>${esc(o.incoterm || 'Incoterm')}<b>${pct(o.nationalization_pct)}</b></div>
           <div>Estimado<b>${brl(o.estimated_brl)}</b></div>
@@ -1098,7 +1176,7 @@ async function viewProduct(id) {
         </div>
       </div>`).join('')}
     </div>
-    <p class="hint">${FORMULA} (${brl(p.exchange_rate)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
+    <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
     : '<div class="empty">Nenhum fornecedor vinculado a este produto.</div>'}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
@@ -1183,7 +1261,8 @@ async function viewProductForm(id, query) {
     getSuppliers(isAdmin() ? company : null),
     editing ? [] : existingProductNames(company),
   ]);
-  const rate = editing ? p.exchange_rate : companyInfo(company)?.exchange_rate ?? state.me.company.exchange_rate;
+  const rates = ratesOf(editing ? p : companyInfo(company) || state.me.company);
+  const rate = rates.USD; // frete (US$)
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
 
@@ -1206,16 +1285,16 @@ async function viewProductForm(id, query) {
   // photos: fotos já salvas deste fornecedor; newPhotos: escolhidas agora (enviadas ao salvar); delPhotos: a excluir.
   const offers = p.offers.length
     ? p.offers.map((o) => ({ ...o, photos: o.photos || [], newPhotos: [], delPhotos: [] }))
-    : [{ supplier_id: Number(query.get('supplier')) || '', price_usd: '', moq: '', incoterm: 'FOB', nationalization_pct: '' }];
+    : [{ supplier_id: Number(query.get('supplier')) || '', price: '', currency: 'CNY', moq: '', incoterm: 'FOB', nationalization_pct: '' }];
   // Vindo do aviso de produto repetido: acrescenta (ou atualiza) a oferta do fornecedor neste produto.
   const addSupplier = Number(query.get('add_supplier'));
   if (editing && addSupplier) {
     const incoming = {
-      supplier_id: addSupplier, price_usd: query.get('price') || '', moq: query.get('moq') || '',
+      supplier_id: addSupplier, price: query.get('price') || '', currency: query.get('cur') || 'CNY', moq: query.get('moq') || '',
       incoterm: query.get('incoterm') || 'FOB', nationalization_pct: query.get('nat') || '',
     };
     const cur = offers.find((o) => Number(o.supplier_id) === addSupplier);
-    if (cur) for (const k of ['price_usd', 'moq', 'incoterm', 'nationalization_pct']) { if (incoming[k] !== '') cur[k] = incoming[k]; }
+    if (cur) for (const k of ['price', 'currency', 'moq', 'incoterm', 'nationalization_pct']) { if (incoming[k] !== '') cur[k] = incoming[k]; }
     else offers.push(incoming);
   }
   for (const o of offers) Object.assign(o, { photos: o.photos || [], newPhotos: o.newPhotos || [], delPhotos: o.delPhotos || [] });
@@ -1242,7 +1321,7 @@ async function viewProductForm(id, query) {
         <div class="offer-head" style="margin-bottom:12px"><h3>Fornecedores e preços</h3>
           <button type="button" class="btn small" id="add-offer">+ Adicionar</button></div>
         <div id="offers"></div>
-        <p class="hint">${FORMULA} (${brl(rate)}). O frete não é somado quando o Incoterm já o inclui (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>
+        <p class="hint">${FORMULA} (${ratesText({ exchange_rate: rates.USD, cny_rate: rates.CNY })}). O frete não é somado quando o Incoterm já o inclui (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>
       </div>
       <div class="error-box" id="err" hidden></div>
       <div class="actions form-actions">
@@ -1266,12 +1345,12 @@ async function viewProductForm(id, query) {
   const offersEl = document.getElementById('offers');
 
   function offerCalc(o) {
-    const usdV = parseNum(o.price_usd);
+    const priceV = parseNum(o.price);
     const natV = parseNum(o.nationalization_pct) || 0;
-    if (usdV == null || Number.isNaN(usdV)) return '<span class="item-sub">Informe o preço em US$</span>';
+    if (priceV == null || Number.isNaN(priceV)) return '<span class="item-sub">Informe o preço</span>';
     const perUnit = freightPerUnit(parseNum(form.units_per_40hq.value, { thousands: true })) || 0;
     const freight = offerFreight(o.incoterm, perUnit);
-    const est = estimate(usdV, natV, rate, freight);
+    const est = estimate(priceV, o.currency, natV, rates, freight);
     const br = parseNum(form.price_brl.value, { thousands: true });
     const note = freight > 0
       ? `<span class="item-sub">inclui frete ${usd(freight)}/un.</span>`
@@ -1292,15 +1371,19 @@ async function viewProductForm(id, query) {
           ${offers.length > 1 ? `<button type="button" class="icon-btn" data-rm="${i}" aria-label="Remover">✕</button>` : ''}
         </div>
         <div class="row">
-          <div><label>Preço (US$) <span class="req">*</span></label><input data-k="price_usd" inputmode="decimal" value="${esc(o.price_usd)}" placeholder="0,00"></div>
-          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(o.moq ?? '')}" placeholder="unid."></div>
+          <div><label>Preço <span class="req">*</span></label><input data-k="price" inputmode="decimal" value="${esc(o.price)}" placeholder="0,00"></div>
+          <div><label>Moeda</label>${curSelect(o.currency)}</div>
         </div>
         <div class="row" style="margin-top:10px">
+          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(o.moq ?? '')}" placeholder="unid."></div>
           <div><label>Incoterm</label><select data-k="incoterm">
             <option value="">—</option>
             ${INCOTERMS.map((t) => `<option ${o.incoterm === t ? 'selected' : ''}>${t}</option>`).join('')}
           </select></div>
+        </div>
+        <div class="row" style="margin-top:10px">
           <div><label>Nacionaliz. (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
+          <div></div>
         </div>
         <div class="offer-calc" data-calc="${i}">${offerCalc(o)}</div>
         ${offerPhotosHtml(o, i)}
@@ -1337,7 +1420,7 @@ async function viewProductForm(id, query) {
     if (dupBox.hidden) return;
     const o = offers.find((x) => x.supplier_id) || offers[0];
     const qs = new URLSearchParams({
-      ...(Number(o.supplier_id) > 0 ? { add_supplier: o.supplier_id } : {}), price: o.price_usd || '', moq: o.moq || '',
+      ...(Number(o.supplier_id) > 0 ? { add_supplier: o.supplier_id } : {}), price: o.price || '', cur: o.currency || 'CNY', moq: o.moq || '',
       incoterm: o.incoterm || '', nat: o.nationalization_pct || '',
     });
     dupBox.innerHTML = `<div class="dup-title">${ic('alert')} Parecido com produto já cadastrado:</div>${found.map(({ p: x }) => `
@@ -1396,8 +1479,8 @@ async function viewProductForm(id, query) {
     const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
     set(form.name, r.name, 'nome');
     set(form.units_per_40hq, r.units_per_40hq, 'unidades/40HQ');
-    const o = offers.find((x) => !String(x.price_usd).trim()) || offers[0];
-    if (r.price_usd != null && !String(o.price_usd).trim()) { o.price_usd = String(r.price_usd).replace('.', ','); filled.push('preço US$'); }
+    const o = offers.find((x) => !String(x.price).trim()) || offers[0];
+    if (r.price != null && !String(o.price).trim()) { o.price = String(r.price).replace('.', ','); o.currency = r.currency || 'CNY'; filled.push(`preço (${CUR_LABEL[o.currency]})`); }
     if (r.moq != null && !String(o.moq ?? '').trim()) { o.moq = r.moq; filled.push('MOQ'); }
     if (r.incoterm) { o.incoterm = r.incoterm; filled.push('Incoterm'); }
     const extra = [r.name_original && `Nome original: ${r.name_original}`, r.price_note && `Preço: ${r.price_note}`, r.specs]
@@ -1545,7 +1628,7 @@ async function viewProductForm(id, query) {
   });
   document.getElementById('add-offer').addEventListener('click', () => {
     const last = offers[offers.length - 1];
-    offers.push({ supplier_id: '', price_usd: '', moq: '', incoterm: last?.incoterm || 'FOB', nationalization_pct: last?.nationalization_pct ?? '', photos: [], newPhotos: [], delPhotos: [] });
+    offers.push({ supplier_id: '', price: '', currency: last?.currency || 'CNY', moq: '', incoterm: last?.incoterm || 'FOB', nationalization_pct: last?.nationalization_pct ?? '', photos: [], newPhotos: [], delPhotos: [] });
     renderOffers();
   });
 
@@ -1560,15 +1643,15 @@ async function viewProductForm(id, query) {
     if (Number.isNaN(priceBrl)) return fail('Preço no Brasil inválido.');
     const payloadOffers = [];
     for (const [i, o] of offers.entries()) {
-      const blank = !o.supplier_id && !String(o.price_usd).trim();
+      const blank = !o.supplier_id && !String(o.price).trim();
       if (blank && offers.length > 0) continue; // linha vazia é ignorada
       if (!o.supplier_id) return fail(`Selecione o fornecedor da linha ${i + 1}.`);
-      const priceUsd = parseNum(o.price_usd);
-      if (priceUsd == null || Number.isNaN(priceUsd)) return fail(`Informe o preço em US$ da linha ${i + 1}.`);
+      const price = parseNum(o.price);
+      if (price == null || Number.isNaN(price)) return fail(`Informe o preço da linha ${i + 1}.`);
       const moq = parseNum(o.moq, { thousands: true });
       const nat = parseNum(o.nationalization_pct);
       if (Number.isNaN(moq) || Number.isNaN(nat)) return fail(`Verifique MOQ e % da linha ${i + 1}.`);
-      payloadOffers.push({ supplier_id: Number(o.supplier_id), price_usd: priceUsd, moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
+      payloadOffers.push({ supplier_id: Number(o.supplier_id), price, currency: o.currency || 'CNY', moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
     }
 
     const units = parseNum(form.units_per_40hq.value, { thousands: true });
@@ -1690,7 +1773,7 @@ async function viewProductScan(query) {
     for (const r of products) {
       const match = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
       items.push({
-        ref: newRef(), include: true, name: r.name, price_usd: numText(r.price_usd), moq: r.moq ?? '',
+        ref: newRef(), include: true, name: r.name, price: numText(r.price), currency: r.currency || 'CNY', moq: r.moq ?? '',
         incoterm: r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
         notes: [r.name_original && `Nome original: ${r.name_original}`, r.price_note && `Preço: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
         photo, use_photo: products.length === 1, target: match ? match.p.id : '',
@@ -1710,12 +1793,16 @@ async function viewProductScan(query) {
         </div>
         <div><label>Nome do produto</label><input data-k="name" value="${esc(it.name)}"></div>
         <div class="row">
-          <div><label>Preço (US$)</label><input data-k="price_usd" inputmode="decimal" value="${esc(it.price_usd)}" placeholder="0,00"></div>
-          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(it.moq)}" placeholder="unid."></div>
+          <div><label>Preço</label><input data-k="price" inputmode="decimal" value="${esc(it.price)}" placeholder="0,00"></div>
+          <div><label>Moeda</label>${curSelect(it.currency)}</div>
         </div>
         <div class="row">
+          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(it.moq)}" placeholder="unid."></div>
           <div><label>Incoterm</label><select data-k="incoterm"><option value="">—</option>${INCOTERMS.map((t) => `<option${it.incoterm === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+        </div>
+        <div class="row">
           <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
+          <div></div>
         </div>
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
         ${similar.length ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado</div>
@@ -1803,13 +1890,13 @@ async function viewProductScan(query) {
       if (!it.include) continue;
       const fail = (m) => { err.textContent = `Produto ${i + 1} (${it.name || 'sem nome'}): ${m}`; err.hidden = false; itemsEl.children[i]?.scrollIntoView({ block: 'center' }); };
       if (!String(it.name).trim()) return fail('informe o nome.');
-      const price = parseNum(it.price_usd);
+      const price = parseNum(it.price);
       const moq = parseNum(it.moq, { thousands: true });
       const units = parseNum(it.units_per_40hq, { thousands: true });
       if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units)) return fail('verifique preço, MOQ e unidades.');
       if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
       const offer = sid && price != null
-        ? { supplier_id: sid, price_usd: price, moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
+        ? { supplier_id: sid, price, currency: it.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
       if (it.target && !offer) return fail('para adicionar a oferta a um produto existente, escolha o fornecedor e informe o preço.');
       jobs.push({ it, offer, units });
     }
@@ -1936,8 +2023,8 @@ async function viewModelTest() {
           <small class="item-sub">${money(x.cost_usd)} · ${secs(x.ms)}</small></div>
           ${x.error ? `<div class="error-box">${esc(x.error)}</div>` : fields
             ? `<table class="bench-table">${fields.map(([k, l]) => `<tr><td>${l}</td><td>${esc(show(x.output[k]))}</td></tr>`).join('')}</table>`
-            : `<table class="bench-table"><tr><th>Produto</th><th>US$</th><th>MOQ</th></tr>${(x.output.products || []).map((p) =>
-              `<tr><td>${esc(p.name)}${p.price_note ? `<br><small class="item-sub">${esc(p.price_note)}</small>` : ''}</td><td>${esc(show(p.price_usd))}</td><td>${esc(show(p.moq))}</td></tr>`).join('')}</table>`}
+            : `<table class="bench-table"><tr><th>Produto</th><th>Preço</th><th>MOQ</th></tr>${(x.output.products || []).map((p) =>
+              `<tr><td>${esc(p.name)}${p.price_note ? `<br><small class="item-sub">${esc(p.price_note)}</small>` : ''}</td><td>${esc(p.price != null ? priceIn(p.price, p.currency) : show(p.price))}</td><td>${esc(show(p.moq))}</td></tr>`).join('')}</table>`}
         </div>`).join('');
     } catch (err) {
       out.innerHTML = `<div class="error-box">${esc(err.message)}</div>`;
@@ -2611,7 +2698,7 @@ function renderRankProducts(r) {
         <div>Economia<b style="color:${it.saving_brl > 0 ? 'var(--good)' : it.saving_brl < 0 ? 'var(--bad)' : 'inherit'}">${it.saving_brl == null ? '—' : brl(it.saving_brl)}</b></div>
       </div>
     </a>`).join('')}</div>
-    <p class="hint">Ordenado pela maior economia percentual. ${FORMULA} ${isAdmin() && !r.company ? 'de cada empresa' : `(${brl(r.exchange_rate)})`}.</p>`;
+    <p class="hint">Ordenado pela maior economia percentual. ${FORMULA} ${isAdmin() && !r.company ? 'com o câmbio de cada empresa' : `(${ratesText(r)})`}.</p>`;
 }
 
 function renderRankSuppliers(r) {
@@ -3338,21 +3425,26 @@ function renderRateCard() {
         <button type="button" data-mode="manual" class="${auto ? '' : 'active'}">Manual</button>
       </div>
       <div class="rate-now">
-        <span class="item-sub">US$ 1,00 =</span>
-        <b>R$ ${fmtRate(company.exchange_rate)}</b>
-        <span class="item-sub">${quoteInfo}</span>
+        <span class="item-sub">¥ 1,00 (RMB) =</span>
+        <b>R$ ${fmtRate(ratesOf(company).CNY)}</b>
+        <span class="item-sub">US$ 1,00 = R$ ${fmtRate(company.exchange_rate)} · ${quoteInfo}${company.cny_estimated ? ' · yuan estimado pelo dólar até a próxima cotação' : ''}</span>
       </div>
       ${failing ? `<div class="error-box">${ic('alert')} ${esc(fx.error)} Estamos usando o último valor disponível.
         Tente atualizar de novo ou informe o câmbio manualmente abaixo.</div>` : ''}
       ${auto ? `
-        <p class="hint" style="margin:0">Atualizado sozinho a cada 30 minutos pela PTAX (taxa de venda) do Banco Central,
-          com AwesomeAPI e ExchangeRate-API como reserva.</p>
+        <p class="hint" style="margin:0">Atualizado sozinho a cada 30 minutos: dólar pela PTAX (taxa de venda) do Banco Central,
+          com AwesomeAPI e ExchangeRate-API como reserva; yuan pela AwesomeAPI. Os preços dos fornecedores em RMB usam o câmbio do yuan;
+          os em US$ e o frete usam o do dólar.</p>
         <button type="button" class="btn" id="fx-refresh">${ic('refresh')} Atualizar agora</button>` : ''}
       <form class="stack" id="rate-form" ${auto && !failing ? 'hidden' : ''}>
-        <div><label for="rate">${auto ? 'Informar manualmente (R$ por US$ 1,00)' : 'R$ por US$ 1,00'}</label>
-          <input id="rate" name="rate" inputmode="decimal" value="${fmtRate(company.exchange_rate)}"></div>
+        <div class="row">
+          <div><label for="rate_cny">R$ por ¥ 1,00</label>
+            <input id="rate_cny" name="rate_cny" inputmode="decimal" value="${fmtRate(ratesOf(company).CNY)}"></div>
+          <div><label for="rate">R$ por US$ 1,00</label>
+            <input id="rate" name="rate" inputmode="decimal" value="${fmtRate(company.exchange_rate)}"></div>
+        </div>
         <button class="btn primary" type="submit">Usar este valor</button>
-        ${!auto && fx?.rate ? `<p class="hint" style="margin:0">Cotação do dia: ${brl(fx.rate)} (${esc(fx.source)}).</p>` : ''}
+        ${!auto && fx?.rate ? `<p class="hint" style="margin:0">Cotação do dia: ${fx.cny_rate ? `¥1 = R$ ${fmtRate(fx.cny_rate)} · ` : ''}US$1 = ${brl(fx.rate)} (${esc(fx.source)}).</p>` : ''}
       </form>
       <p class="hint" style="margin:0">O câmbio vale para todos os usuários deste CNPJ.</p>
     </div>`;
@@ -3370,7 +3462,7 @@ function renderRateCard() {
     if (b.dataset.mode === 'manual' && auto) {
       box.querySelector('#rate-form').hidden = false;
       box.querySelectorAll('.segmented button').forEach((x) => x.classList.toggle('active', x === b));
-      box.querySelector('#rate').focus();
+      box.querySelector('#rate_cny').focus();
     }
   }));
   box.querySelector('#fx-refresh')?.addEventListener('click', async (e) => {
@@ -3380,7 +3472,7 @@ function renderRateCard() {
       state.me = await api('/api/fx/refresh', { method: 'POST', body: {} });
       setChrome({ title: 'Conta', tab: 'account' });
       renderRateCard();
-      toast(fxFailing() ? 'Não foi possível atualizar a cotação.' : `Cotação atualizada: ${brl(state.me.company.exchange_rate)}`);
+      toast(fxFailing() ? 'Não foi possível atualizar a cotação.' : `Cotação atualizada: ¥1 = R$ ${fmtRate(ratesOf(state.me.company).CNY)}`);
     } catch (err) {
       toast(err.message);
       e.target.disabled = false;
@@ -3390,8 +3482,9 @@ function renderRateCard() {
   box.querySelector('#rate-form').addEventListener('submit', (e) => {
     e.preventDefault();
     const v = parseNum(e.target.rate.value);
-    if (!(v > 0)) return toast('Câmbio inválido.');
-    save({ exchange_rate: v }, 'Câmbio manual salvo.');
+    const c = parseNum(e.target.rate_cny.value);
+    if (!(v > 0) || !(c > 0)) return toast('Câmbio inválido.');
+    save({ exchange_rate: v, cny_rate: c }, 'Câmbio manual salvo.');
   });
 }
 

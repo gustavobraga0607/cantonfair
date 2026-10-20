@@ -74,21 +74,23 @@ test('com mais de um telefone, salva sempre o de WhatsApp ou WeChat', () => {
 test('produtos pela foto: lista fechada de Incoterm, números normalizados e itens sem nome descartados', async () => {
   const calls = [];
   const json = { products: [
-    { name: ' Garrafa térmica inox 500 ml ', name_original: 'Vacuum flask 500ml', price_usd: 'US$ 2,35', price_note: '', moq: '1.000', incoterm: 'fob', units_per_40hq: '12000', specs: 'Inox 304' },
-    { name: 'Copo 350 ml', name_original: '', price_usd: '', price_note: '¥16,80', moq: '', incoterm: 'XYZ', units_per_40hq: 'n/a', specs: '' },
-    { name: '', name_original: '', price_usd: '1', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '' },
+    { name: ' Garrafa térmica inox 500 ml ', name_original: 'Vacuum flask 500ml', price: 'US$ 2,35', currency: 'USD', price_note: '', moq: '1.000', incoterm: 'fob', units_per_40hq: '12000', specs: 'Inox 304' },
+    { name: 'Copo 350 ml', name_original: '', price: '16,80', currency: 'CNY', price_note: '', moq: '', incoterm: 'XYZ', units_per_40hq: 'n/a', specs: '' },
+    { name: 'Prato', name_original: '', price: '3', currency: 'EUR', price_note: '€3', moq: '', incoterm: '', units_per_40hq: '', specs: '' },
+    { name: '', name_original: '', price: '1', currency: 'USD', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '' },
   ] };
   const read = createProductReader({
     client: fakeClient({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(json) }] }, calls),
   });
   const { products } = await read('image/jpeg', 'QUJD');
-  assert.equal(products.length, 2);
+  assert.equal(products.length, 3);
   assert.deepEqual(products[0], {
-    name: 'Garrafa térmica inox 500 ml', name_original: 'Vacuum flask 500ml', price_usd: 2.35, price_note: '', moq: 1000,
+    name: 'Garrafa térmica inox 500 ml', name_original: 'Vacuum flask 500ml', price: 2.35, currency: 'USD', price_note: '', moq: 1000,
     incoterm: 'FOB', units_per_40hq: 12000, specs: 'Inox 304',
   });
-  assert.equal(products[1].price_usd, null, 'preço em RMB não vira dólar');
-  assert.equal(products[1].price_note, '¥16,80');
+  assert.equal(products[1].price, 16.8, 'preço em yuan fica em yuan');
+  assert.equal(products[1].currency, 'CNY');
+  assert.equal(products[2].price, null, 'moeda que não é yuan nem dólar não entra');
   assert.equal(products[1].incoterm, '');
   assert.equal(products[1].units_per_40hq, null);
   const schema = calls[0].output_config.format.schema;
@@ -122,16 +124,16 @@ test('teste de modelos: gabarito pontua leitura perfeita com 100% e aponta os er
 
   const rmb = samples.find((s) => s.id === 'price-rmb');
   const good = { products: [
-    { name: 'Copo térmico inox 350 ml', price_usd: null, price_note: '¥16.80', moq: 500 },
-    { name: 'Garrafa térmica 1 L', price_usd: null, price_note: '¥32.00', moq: 300 },
-    { name: 'Marmita inox', price_usd: null, price_note: '¥22.00', moq: 500 },
-    { name: 'Copo infantil 200 ml', price_usd: null, price_note: '¥9.50', moq: 1000 },
+    { name: 'Copo térmico inox 350 ml', price: 16.8, currency: 'CNY', moq: 500 },
+    { name: 'Garrafa térmica 1 L', price: 32, currency: 'CNY', moq: 300 },
+    { name: 'Marmita inox', price: 22, currency: 'CNY', moq: 500 },
+    { name: 'Copo infantil 200 ml', price: 9.5, currency: 'CNY', moq: 1000 },
   ] };
   r = scoreProducts(rmb.expected, good);
   assert.equal(r.points, r.total);
-  // converter yuan em dólar é erro
-  r = scoreProducts(rmb.expected, { products: good.products.map((p) => ({ ...p, price_usd: 2.3 })) });
-  assert.equal(r.misses.filter((m) => m.includes('preço US$')).length, 4);
+  // marcar o preço em yuan como dólar é erro
+  r = scoreProducts(rmb.expected, { products: good.products.map((p) => ({ ...p, currency: 'USD' })) });
+  assert.equal(r.misses.filter((m) => m.includes('preço e moeda')).length, 4);
   for (const s of samples) assert.ok(s.data.length > 1000 && s.expected, s.id);
 });
 
@@ -191,7 +193,7 @@ test('Haiku com Opus de reserva: só chama o Opus quando o Haiku recusa, falha o
 
   // produtos: nenhum item encontrado vai para o Opus
   calls = [];
-  const p = createProductReader({ client: byModel({ 'claude-haiku-5-5': ok({ products: [] }), 'claude-opus-5-5': ok({ products: [{ name: 'Copo', price_usd: '1.2', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '', name_original: '' }] }) }, calls), fallbackModel: 'claude-opus-5-5' });
+  const p = createProductReader({ client: byModel({ 'claude-haiku-5-5': ok({ products: [] }), 'claude-opus-5-5': ok({ products: [{ name: 'Copo', price: '1.2', currency: 'CNY', price_note: '', moq: '', incoterm: '', units_per_40hq: '', specs: '', name_original: '' }] }) }, calls), fallbackModel: 'claude-opus-5-5' });
   const r = await p('image/png', 'x', {});
   assert.equal(r.products.length, 1);
   assert.equal(calls.length, 2);
@@ -205,7 +207,8 @@ test('regras fixas: província pelo endereço e preço em yuan não vira dólar'
   assert.equal(provinceFromAddress('No. 1 Shanghai Rd, Ningbo', ''), 'Zhejiang', 'rua com nome de cidade não conta');
   assert.equal(provinceFromAddress('宁波市北京路8号', ''), 'Zhejiang');
   assert.equal(provinceFromAddress('Unknown street 5', 'Fujian'), 'Fujian', 'sem pista no endereço, fica a leitura');
-  assert.equal(guardCurrency({ price_usd: 16.8, price_note: '¥16.80' }).price_usd, null);
-  assert.equal(guardCurrency({ price_usd: 2.35, price_note: 'US$2.35 (1000 pcs) / ¥17' }).price_usd, 2.35);
-  assert.equal(guardCurrency({ price_usd: 2.35, price_note: '' }).price_usd, 2.35);
+  assert.equal(guardCurrency({ price: 16.8, currency: 'USD', price_note: '¥16.80' }).currency, 'CNY', 'escrito só em yuan não é dólar');
+  assert.equal(guardCurrency({ price: 2.35, currency: 'USD', price_note: 'US$2.35 (1000 pcs) / ¥17' }).currency, 'USD');
+  assert.equal(guardCurrency({ price: 2.35, currency: 'USD', price_note: '' }).currency, 'USD');
+  assert.equal(guardCurrency({ price: 2.35, currency: '', price_note: '' }).price, null, 'sem moeda o preço não entra');
 });

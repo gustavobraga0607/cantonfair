@@ -4,7 +4,7 @@ const path = require('node:path');
 const { open } = require('./db');
 const { createApp } = require('./app');
 const { cardReaderFromEnv, productReaderFromEnv, benchReadersFromEnv } = require('./ocr');
-const { createFxService } = require('./fx');
+const { createFxService, fetchCnyBrl } = require('./fx');
 const { asaasFromEnv } = require('./asaas');
 const { interpreterFromEnv } = require('./interpreter');
 
@@ -31,7 +31,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     databaseUrl: found?.url,
     dataDir: path.resolve(process.env.DATA_DIR || path.join(__dirname, '..', 'data')),
   });
-  const fx = process.env.FX_AUTO === 'false' ? null : createFxService({ db });
+  const fx = process.env.FX_AUTO === 'false' ? null : createFxService({ db, fetchCnyQuote: fetchCnyBrl });
   // Na Vercel, trabalho em segundo plano precisa de waitUntil para não ser interrompido.
   const background = process.env.VERCEL
     ? (p) => require('@vercel/functions').waitUntil(p)

@@ -220,8 +220,9 @@ const MAX_PRODUCTS = 40;
 const PRODUCT_FIELDS = {
   name: 'Nome curto e descritivo do produto EM PORTUGUÊS (traduza do inglês/chinês), com a especificação que diferencia o item: capacidade, tamanho, material, modelo. Ex.: "Garrafa térmica inox 500 ml".',
   name_original: 'Nome/modelo como aparece na foto (inglês ou chinês), se houver.',
-  price_usd: 'Preço unitário em dólar (US$/USD) como número com ponto decimal, ex.: "2.35". Se houver faixas por quantidade, use o preço da menor quantidade. Se o preço estiver em outra moeda (RMB/CNY/¥, EUR), deixe vazio e informe em price_note. Sem preço = "".',
-  price_note: 'Preço em outra moeda ou faixas de preço por quantidade, como aparece (ex.: "¥16,80" ou "US$2.35 (1000 pcs) / US$2.10 (5000 pcs)"). Vazio se não houver.',
+  price: 'Preço unitário como número com ponto decimal, exatamente como aparece, sem converter moeda, ex.: "16.80". Se houver faixas por quantidade, use o preço da menor quantidade. Sem preço = "".',
+  currency: 'Moeda do preço: "CNY" para yuan (¥, RMB, CNY, 元, 人民币) ou "USD" para dólar (US$, USD, $, 美元). Se a foto mostrar as duas, use o preço em yuan. Sem preço ou moeda não identificada = "".',
+  price_note: 'Faixas de preço por quantidade ou preço em outra moeda, como aparece (ex.: "¥16,80 (500 pcs) / ¥15,20 (2000 pcs)" ou "US$2.35"). Vazio se não houver.',
   moq: 'Quantidade mínima de pedido (MOQ) como número inteiro, ex.: "1000". Sem MOQ = "".',
   incoterm: 'Incoterm do preço, se indicado (FOB, EXW, CIF…). Sem indicação = "".',
   units_per_40hq: 'Unidades por container 40HQ como número inteiro, se informado. Sem informação = "".',
@@ -238,7 +239,8 @@ const PRODUCT_SCHEMA = {
         type: 'object',
         properties: Object.fromEntries(Object.entries(PRODUCT_FIELDS).map(([k, d]) => [k, k === 'incoterm'
           ? { type: 'string', description: d, enum: ['', ...INCOTERMS] }
-          : { type: 'string', description: d }])),
+          : k === 'currency' ? { type: 'string', description: d, enum: ['', 'CNY', 'USD'] }
+            : { type: 'string', description: d }])),
         required: Object.keys(PRODUCT_FIELDS),
         additionalProperties: false,
       },
@@ -253,7 +255,7 @@ A foto pode ser do próprio produto, de uma etiqueta, embalagem, página de cat�
 Transcreva preços, quantidades e códigos exatamente como aparecem; não invente nem estime valores ausentes (campo sem informação = string vazia).
 Numa tabela ou catálogo, liste cada produto/linha separadamente. Ignore cabeçalhos, totais e itens ilegíveis.
 Regras:
-1. price_usd só recebe preço em dólar (US$, USD, $). Preço em yuan (¥, RMB, CNY, 元) NUNCA vai em price_usd: deixe vazio e copie o preço em price_note. Não converta moedas.
+1. price recebe o número do preço como está na foto, sem converter, e currency diz a moeda: "CNY" (¥, RMB, CNY, 元, 人民币) ou "USD" (US$, USD, $). Se aparecer preço nas duas moedas, use o de yuan. Moeda que não seja yuan nem dólar (EUR etc.): deixe price e currency vazios e copie em price_note.
 2. Condição de preço escrita no cabeçalho da tabela (ex.: "Price terms: FOB Shenzhen") vale para todas as linhas: preencha o incoterm de cada produto.
 3. MOQ e quantidades são números inteiros sem separador ("1,000 pcs" → "1000"; "500个" → "500").
 4. O nome vai em português, curto, com a medida que diferencia o item (capacidade, potência, tamanho).`;
@@ -290,7 +292,8 @@ function createProductReader({ client, model = MODEL, fallbackModel = null } = {
       return {
         name: txt(p.name, 150),
         name_original: txt(p.name_original, 150),
-        price_usd: toNumber(p.price_usd),
+        price: toNumber(p.price),
+        currency: ['CNY', 'USD'].includes(p.currency) ? p.currency : '',
         price_note: txt(p.price_note),
         moq: toNumber(p.moq, { integer: true }),
         incoterm: INCOTERMS.includes(incoterm) ? incoterm : '',
@@ -302,12 +305,15 @@ function createProductReader({ client, model = MODEL, fallbackModel = null } = {
   }
 }
 
-// Regra fixa: preço que só aparece em yuan não pode ficar como dólar (o modelo às vezes copia o número).
+// Regras fixas sobre a moeda: preço sem moeda identificada não entra (o usuário digita);
+// marcado como dólar mas escrito só em yuan na nota vira yuan (o modelo às vezes erra a moeda).
 function guardCurrency(p) {
+  if (p.price == null) return { ...p, currency: '' };
+  if (!p.currency) return { ...p, price: null };
   const note = p.price_note || '';
-  if (p.price_usd != null && /¥|rmb|cny|元|人民币/i.test(note) && !/\$|usd|us\$|美元/i.test(note)) {
+  if (p.currency === 'USD' && /¥|rmb|cny|元|人民币/i.test(note) && !/\$|usd|us\$|美元/i.test(note)) {
     const nums = (note.match(/\d+(?:[.,]\d+)?/g) || []).map((n) => Number(n.replace(',', '.')));
-    if (nums.includes(p.price_usd)) return { ...p, price_usd: null };
+    if (nums.includes(p.price)) return { ...p, currency: 'CNY' };
   }
   return p;
 }
