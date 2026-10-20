@@ -29,6 +29,7 @@ const estimate = (price, currency, nat, rates, freightUsd = 0) => Math.round(
   (price * (currency === 'USD' ? rates.USD : rates.CNY) + (freightUsd || 0) * rates.USD) * (1 + (nat || 0) / 100) * 100) / 100;
 const ratesOf = (x) => ({ USD: Number(x.exchange_rate), CNY: Number(x.cny_rate) || Number(x.exchange_rate) / 7.2 });
 const CUR_LABEL = { CNY: '¥', USD: 'US$' };
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // Preço escrito em texto ("¥16,80 (500 pcs)", "US$ 2.35", "16.8元") → { price, currency }; prefere o yuan.
 function priceFromText(text) {
   const t = String(text || '');
@@ -96,6 +97,8 @@ const ICON_PATHS = {
   navigation: '<path d="M3 11 21 3l-8 18-2-8z"/>',
   locate: '<circle cx="12" cy="12" r="7"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="2"/>',
   map: '<path d="M3 6.5 9 4l6 2.5L21 4v13.5L15 20l-6-2.5L3 20z"/><path d="M9 4v13.5M15 6.5V20"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  chev: '<path d="m6 9 6 6 6-6"/>',
   wifiOff: '<path d="M2 8.5a15 15 0 0 1 20 0M5 12a10 10 0 0 1 14 0M8.5 15.5a5 5 0 0 1 7 0M12 19h.01M3 3l18 18"/>',
 };
 const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
@@ -475,7 +478,7 @@ function photoInputHtml(current, placeholder) {
 
 // form: telas de cadastro escondem a barra de abas (no celular ela sobe com o
 // teclado e cobre os campos) e usam uma barra fixa com o botão Salvar.
-function setChrome({ title, back = null, tab = null, auth = false, form = false, fab = false, map = false }) {
+function setChrome({ title, back = null, backLabel = null, tab = null, auth = false, form = false, fab = false, map = false }) {
   document.getElementById('map-view').hidden = !map;
   document.body.classList.toggle('map-mode', map);
   document.title = title ? `${title} · Missão China` : 'Missão China by BR Trading';
@@ -484,6 +487,10 @@ function setChrome({ title, back = null, tab = null, auth = false, form = false,
   document.body.classList.toggle('has-tabs', !auth && !form);
   document.body.classList.toggle('has-fab', fab);
   document.getElementById('page-title').textContent = title || 'Missão China';
+  // Tela aberta a partir de outra (ex.: produto aberto pelo fornecedor): mostra para onde a seta volta.
+  const backLine = document.getElementById('back-label');
+  backLine.hidden = !(back && backLabel);
+  backLine.textContent = back && backLabel ? `← voltar para ${backLabel}` : '';
   document.getElementById('home-logo').hidden = Boolean(back);
   const backBtn = document.getElementById('back-btn');
   backBtn.hidden = !back;
@@ -698,7 +705,9 @@ async function viewSuppliers() {
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             ${pendingTag(s)}
-            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone && (s.phone_whatsapp || s.phone_wechat) ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}${s.pending ? '' : ` · ${s.product_count} produto(s)`}</div>
+            <div class="item-sub">${s.contact_name ? esc(s.contact_name) + ' · ' : ''}${s.phone && (s.phone_whatsapp || s.phone_wechat) ? `<span class="msg-icons">${[s.phone_whatsapp && 'whatsapp', s.phone_wechat && 'wechat'].filter(Boolean).map((k) => `<span class="msg-badge ${k}" title="${k === 'wechat' ? 'WeChat' : 'WhatsApp'}">${MSG_ICONS[k]}</span>`).join('')}</span> · ` : ''}${s.booth ? 'Stand ' + esc(s.booth) : 'Sem stand'}</div>
+            ${s.pending ? '' : s.product_count ? `<div class="item-sub" style="margin-top:2px"><b>${plural(s.product_count, 'produto', 'produtos')}</b> · melhor preço em ${s.best_count || 0}</div>`
+              : `<div style="margin-top:4px"><span class="badge bad">${ic('alert')} sem produtos</span></div>`}
             ${companyTag(s.company_cnpj)}
           </div>
         </a>`).join('')
@@ -709,78 +718,75 @@ async function viewSuppliers() {
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
 }
 
-async function viewSupplier(id) {
-  setChrome({ title: 'Fornecedor', back: '#/suppliers', tab: 'suppliers' });
+// Botão "Adicionar produtos": as mesmas três formas nas telas de Produtos e do fornecedor.
+// Dentro do fornecedor, as três já vêm ligadas a ele.
+function addProductsMenuHtml({ supplierId = null, company = null } = {}) {
+  const qs = supplierId ? `?supplier=${supplierId}${company ? `&company=${encodeURIComponent(company)}` : ''}` : '';
+  return `
+    <div class="add-menu">
+      <button type="button" class="btn primary block add-menu-btn" aria-expanded="false">${ic('plus')}<span>Adicionar produtos</span>${ic('chev')}</button>
+      <div class="menu" hidden>
+        <a href="#/products/new${qs}">${ic('pen')}<div><b>Manual</b><small>digitar os dados</small></div></a>
+        ${state.me?.features?.product_ocr ? `<a href="#/products/scan${qs}">${ic('camera')}<div><b>Pela foto</b><small>produto, catálogo ou tabela de preços</small></div></a>` : ''}
+        <a href="#/products/import${qs}">${ic('receipt')}<div><b>Planilha</b><small>importar do Excel</small></div></a>
+      </div>
+    </div>`;
+}
+function bindAddProductsMenu() {
+  const wrap = $app.querySelector('.add-menu');
+  if (!wrap) return;
+  const btn = wrap.querySelector('.add-menu-btn');
+  const menu = wrap.querySelector('.menu');
+  const set = (open) => { menu.hidden = !open; btn.setAttribute('aria-expanded', String(open)); wrap.classList.toggle('open', open); };
+  btn.addEventListener('click', (e) => { e.stopPropagation(); set(menu.hidden); });
+  const outside = (e) => { if (!wrap.isConnected) { document.removeEventListener('click', outside); return; } if (!wrap.contains(e.target)) set(false); };
+  document.addEventListener('click', outside);
+}
+
+async function viewSupplier(id, query = new URLSearchParams()) {
+  // Aberto a partir de um produto (?from=p<id>): a seta volta para ele.
+  const fromProduct = Number((/^p(\d+)$/.exec(query.get('from') || '') || [])[1]) || null;
+  const backTo = fromProduct ? `#/products/${fromProduct}` : '#/suppliers';
+  setChrome({ title: 'Fornecedor', back: backTo, tab: 'suppliers' });
   loading();
   const s = await api(`/api/suppliers/${id}`);
-  setChrome({ title: s.name, back: '#/suppliers', tab: 'suppliers' });
+  setChrome({ title: s.name, back: backTo, backLabel: fromProduct ? s.products.find((x) => x.id === fromProduct)?.name : null, tab: 'suppliers' });
+  const phoneDigits = (s.phone || '').replace(/\D/g, '');
   $app.innerHTML = `
     ${s.card_photo ? `<div class="detail-photo" id="card-photo"><img src="${esc(s.card_photo)}" alt="Cartão de visitas"></div>`
       : `<a class="btn block" href="#/suppliers/${s.id}/edit">${ic('contact')} Adicionar foto do cartão</a>`}
     <div class="card stack" style="margin-top:14px">
-      <div><div class="item-sub">Nome</div><div class="item-title">${esc(s.name)}</div></div>
-      ${s.contact_name ? `<div><div class="item-sub">Contato</div><div>${esc(s.contact_name)}</div></div>` : ''}
-      ${s.phone ? `<div><div class="item-sub">Telefone</div><div class="phone-line">
-        <a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a>
-        ${s.phone.replace(/\D/g, '').length >= 8 ? `<a class="btn small${s.phone_whatsapp ? ' wa-btn' : ''}" target="_blank" rel="noopener" href="${esc(waLink(s.phone))}">${s.phone_whatsapp ? MSG_ICONS.whatsapp : ''}WhatsApp</a>` : ''}
-        ${s.phone_wechat ? `<button type="button" class="btn small wc-btn" data-msg="wechat" data-phone="${esc(s.phone)}">${MSG_ICONS.wechat}WeChat</button>` : ''}
-      </div></div>` : ''}
-      <div><div class="item-sub">Stand</div><div>${esc(s.booth || '—')}</div></div>
-      ${s.address || s.province ? `<div><div class="item-sub">Endereço</div><div class="trip-line">
-        <span style="flex:1;min-width:0;white-space:pre-wrap">${esc([s.address, provinceLabel(s.province)].filter(Boolean).join('\n'))}</span>
-        ${s.address ? `<button type="button" class="copy-btn" data-copy="${esc(s.address)}" title="Copiar endereço">Copiar</button>` : ''}
-      </div></div>` : ''}
-      ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>` : ''}
-      ${s.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(s.notes)}</div></div>` : ''}
-      <div class="actions">
-        <a class="btn" href="#/suppliers/${s.id}/edit">Editar</a>
-        <a class="btn primary" href="#/products/new?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">+ Produto</a>
+      <div class="block-title">Contato</div>
+      <div class="kv">
+        <span>Nome</span><span class="item-title">${esc(s.name)}</span>
+        ${s.contact_name ? `<span>Contato</span><span>${esc(s.contact_name)}</span>` : ''}
+        ${s.phone ? `<span>Telefone</span><span><a href="tel:${esc(s.phone.replace(/[^0-9+]/g, ''))}">${esc(s.phone)}</a></span>` : ''}
+        <span>Stand</span><span>${esc(s.booth || '—')}</span>
+        ${s.address || s.province ? `<span>Endereço</span><span class="kv-addr"><span style="white-space:pre-wrap">${esc([s.address, provinceLabel(s.province)].filter(Boolean).join('\n'))}</span>
+          ${s.address ? `<button type="button" class="copy-btn" data-copy="${esc(s.address)}" title="Copiar endereço">Copiar</button>` : ''}</span>` : ''}
+        ${isAdmin() ? `<span>Empresa</span><span>${esc(s.company_name || companyLabel(s.company_cnpj))}</span>` : ''}
+        ${s.notes ? `<span>Observações</span><span style="white-space:pre-wrap">${esc(s.notes)}</span>` : ''}
       </div>
-      ${state.me?.features?.product_ocr ? `<a class="btn block" href="#/products/scan?supplier=${s.id}&company=${encodeURIComponent(s.company_cnpj)}">${ic('camera')} Produtos pela foto (catálogo, tabela de preços)</a>` : ''}
+      <div class="contact-actions">
+        <a class="btn" href="#/suppliers/${s.id}/edit">Editar</a>
+        ${phoneDigits.length >= 8 ? `<a class="btn${s.phone_whatsapp ? ' wa-btn' : ''}" target="_blank" rel="noopener" href="${esc(waLink(s.phone))}">${s.phone_whatsapp ? MSG_ICONS.whatsapp : ''}WhatsApp</a>` : ''}
+        ${s.phone_wechat ? `<button type="button" class="btn wc-btn" data-msg="wechat" data-phone="${esc(s.phone)}">${MSG_ICONS.wechat}WeChat</button>` : ''}
+      </div>
       <div class="meta">Atualizado ${dateBr(s.updated_at)}${s.updated_by_name ? ' por ' + esc(s.updated_by_name) : ''}</div>
     </div>
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
-    <div class="list">${s.products.length ? s.products.map((p) => `
-      <div class="sup-prod">
-        <a class="item" href="#/products/${p.id}">
-          ${thumbImg(p.photo)}
-          <div class="item-body">
-            <div class="item-title">${esc(p.name)}</div>
-            <div class="item-sub">${priceIn(p.price, p.currency)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
-          </div>
-          <div class="item-side"><div>${brl(p.estimated_brl)}</div><div class="item-sub">estimado</div></div>
-        </a>
-        <label class="sup-prod-cam" title="Tirar foto deste produto (fica nas fotos deste fornecedor)">
-          ${ic('camera')}<small>${p.photo_count ? `${p.photo_count} foto${p.photo_count > 1 ? 's' : ''}` : 'Foto'}</small>
-          <input type="file" accept="image/*" multiple data-sup-photo="${p.id}" hidden>
-        </label>
-      </div>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
+    ${addProductsMenuHtml({ supplierId: s.id, company: s.company_cnpj })}
+    <div class="list" style="margin-top:12px">${s.products.length ? s.products.map((pr) => offerCardHtml({
+      title: pr.name, href: `#/products/${pr.id}?from=s${s.id}`, thumb: thumbImg(pr.photo),
+      sub: [pr.price_brl ? `Preço no Brasil ${brl(pr.price_brl)}` : '', pr.offer_count > 1 ? `${pr.offer_count} fornecedores` : ''].filter(Boolean).join(' · '),
+      best: pr.is_best, o: pr, units: pr.units_per_40hq, productId: pr.id, supplierId: s.id, photos: pr.photos || [],
+    })).join('') : '<div class="empty">Nenhum produto vinculado ainda.</div>'}
     </div>`;
   document.getElementById('card-photo')?.addEventListener('click', () => openLightbox(s.card_photo));
   bindCopyButtons();
   bindMsgButtons();
-  // Foto do produto direto da lista do fornecedor: entra nas fotos deste fornecedor no produto.
-  $app.querySelectorAll('[data-sup-photo]').forEach((input) => input.addEventListener('change', async () => {
-    const files = [...input.files];
-    input.value = '';
-    if (!files.length) return;
-    const label = input.closest('label');
-    label.classList.add('busy');
-    let sent = 0;
-    try {
-      for (const [i, file] of files.entries()) {
-        label.querySelector('small').textContent = `${i + 1} de ${files.length}…`;
-        const photo = await resizeImage(file, 1024, 0.75);
-        await api(`/api/products/${input.dataset.supPhoto}/photos`, { method: 'POST', body: { supplier_id: s.id, photo, photo_thumb: await makeThumb(photo) } });
-        sent++;
-      }
-      toast(sent > 1 ? `${sent} fotos adicionadas.` : 'Foto adicionada.');
-    } catch (err) {
-      toast(sent ? `${sent} foto(s) enviada(s). ${err.message}` : err.message);
-    } finally {
-      if (location.hash === `#/suppliers/${s.id}`) viewSupplier(s.id);
-    }
-  }));
+  bindAddProductsMenu();
+  bindOfferPhotos();
 }
 
 // Ícones de WhatsApp e WeChat ao lado do telefone.
@@ -934,9 +940,10 @@ async function viewSupplierForm(id) {
   $app.innerHTML = `
     <form class="card stack" id="f" novalidate>
       ${companyField}
-      <div><label>Foto do cartão de visitas</label>
-        <div id="photo">${photoInputHtml(s.card_photo, photoHint)}</div></div>
+      <div class="block-title">1. Cartão de visitas</div>
+      <div><div id="photo">${photoInputHtml(s.card_photo, photoHint)}</div></div>
       <div class="ocr-status" id="ocr-status" hidden></div>
+      <div class="block-title block-sep">2. Contato</div>
       <div><label for="name">Nome do fornecedor <span class="req">*</span></label><input id="name" name="name" value="${esc(s.name)}" required></div>
       <div><label for="contact_name">Nome de contato</label><input id="contact_name" name="contact_name" value="${esc(s.contact_name)}" autocomplete="off"></div>
       <div class="row stack-sm">
@@ -947,6 +954,7 @@ async function viewSupplierForm(id) {
           </div></div>
         <div><label for="booth">Nº do stand</label><input id="booth" name="booth" value="${esc(s.booth)}" placeholder="ex.: 11.2 C23"></div>
       </div>
+      <div class="block-title block-sep">3. Endereço</div>
       <div><label for="address">Endereço</label><textarea id="address" name="address" rows="2" placeholder="Rua, número, distrito, cidade">${esc(s.address)}</textarea></div>
       <div><label for="province">Província</label><select id="province" name="province">${provinceOptions(s.province)}</select></div>
       <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(s.notes)}</textarea></div>
@@ -1047,12 +1055,8 @@ async function viewProducts() {
   $app.innerHTML = `
     ${saved.offline ? offlineNote('produtos') : ''}
     ${scopeBarHtml()}
-    <div class="add-choice" aria-label="Novo produto">
-      <a class="btn primary" href="#/products/new">${ic('pen')} Manual<small>digitar os dados</small></a>
-      ${state.me?.features?.product_ocr ? `<a class="btn" href="#/products/scan">${ic('camera')} Pela foto<small>catálogo ou tabela</small></a>` : ''}
-      <a class="btn" href="#/products/import">${ic('receipt')} Planilha<small>importar do Excel</small></a>
-    </div>
-    <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
+    ${addProductsMenuHtml()}
+    <div class="toolbar" style="margin-top:12px"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/products/new" aria-label="Novo produto">+</a>`;
   const render = (q = '') => {
@@ -1074,8 +1078,8 @@ async function viewProducts() {
           ${thumbImg(p.list_photo || p.photo)}
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
-            <div class="item-sub">${p.offers.length} fornecedor(es)${b ? ' · melhor: ' + esc(b.supplier_name) : ''}</div>
-            <div style="margin-top:4px">${savingBadge(p.price_brl, b?.estimated_brl)} ${companyTag(p.company_cnpj)}</div>
+            <div class="item-sub">${p.offers.length ? `${plural(p.offers.length, 'fornecedor', 'fornecedores')}${b ? ' · melhor: ' + esc(b.supplier_name) : ''}` : 'Nenhum fornecedor vinculado'}</div>
+            <div style="margin-top:4px">${p.offers.length ? savingBadge(p.price_brl, b?.estimated_brl) : `<span class="badge bad">${ic('alert')} sem fornecedor</span>`} ${companyTag(p.company_cnpj)}</div>
           </div>
           <div class="item-side">
             <div class="price-line" title="Preço estimado importando da China">${FLAG_CN}${b ? brl(b.estimated_brl) : '—'}</div>
@@ -1087,6 +1091,7 @@ async function viewProducts() {
   };
   render();
   bindScopeBar();
+  bindAddProductsMenu();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
   // Pressionar e segurar um produto: opção de excluir.
   onLongPress(document.getElementById('list'), '[data-product]', (el) => {
@@ -1159,16 +1164,51 @@ function actionSheet(title, actions) {
   document.body.appendChild(box);
 }
 
-async function viewProduct(id) {
-  setChrome({ title: 'Produto', back: '#/products', tab: 'products' });
+// Cartão de oferta, o mesmo nas telas do produto e do fornecedor (só muda quem é o título):
+// Preço · MOQ · Incoterm · Nacionalização, estimado no Brasil e as fotos deste fornecedor no produto.
+function offerCardHtml({ title, href, sub = '', thumb = '', best = false, o, units, productId, supplierId, photos = [] }) {
+  const freightNote = o.freight_usd > 0 ? `inclui frete ${usd(o.freight_usd)}/un.`
+    : FREIGHT_INCLUDED.includes(o.incoterm) && units ? `frete já incluso no ${esc(o.incoterm)}` : 'sem frete no cálculo';
+  return `
+    <div class="card mirror">
+      <a class="m-head" href="${href}">${thumb}
+        <div class="item-body"><div class="item-title">${best && !thumb ? ic('star') + ' ' : ''}${esc(title)}</div>${sub ? `<div class="item-sub">${sub}</div>` : ''}
+          ${best && thumb ? '<span class="badge good" style="margin-top:4px">melhor preço</span>' : ''}</div>
+        ${best && !thumb ? '<span class="badge good">melhor preço</span>' : ''}
+      </a>
+      <div class="m-grid">
+        <div>Preço<b>${priceIn(o.price, o.currency)}</b></div><div>MOQ<b>${o.moq ?? '—'}</b></div>
+        <div>Incoterm<b>${esc(o.incoterm || '—')}</b></div><div>Nacionaliz.<b>${pct(o.nationalization_pct)}</b></div>
+      </div>
+      <div class="m-est"><span class="item-sub">Estimado no Brasil<br><small>${freightNote}</small></span><b>${brl(o.estimated_brl)}</b></div>
+      <div class="offer-photos" aria-label="Fotos deste fornecedor">
+        ${photos.map((ph) => `<div class="offer-photo">
+          <img src="${esc(thumbUrl(ph.url))}" alt="" loading="lazy" data-full="${esc(ph.url)}">
+          <button type="button" class="offer-photo-del" data-del-photo="${productId}:${ph.id}" aria-label="Excluir foto" title="Excluir foto">${ic('trash')}</button>
+        </div>`).join('')}
+        ${photos.length < 12 ? `<label class="offer-photo offer-photo-add" title="Adicionar fotos deste fornecedor">
+          ${ic('camera')}<small>${photos.length ? 'Mais fotos' : 'Fotos'}</small>
+          <input type="file" accept="image/*" multiple data-add-photo="${productId}:${supplierId}">
+        </label>` : ''}
+      </div>
+    </div>`;
+}
+
+async function viewProduct(id, query = new URLSearchParams()) {
+  // Aberto a partir de um fornecedor (?from=s<id>): a seta volta para ele.
+  const fromSupplier = Number((/^s(\d+)$/.exec(query.get('from') || '') || [])[1]) || null;
+  const backTo = fromSupplier ? `#/suppliers/${fromSupplier}` : '#/products';
+  setChrome({ title: 'Produto', back: backTo, tab: 'products' });
   loading();
   const p = await api(`/api/products/${id}`);
-  setChrome({ title: p.name, back: '#/products', tab: 'products' });
+  const fromName = fromSupplier ? p.offers.find((o) => o.supplier_id === fromSupplier)?.supplier_name : null;
+  setChrome({ title: p.name, back: backTo, backLabel: fromName, tab: 'products' });
   const b = bestOffer(p);
   $app.innerHTML = `
     ${p.photo ? `<div class="detail-photo" id="photo"><img src="${esc(p.photo)}" alt="${esc(p.name)}"></div>` : ''}
     <div class="card stack" style="margin-top:${p.photo ? 14 : 0}px">
-      <div><div class="item-sub">Produto</div><div class="item-title">${esc(p.name)}</div></div>
+      <div class="block-title">Produto</div>
+      <div><div class="item-title">${esc(p.name)}</div></div>
       ${isAdmin() ? `<div><div class="item-sub">Empresa</div><div>${esc(p.company_name || companyLabel(p.company_cnpj))}</div></div>` : ''}
       <div class="compare">
         <div>${FLAG_BR} Preço no Brasil<b>${brl(p.price_brl)}</b></div>
@@ -1182,76 +1222,56 @@ async function viewProduct(id) {
       ${p.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(p.notes)}</div></div>` : ''}
       <a class="btn" href="#/products/${p.id}/edit">Editar</a>
     </div>
-    <h2>Fornecedores (${p.offers.length})</h2>
+    <h2>Fornecedores deste produto (${p.offers.length})</h2>
     ${p.offers.length ? `
-    <div class="list">${p.offers.map((o, i) => `
-      <div class="item rank-item offer-card">
-        <a class="offer-head offer-link" style="margin:0" href="#/suppliers/${o.supplier_id}">
-          <div class="item-body">
-            <div class="item-title">${i === 0 ? ic('star') + ' ' : ''}${esc(o.supplier_name)}</div>
-            <div class="item-sub">${o.supplier_booth ? 'Stand ' + esc(o.supplier_booth) : 'Sem stand'}</div>
-          </div>
-          ${i === 0 ? '<span class="badge good">melhor preço</span>' : ''}
-        </a>
-        <div class="compare four">
-          <div>Preço<b>${priceIn(o.price, o.currency)}</b></div>
-          <div>MOQ<b>${o.moq ?? '—'}</b></div>
-          <div>${esc(o.incoterm || 'Incoterm')}<b>${pct(o.nationalization_pct)}</b></div>
-          <div>Estimado<b>${brl(o.estimated_brl)}</b></div>
-        </div>
-        <div class="item-sub" style="margin-top:6px">${o.freight_usd > 0 ? `Frete incluído: ${usd(o.freight_usd)}/un.`
-          : FREIGHT_INCLUDED.includes(o.incoterm) && p.units_per_40hq ? `Frete já incluso no ${esc(o.incoterm)}` : 'Sem frete no cálculo'}
-        </div>
-        <div class="offer-photos" aria-label="Fotos deste fornecedor">
-          ${(o.photos || []).map((ph) => `<div class="offer-photo">
-            <img src="${esc(thumbUrl(ph.url))}" alt="Foto de ${esc(o.supplier_name)}" loading="lazy" data-full="${esc(ph.url)}">
-            <button type="button" class="offer-photo-del" data-del-photo="${ph.id}" aria-label="Excluir foto" title="Excluir foto">${ic('trash')}</button>
-          </div>`).join('')}
-          ${(o.photos || []).length < 12 ? `<label class="offer-photo offer-photo-add" title="Adicionar fotos deste fornecedor">
-            ${ic('camera')}<small>${(o.photos || []).length ? 'Mais fotos' : 'Fotos'}</small>
-            <input type="file" accept="image/*" multiple data-add-photo="${o.supplier_id}">
-          </label>` : ''}
-        </div>
-      </div>`).join('')}
+    <div class="list">${p.offers.map((o, i) => offerCardHtml({
+      title: o.supplier_name, href: `#/suppliers/${o.supplier_id}?from=p${p.id}`, sub: o.supplier_booth ? 'Stand ' + esc(o.supplier_booth) : 'Sem stand',
+      best: i === 0, o, units: p.units_per_40hq, productId: p.id, supplierId: o.supplier_id, photos: o.photos || [],
+    })).join('')}
     </div>
     <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
-    : '<div class="empty">Nenhum fornecedor vinculado a este produto.</div>'}
+    : `<div class="empty">Nenhum fornecedor vinculado a este produto.<br><a class="btn primary" href="#/products/${p.id}/edit">Adicionar fornecedor</a></div>`}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
-  bindOfferPhotos(p);
+  bindOfferPhotos();
 }
 
-// Fotos do produto por fornecedor: ver em tela cheia, adicionar (várias de uma vez) e excluir.
-function bindOfferPhotos(p) {
+// Fotos do produto por fornecedor (cartões de oferta): ver em tela cheia, adicionar (várias de uma vez)
+// e excluir. Depois de mudar, recarrega a tela atual.
+function bindOfferPhotos() {
+  const reload = () => router();
   $app.querySelectorAll('.offer-photo img').forEach((img) => img.addEventListener('click', () => openLightbox(img.dataset.full)));
   $app.querySelectorAll('[data-del-photo]').forEach((b) => b.addEventListener('click', async () => {
     if (!confirm('Excluir esta foto?')) return;
+    const [pid, photoId] = b.dataset.delPhoto.split(':');
     b.disabled = true;
     try {
-      await api(`/api/products/${p.id}/photos/${b.dataset.delPhoto}`, { method: 'DELETE' });
+      await api(`/api/products/${pid}/photos/${photoId}`, { method: 'DELETE' });
       toast('Foto excluída.');
-      viewProduct(p.id);
+      reload();
     } catch (err) { b.disabled = false; toast(err.message); }
   }));
   $app.querySelectorAll('[data-add-photo]').forEach((input) => input.addEventListener('change', async () => {
     const files = [...input.files];
     input.value = '';
     if (!files.length) return;
+    const [pid, sid] = input.dataset.addPhoto.split(':').map(Number);
     const label = input.closest('label');
     label.classList.add('busy');
+    const hash = location.hash;
     let sent = 0;
     try {
       for (const [i, file] of files.entries()) {
         label.querySelector('small').textContent = `${i + 1} de ${files.length}…`;
         const photo = await resizeImage(file, 1024, 0.75);
-        await api(`/api/products/${p.id}/photos`, { method: 'POST', body: { supplier_id: Number(input.dataset.addPhoto), photo, photo_thumb: await makeThumb(photo) } });
+        await api(`/api/products/${pid}/photos`, { method: 'POST', body: { supplier_id: sid, photo, photo_thumb: await makeThumb(photo) } });
         sent++;
       }
       toast(sent > 1 ? `${sent} fotos adicionadas.` : 'Foto adicionada.');
     } catch (err) {
       toast(sent ? `${sent} foto(s) enviada(s). ${err.message}` : err.message);
     } finally {
-      if (location.hash === `#/products/${p.id}`) viewProduct(p.id);
+      if (location.hash === hash) reload();
     }
   }));
 }
@@ -1289,7 +1309,8 @@ const existingProductNames = (company) => Promise.all([
 
 async function viewProductForm(id, query) {
   const editing = id != null;
-  setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : '#/products', tab: 'products', form: true });
+  const fromSupplierId = !editing && Number(query.get('supplier')) > 0 ? Number(query.get('supplier')) : null;
+  setChrome({ title: editing ? 'Editar produto' : 'Novo produto', back: editing ? `#/products/${id}` : fromSupplierId ? `#/suppliers/${fromSupplierId}` : '#/products', tab: 'products', form: true });
   loading();
   const p = editing ? await api(`/api/products/${id}`) : { offers: [] };
   // O produto pertence a uma empresa; os fornecedores das ofertas precisam ser dela.
@@ -1344,6 +1365,7 @@ async function viewProductForm(id, query) {
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
+        <div class="block-title">1. Produto</div>
         <div>${fromSupplier
           ? `<label>Foto do produto em ${esc(fromSupplier.name)}</label><div class="hint" style="margin:-2px 0 6px">Pode tirar várias: ficam nas fotos deste fornecedor (mais abaixo).</div>`
           : '<label>Foto geral do produto <small class="item-sub">(opcional — as fotos de cada fornecedor ficam mais abaixo)</small></label>'}
@@ -1356,14 +1378,14 @@ async function viewProductForm(id, query) {
           <div class="dup-box" id="dup-box" hidden></div></div>
         <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
           <div class="hint">Preço de referência praticado no mercado brasileiro.</div></div>
-        <div><label for="units_per_40hq">Unidades por container 40HQ</label>
+        <div><label for="units_per_40hq">Unid. por 40HQ</label>
           <input id="units_per_40hq" name="units_per_40hq" inputmode="numeric" value="${p.units_per_40hq ?? ''}" placeholder="ex.: 12000">
           <div class="hint" id="freight-hint">${freightHint(p.units_per_40hq, rate)}</div></div>
         <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(p.notes)}</textarea></div>
       </div>
       <div class="card">
-        <div class="offer-head" style="margin-bottom:12px"><h3>Fornecedores e preços</h3>
-          <button type="button" class="btn small" id="add-offer">+ Adicionar</button></div>
+        <div class="offer-head" style="margin-bottom:12px"><div class="block-title">2. Fornecedores e preços</div>
+          <button type="button" class="btn small" id="add-offer">+ Adicionar fornecedor</button></div>
         <div id="offers"></div>
         <p class="hint">${FORMULA} (${ratesText({ exchange_rate: rates.USD, cny_rate: rates.CNY })}). O frete não é somado quando o Incoterm já o inclui (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>
       </div>
@@ -1437,7 +1459,7 @@ async function viewProductForm(id, query) {
           </select></div>
         </div>
         <div class="row" style="margin-top:10px">
-          <div><label>Nacionaliz. (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
+          <div><label>Nacionalização (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
           <div></div>
         </div>
         <div class="offer-calc" data-calc="${i}">${offerCalc(o)}</div>
@@ -1749,7 +1771,7 @@ async function viewProductForm(id, query) {
       if (saved) {
         const failed = await syncPhotos(saved.id);
         toast(failed ? `Produto salvo, mas ${failed} foto(s) não foram enviadas. Tente de novo pela tela do produto.` : 'Produto salvo.');
-        location.hash = `#/products/${saved.id}`;
+        location.hash = `#/products/${saved.id}${fromSupplierId ? `?from=s${fromSupplierId}` : ''}`;
         return;
       }
       toast(newCount ? 'Sem internet: produto guardado no celular e enviado quando a conexão voltar. As fotos dos fornecedores precisam ser adicionadas depois, com internet.'
@@ -1795,17 +1817,18 @@ async function viewProductScan(query) {
     <form class="stack" id="f" novalidate>
       ${isAdmin() ? `<div class="card"><label for="company">Empresa</label><select id="company">${companyOptions(company)}</select></div>` : ''}
       <div class="card stack">
+        <div class="block-title">1. Fornecedor e padrões</div>
         <div><label for="supplier">Fornecedor</label>
           <select id="supplier"><option value="">— escolha o fornecedor —</option>${suppliers.map((s) =>
             `<option value="${s.id}"${s.id === Number(supplierId) ? ' selected' : ''}>${esc(s.name)}${s.booth ? ` — ${esc(s.booth)}` : ''}${s.pending ? ' (aguardando internet)' : ''}</option>`).join('')}</select>
           <div class="hint">Todos os produtos da lista ficam vinculados a este fornecedor, com o preço de cada um. Sem fornecedor, são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
         <div class="row">
-          <div><label for="nat">Nacionaliz. (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
+          <div><label for="nat">Nacionalização (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
           <div><label for="incoterm-all">Incoterm para todos</label><select id="incoterm-all">${INCOTERMS.map((t) => `<option${t === 'FOB' ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
         </div>
       </div>
       <div class="card">
-        <label>Foto</label>
+        <div class="block-title" style="margin-bottom:8px">2. Foto da lista ou do produto</div>
         <div id="photo">${photoInputHtml(null, ocrOn ? 'Fotografe o produto, a etiqueta, o catálogo ou a tabela de preços' : 'Leitura de fotos indisponível (ANTHROPIC_API_KEY não configurada)')}</div>
         <div class="hint">Pode ler várias fotos seguidas: os produtos vão sendo somados à lista abaixo.</div>
         <div class="ocr-status" id="ocr-status" hidden></div>
@@ -1879,8 +1902,8 @@ async function viewProductScan(query) {
           <div><label>Incoterm</label><select data-k="incoterm"><option value="">—</option>${INCOTERMS.map((t) => `<option${it.incoterm === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
         </div>
         <div class="row">
-          <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
-          <div><label>Nacionaliz. (%)</label><input data-k="nat" inputmode="decimal" value="${esc(it.nat ?? '')}" placeholder="ex.: 85"></div>
+          <div><label>Nacionalização (%)</label><input data-k="nat" inputmode="decimal" value="${esc(it.nat ?? '')}" placeholder="ex.: 85"></div>
+          <div><label>Unid. por 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
         </div>
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
         <div class="scan-photo">
@@ -2043,11 +2066,13 @@ async function viewProductScan(query) {
 // Fornecedor não encontrado fica em branco: o preço vai para as observações para vincular depois.
 
 async function viewProductImport(query) {
-  setChrome({ title: 'Importar planilha', back: '#/products', tab: 'products', form: true });
+  setChrome({ title: 'Importar planilha', back: Number(query.get('supplier')) > 0 ? `#/suppliers/${Number(query.get('supplier'))}` : '#/products', tab: 'products', form: true });
   loading();
   const company = isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
   const [suppliers, existing] = await Promise.all([getSuppliers(isAdmin() ? company : null), existingProductNames(company)]);
   const realSuppliers = suppliers.filter((x) => x.id > 0);
+  // Aberta pelo fornecedor: linhas sem fornecedor na planilha ficam com ele.
+  const defaultSupplier = realSuppliers.find((x) => x.id === Number(query.get('supplier'))) || null;
   let rows = [];
 
   $app.innerHTML = `
@@ -2057,6 +2082,7 @@ async function viewProductImport(query) {
         <div><b>1.</b> Baixe o modelo e preencha uma linha por produto. A coluna Fornecedor já vem com a lista dos fornecedores cadastrados.</div>
         <a class="btn" href="/api/products/import-template${isAdmin() ? `?company=${encodeURIComponent(company)}` : ''}" download>${ic('download')} Baixar modelo da planilha</a>
         <div><b>2.</b> Envie a planilha preenchida (.xlsx). Você confere tudo antes de salvar.</div>
+        ${defaultSupplier ? `<div class="hint" style="margin:0">Linhas sem fornecedor na planilha ficam com <b>${esc(defaultSupplier.name)}</b>.</div>` : ''}
         <label class="btn primary">${ic('upload')} Escolher planilha<input type="file" id="file" accept="${XLSX_ACCEPT}" hidden></label>
         <div class="ocr-status" id="status" hidden></div>
       </div>
@@ -2092,11 +2118,11 @@ async function viewProductImport(query) {
           <div><label>Incoterm</label><select data-k="incoterm"><option value="">—</option>${INCOTERMS.map((t) => `<option${r.incoterm === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
         </div>
         <div class="row">
-          <div><label>Nacionaliz. (%)</label><input data-k="nat" inputmode="decimal" value="${esc(r.nat)}" placeholder="ex.: 85"></div>
-          <div><label>Preço no Brasil (R$)</label><input data-k="price_brl" inputmode="decimal" value="${esc(r.price_brl)}"></div>
+          <div><label>Nacionalização (%)</label><input data-k="nat" inputmode="decimal" value="${esc(r.nat)}" placeholder="ex.: 85"></div>
+          <div><label>Unid. por 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(r.units_per_40hq)}"></div>
         </div>
         <div class="row">
-          <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(r.units_per_40hq)}"></div>
+          <div><label>Preço no Brasil (R$)</label><input data-k="price_brl" inputmode="decimal" value="${esc(r.price_brl)}"></div>
           <div></div>
         </div>
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(r.notes)}</textarea></div>
@@ -2130,7 +2156,7 @@ async function viewProductImport(query) {
       const r = await api('/api/products/import/parse', { method: 'POST', body: { file: await readFileAsDataUrl(file), ...(isAdmin() ? { company } : {}) }, timeout: 60_000 });
       if (r.error) { status.className = 'ocr-status err'; status.textContent = r.error; return; }
       rows = r.rows.map((x) => ({ ...x, include: true, price: numText(x.price), nat: numText(x.nat), price_brl: numText(x.price_brl),
-        moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', supplier_id: x.supplier_id ?? '' }));
+        moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', supplier_id: x.supplier_id ?? (!x.supplier_name && defaultSupplier ? defaultSupplier.id : '') }));
       const linked = rows.filter((x) => x.supplier_id).length;
       status.className = 'ocr-status ok';
       status.textContent = `✓ ${rows.length} produto(s) lido(s), ${linked} com fornecedor encontrado. Confira e corrija antes de salvar.`;
@@ -2184,7 +2210,7 @@ async function viewProductImport(query) {
       return;
     }
     toast(queued ? `${saved} produto(s) salvo(s) e ${queued} guardado(s) no celular — serão enviados quando a internet voltar.` : `${saved} produto(s) importado(s).`);
-    location.hash = '#/products';
+    location.hash = defaultSupplier ? `#/suppliers/${defaultSupplier.id}` : '#/products';
   });
 }
 
@@ -3822,7 +3848,7 @@ const routes = [
   [/^\/ranking$/, viewRanking],
   [/^\/suppliers$/, viewSuppliers],
   [/^\/suppliers\/new$/, () => viewSupplierForm(null)],
-  [/^\/suppliers\/(\d+)$/, (m) => viewSupplier(m[1])],
+  [/^\/suppliers\/(\d+)$/, (m, q) => viewSupplier(m[1], q)],
   [/^\/suppliers\/(\d+)\/edit$/, (m) => viewSupplierForm(m[1])],
   [/^\/products$/, viewProducts],
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
@@ -3836,7 +3862,7 @@ const routes = [
   [/^\/expenses$/, (m, q) => viewExpenses(q)],
   [/^\/expenses\/new$/, () => viewExpenseForm(null)],
   [/^\/expenses\/(\d+)\/edit$/, (m) => viewExpenseForm(m[1])],
-  [/^\/products\/(\d+)$/, (m) => viewProduct(m[1])],
+  [/^\/products\/(\d+)$/, (m, q) => viewProduct(m[1], q)],
   [/^\/products\/(\d+)\/edit$/, (m, q) => viewProductForm(m[1], q)],
   [/^\/map$/, viewMap],
   [/^\/trip$/, () => viewTrip()],

@@ -644,26 +644,55 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       FROM suppliers s LEFT JOIN users u ON u.id = s.updated_by
       JOIN companies c ON c.cnpj = s.cnpj
       WHERE 1 = 1${companyFilter('s', cnpj)} ORDER BY lower(s.name)`, companyParam(cnpj));
-    return rows.map(supplierOut);
+    // Em quantos produtos cada fornecedor tem o menor preço estimado (para o cartão da lista).
+    const products = await db.all(`SELECT p.id, p.units_per_40hq, c.exchange_rate, c.cny_rate FROM products p JOIN companies c ON c.cnpj = p.cnpj
+      WHERE 1 = 1${companyFilter('p', cnpj)}`, companyParam(cnpj));
+    const bestCount = new Map();
+    if (products.length) {
+      const freight = await freight40hq();
+      const byProduct = Map.groupBy(await offersFor(cnpj, products.map((x) => x.id)), (o) => o.product_id);
+      for (const pr of products) {
+        let best = null;
+        for (const o of byProduct.get(pr.id) || []) {
+          const est = estimateBrl(o.price, o.currency, o.nationalization_pct, ratesOf(pr), offerFreight(o.incoterm, freightPerUnit(freight, pr.units_per_40hq)));
+          if (!best || est < best.est) best = { est, sid: o.supplier_id };
+        }
+        if (best) bestCount.set(best.sid, (bestCount.get(best.sid) || 0) + 1);
+      }
+    }
+    return rows.map((r) => ({ ...supplierOut(r), best_count: bestCount.get(r.id) || 0 }));
   });
 
   route('GET', '/api/suppliers/:id', async ({ user, params }) => {
     const s = await loadSupplier(db, accessCnpj(user), params.id);
     const company = await getCompany(s.cnpj);
     const freight = await freight40hq();
-    const products = (await db.all(`
-      SELECT p.id, p.name, p.price_brl, p.units_per_40hq, o.price_usd AS price, o.currency, o.moq, o.incoterm, o.nationalization_pct,
-        COALESCE((SELECT op.image_id FROM offer_photos op WHERE op.product_id = p.id AND op.supplier_id = o.supplier_id ORDER BY op.id LIMIT 1),
-          ${listPhotoSql('p')}) AS photo,
-        (SELECT COUNT(*) FROM offer_photos op WHERE op.product_id = p.id AND op.supplier_id = o.supplier_id) AS photo_count
+    // Mesmo formato do cartão da tela do produto: preço deste fornecedor, estimado, se é o melhor e as fotos dele.
+    const rows = await db.all(`
+      SELECT p.id, p.name, p.price_brl, p.units_per_40hq, ${listPhotoSql('p')} AS cover
       FROM offers o JOIN products p ON p.id = o.product_id
-      WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
-      .map((r) => ({
-        ...r, photo: photoUrl(r.photo), photo_count: Number(r.photo_count),
-        price: Number(r.price), currency: r.currency || 'USD',
-        estimated_brl: round2(estimateBrl(Number(r.price), r.currency || 'USD', r.nationalization_pct, ratesOf(company),
-          offerFreight(r.incoterm, freightPerUnit(freight, r.units_per_40hq)))),
-      }));
+      WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]);
+    const ids = rows.map((r) => r.id);
+    const rates = ratesOf(company);
+    const offers = ids.length ? await offersFor(s.cnpj, ids) : [];
+    const photos = ids.length ? await db.all(`SELECT id, product_id, image_id FROM offer_photos
+      WHERE supplier_id = ? AND product_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`, [s.id, ...ids]) : [];
+    const products = rows.map((r) => {
+      const opts = offers.filter((o) => o.product_id === r.id).map((o) => {
+        const fr = offerFreight(o.incoterm, freightPerUnit(freight, r.units_per_40hq));
+        return { ...o, freight: fr, est: round2(estimateBrl(o.price, o.currency, o.nationalization_pct, rates, fr)) };
+      });
+      const mine = opts.find((o) => o.supplier_id === s.id);
+      const ph = photos.filter((x) => x.product_id === r.id);
+      return {
+        id: r.id, name: r.name, price_brl: r.price_brl, units_per_40hq: r.units_per_40hq ?? null,
+        price: mine.price, currency: mine.currency, moq: mine.moq, incoterm: mine.incoterm, nationalization_pct: mine.nationalization_pct,
+        freight_usd: round4(mine.freight), estimated_brl: mine.est,
+        is_best: mine.est === Math.min(...opts.map((o) => o.est)), offer_count: opts.length,
+        photo: photoUrl(ph[0]?.image_id ?? r.cover), photo_count: ph.length,
+        photos: ph.map((x) => ({ id: x.id, url: photoUrl(x.image_id) })),
+      };
+    });
     return { ...supplierOut(s), products };
   });
 
