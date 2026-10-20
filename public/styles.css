@@ -574,3 +574,5 @@ body.map-mode main { display: none; }
 .offer-photo-add .ic { width: 22px; height: 22px; }
 .offer-photo-add input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .offer-photo-add.busy { pointer-events: none; opacity: .7; }
+.offer .offer-photos-label { margin-top: 12px; font-size: .85rem; font-weight: 600; }
+.offer .offer-photos { margin-top: 6px; }

@@ -1203,8 +1203,9 @@ async function viewProductForm(id, query) {
     return;
   }
 
+  // photos: fotos já salvas deste fornecedor; newPhotos: escolhidas agora (enviadas ao salvar); delPhotos: a excluir.
   const offers = p.offers.length
-    ? p.offers.map((o) => ({ ...o }))
+    ? p.offers.map((o) => ({ ...o, photos: o.photos || [], newPhotos: [], delPhotos: [] }))
     : [{ supplier_id: Number(query.get('supplier')) || '', price_usd: '', moq: '', incoterm: 'FOB', nationalization_pct: '' }];
   // Vindo do aviso de produto repetido: acrescenta (ou atualiza) a oferta do fornecedor neste produto.
   const addSupplier = Number(query.get('add_supplier'));
@@ -1217,12 +1218,13 @@ async function viewProductForm(id, query) {
     if (cur) for (const k of ['price_usd', 'moq', 'incoterm', 'nationalization_pct']) { if (incoming[k] !== '') cur[k] = incoming[k]; }
     else offers.push(incoming);
   }
+  for (const o of offers) Object.assign(o, { photos: o.photos || [], newPhotos: o.newPhotos || [], delPhotos: o.delPhotos || [] });
 
   $app.innerHTML = `
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
-        <div><label>Foto do produto <small class="item-sub">(opcional)</small></label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
+        <div><label>Foto geral do produto <small class="item-sub">(opcional — as fotos de cada fornecedor ficam mais abaixo)</small></label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
           ${state.me?.features?.product_ocr && !editing
             ? `<button type="button" class="btn small block" id="read-photo" hidden style="margin-top:8px">${ic('sparkles')} Preencher os campos com os dados da foto</button>` : ''}
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
@@ -1301,7 +1303,22 @@ async function viewProductForm(id, query) {
           <div><label>Nacionaliz. (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
         </div>
         <div class="offer-calc" data-calc="${i}">${offerCalc(o)}</div>
+        ${offerPhotosHtml(o, i)}
       </div>`).join('');
+  }
+  function offerPhotosHtml(o, i) {
+    const kept = (o.photos || []).filter((ph) => !(o.delPhotos || []).includes(ph.id));
+    const fresh = o.newPhotos || [];
+    const total = kept.length + fresh.length;
+    return `<div class="offer-photos-label">Fotos deste fornecedor <small class="item-sub">(opcional)</small></div>
+      <div class="offer-photos">
+        ${kept.map((ph) => `<div class="offer-photo"><img src="${esc(thumbUrl(ph.url))}" alt="" data-full="${esc(ph.url)}">
+          <button type="button" class="offer-photo-del" data-del-old="${i}:${ph.id}" aria-label="Excluir foto">${ic('trash')}</button></div>`).join('')}
+        ${fresh.map((d, j) => `<div class="offer-photo"><img src="${d}" alt="" data-full="${d}">
+          <button type="button" class="offer-photo-del" data-del-new="${i}:${j}" aria-label="Excluir foto">${ic('trash')}</button></div>`).join('')}
+        ${total < 12 ? `<label class="offer-photo offer-photo-add">${ic('camera')}<small>${total ? 'Mais fotos' : 'Fotos'}</small>
+          <input type="file" accept="image/*" multiple data-add-new="${i}"></label>` : ''}
+      </div>`;
   }
   renderOffers();
 
@@ -1433,6 +1450,14 @@ async function viewProductForm(id, query) {
 
   function pickSupplier(input, id) {
     const i = Number(input.dataset.combo);
+    // As fotos já salvas eram do fornecedor anterior (saem com ele ao salvar); as novas vão para o novo.
+    if (Number(offers[i].supplier_id) !== id && offers[i].photos?.length) {
+      offers[i].photos = [];
+      offers[i].supplier_id = id;
+      renderOffers();
+      checkDuplicates();
+      return;
+    }
     offers[i].supplier_id = id;
     input.value = supplierLabel(id);
     closeCombo(input);
@@ -1488,9 +1513,27 @@ async function viewProductForm(id, query) {
     offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(offers[i]);
   });
   offersEl.addEventListener('click', (e) => {
-    const rm = e.target.dataset.rm;
+    const img = e.target.closest('.offer-photo img');
+    if (img) { openLightbox(img.dataset.full); return; }
+    const delOld = e.target.closest('[data-del-old]')?.dataset.delOld;
+    if (delOld) { const [i, pid] = delOld.split(':').map(Number); offers[i].delPhotos.push(pid); renderOffers(); return; }
+    const delNew = e.target.closest('[data-del-new]')?.dataset.delNew;
+    if (delNew) { const [i, j] = delNew.split(':').map(Number); offers[i].newPhotos.splice(j, 1); renderOffers(); return; }
+    const rm = e.target.closest('[data-rm]')?.dataset.rm;
     if (rm === undefined) return;
     offers.splice(Number(rm), 1);
+    renderOffers();
+  });
+  offersEl.addEventListener('change', async (e) => {
+    const i = e.target.dataset.addNew;
+    if (i === undefined) return;
+    const files = [...e.target.files];
+    const o = offers[Number(i)];
+    const room = 12 - ((o.photos || []).length - o.delPhotos.length) - o.newPhotos.length;
+    if (files.length > room) toast(`Cabem mais ${room} foto(s) para este fornecedor.`);
+    for (const file of files.slice(0, Math.max(0, room))) {
+      try { o.newPhotos.push(await resizeImage(file, 1024, 0.75)); } catch (err) { toast(err.message); }
+    }
     renderOffers();
   });
   form.units_per_40hq.addEventListener('input', () => {
@@ -1502,7 +1545,7 @@ async function viewProductForm(id, query) {
   });
   document.getElementById('add-offer').addEventListener('click', () => {
     const last = offers[offers.length - 1];
-    offers.push({ supplier_id: '', price_usd: '', moq: '', incoterm: last?.incoterm || 'FOB', nationalization_pct: last?.nationalization_pct ?? '' });
+    offers.push({ supplier_id: '', price_usd: '', moq: '', incoterm: last?.incoterm || 'FOB', nationalization_pct: last?.nationalization_pct ?? '', photos: [], newPhotos: [], delPhotos: [] });
     renderOffers();
   });
 
@@ -1536,22 +1579,47 @@ async function viewProductForm(id, query) {
     if (isAdmin() && !editing) body.company = company;
     const btn = form.querySelector('button[type=submit]');
     btn.disabled = true;
+    // Fotos por fornecedor: enviadas uma a uma depois de salvar o produto.
+    const syncPhotos = async (productId) => {
+      const jobs = [];
+      for (const o of offers) {
+        const sid = Number(o.supplier_id);
+        if (!payloadOffers.some((x) => x.supplier_id === sid)) continue;
+        for (const pid of o.delPhotos) jobs.push(() => api(`/api/products/${productId}/photos/${pid}`, { method: 'DELETE' }));
+        for (const d of o.newPhotos) jobs.push(async () => api(`/api/products/${productId}/photos`, { method: 'POST', body: { supplier_id: sid, photo: d, photo_thumb: await makeThumb(d) } }));
+      }
+      let failed = 0;
+      for (const [n, job] of jobs.entries()) {
+        btn.textContent = `Enviando fotos ${n + 1} de ${jobs.length}…`;
+        try { await job(); } catch { failed++; }
+      }
+      return failed;
+    };
+    const newCount = offers.reduce((s, o) => s + o.newPhotos.length, 0);
     try {
       if (editing) {
         const saved = await api(`/api/products/${id}`, { method: 'PUT', body });
-        toast('Produto salvo.');
+        const failed = await syncPhotos(saved.id);
+        toast(failed ? `Produto salvo, mas ${failed} foto(s) não foram enviadas. Tente de novo pela tela do produto.` : 'Produto salvo.');
         location.hash = `#/products/${saved.id}`;
         return;
       }
       body.client_ref = formRef;
       const { saved } = await createOrQueue('product', body, body.name);
-      if (saved) { toast('Produto salvo.'); location.hash = `#/products/${saved.id}`; return; }
-      toast('Sem internet: produto guardado no celular. Ele será enviado quando a conexão voltar.');
+      if (saved) {
+        const failed = await syncPhotos(saved.id);
+        toast(failed ? `Produto salvo, mas ${failed} foto(s) não foram enviadas. Tente de novo pela tela do produto.` : 'Produto salvo.');
+        location.hash = `#/products/${saved.id}`;
+        return;
+      }
+      toast(newCount ? 'Sem internet: produto guardado no celular e enviado quando a conexão voltar. As fotos dos fornecedores precisam ser adicionadas depois, com internet.'
+        : 'Sem internet: produto guardado no celular. Ele será enviado quando a conexão voltar.');
       location.hash = '#/products';
     } catch (err) {
       fail(err.message);
     } finally {
       btn.disabled = false;
+      btn.textContent = 'Salvar';
     }
   });
 
