@@ -8,7 +8,7 @@
 //   com sinal fraco, depois de 4 s mostra a versão salva. Sem conexão, mostra a última versão.
 //   O cache de dados e fotos é apagado ao sair da conta.
 
-const VERSION = 'v57';
+const VERSION = 'v58';
 const SHELL = `shell-${VERSION}`;
 const DATA = 'api-v1';
 const IMAGES = 'img-v1';

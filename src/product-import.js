@@ -23,6 +23,23 @@ const COLUMNS = [
   ['notes', 'Observações', ['observacoes', 'obs', 'observacao', 'notes', 'especificacoes', 'specs']],
 ];
 
+// Títulos fora da lista exata: reconhecidos por palavras-chave. A ordem importa: "Preço no Brasil",
+// "Preço de venda (R$)" etc. são conferidos antes do preço do fornecedor.
+const FUZZY = [
+  ['units', /40\s*hq|container|conteiner|contêiner/],
+  ['nat', /nacionaliz|nationaliz|% *nac/],
+  ['price_brl', /brasil|brazil|\bbr\b|r\$|\breais\b|\bbrl\b|venda|varejo|revenda|mercado|retail/],
+  ['moq', /\bmoq\b|minim|min\.? order/],
+  ['incoterm', /incoterm/],
+  ['currency', /^(moeda|currency)/],
+  ['supplier', /fornecedor|supplier|fabrica|fabricante|factory|vendor/],
+  ['price', /preco|price|valor|custo|cost|\bfob\b|\bexw\b|rmb|cny|yuan|usd|us\$|dolar|dollar/],
+  ['notes', /^obs|observ|nota|spec|especific|detalhe/],
+  ['name', /produto|nome|item|descri|product|modelo|model/],
+];
+// Moeda indicada no título da coluna de preço (ex.: "Preço (RMB)", "Price USD").
+const headerCurrency = (h) => (/rmb|cny|yuan|¥|￥/.test(h) ? 'CNY' : /usd|us\$|dolar|dollar/.test(h) ? 'USD' : null);
+
 const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 
 async function buildTemplate(supplierNames = []) {
@@ -102,15 +119,25 @@ async function parseProductsXlsx(buf, suppliers = []) {
   // Cabeçalho: a primeira linha (até a 10ª) que tenha a coluna de produto.
   let headerRow = null;
   let map = null;
+  let titles = null;
   for (let r = 1; r <= Math.min(10, ws.rowCount); r++) {
     const row = ws.getRow(r);
     const found = {};
+    const names = {};
+    const loose = [];
     row.eachCell({ includeEmpty: false }, (cell, col) => {
-      const h = norm(text(cell.value));
+      const raw = text(cell.value);
+      const h = norm(raw);
+      if (!h) return;
       const c = COLUMNS.find(([, label, aliases]) => norm(label) === h || aliases.includes(h));
-      if (c && !found[c[0]]) found[c[0]] = col;
+      if (c && !found[c[0]]) { found[c[0]] = col; names[c[0]] = raw; } else if (!c) loose.push([col, h, raw]);
     });
-    if (found.name) { headerRow = r; map = found; break; }
+    // Depois dos títulos exatos, os parecidos (só preenche campos ainda sem coluna).
+    for (const [col, h, raw] of loose) {
+      const f = FUZZY.find(([k, re]) => !found[k] && re.test(h));
+      if (f) { found[f[0]] = col; names[f[0]] = raw; }
+    }
+    if (found.name) { headerRow = r; map = found; titles = names; break; }
   }
   if (!headerRow) return { rows: [], error: 'Não encontrei a coluna "Produto" no cabeçalho. Use o modelo de planilha do app.' };
 
@@ -123,7 +150,8 @@ async function parseProductsXlsx(buf, suppliers = []) {
     if (!name) continue;
     const priceRaw = text(get('price'));
     let price = number(get('price'));
-    let currency = currencyOf(get('currency'), priceRaw);
+    let currency = map.currency && text(get('currency')) ? currencyOf(get('currency'), priceRaw)
+      : headerCurrency(norm(titles.price || '')) || currencyOf(null, priceRaw);
     if (price == null && priceRaw) { const f = priceFromText(priceRaw); if (f) ({ price, currency } = f); }
     const supplierName = text(get('supplier'));
     const supplier = supplierName ? byName.get(norm(supplierName)) : null;
@@ -143,7 +171,9 @@ async function parseProductsXlsx(buf, suppliers = []) {
       notes: text(get('notes')).slice(0, 2000),
     });
   }
-  return { rows, error: rows.length ? null : 'Nenhum produto encontrado na planilha (a coluna Produto está vazia).' };
+  // Qual coluna da planilha foi lida em cada campo (o app mostra para o usuário conferir).
+  const columns = COLUMNS.filter(([k]) => titles[k]).map(([k, label]) => ({ field: k, label: label.replace(/ \(.*\)$/, ''), header: titles[k] }));
+  return { rows, columns, error: rows.length ? null : 'Nenhum produto encontrado na planilha (a coluna Produto está vazia).' };
 }
 
 module.exports = { buildTemplate, parseProductsXlsx, COLUMNS };

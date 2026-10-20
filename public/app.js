@@ -2469,7 +2469,8 @@ async function viewProductImport(query) {
         moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', supplier_id: x.supplier_id ?? (!x.supplier_name && defaultSupplier ? defaultSupplier.id : '') }));
       const linked = rows.filter((x) => x.supplier_id).length;
       status.className = 'ocr-status ok';
-      status.textContent = `✓ ${rows.length} produto(s) lido(s), ${linked} com fornecedor encontrado. Confira e corrija antes de salvar.`;
+      status.innerHTML = `✓ ${rows.length} produto(s) lido(s), ${linked} com fornecedor encontrado. Confira e corrija antes de salvar.`
+        + (r.columns?.length ? `<div class="import-cols">Colunas lidas: ${r.columns.map((c) => `<b>${esc(c.label)}</b> ← “${esc(c.header)}”`).join(' · ')}</div>` : '');
       render();
     } catch (err) {
       status.className = 'ocr-status err';

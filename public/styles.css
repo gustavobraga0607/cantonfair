@@ -638,3 +638,4 @@ body.map-mode main { display: none; }
 .join-row .actions { margin: 0; }
 .pending-card { text-align: center; margin-top: 24px; }
 .pending-icon .ic { width: 44px; height: 44px; color: var(--primary, #c8102e); }
+.import-cols { margin-top: 6px; font-size: 13px; line-height: 1.5; }
