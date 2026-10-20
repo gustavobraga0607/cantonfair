@@ -3363,8 +3363,25 @@ async function viewAccount() {
     <h2>Equipe (${company.members.length})</h2>
     <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
-    <button class="btn block" id="logout" style="margin-top:20px">Sair</button>
-    <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Missão China by BR Trading</span></div>`;
+    <button class="btn block" id="app-update" style="margin-top:20px">${ic('refresh')} Atualizar o app</button>
+    <button class="btn block" id="logout" style="margin-top:10px">Sair</button>
+    <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Missão China by BR Trading</span><span id="app-version"></span></div>`;
+  // Versão guardada no celular (cache do service worker) e atualização forçada.
+  caches?.keys().then((keys) => {
+    const v = keys.find((k) => k.startsWith('shell-'));
+    if (v) document.getElementById('app-version').textContent = `Versão ${v.slice(6)}`;
+  }).catch(() => {});
+  document.getElementById('app-update').addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = 'Atualizando…';
+    try {
+      const reg = await navigator.serviceWorker?.getRegistration();
+      await reg?.update().catch(() => {});
+      // Apaga só as telas guardadas (cadastros pendentes e dados salvos continuam).
+      for (const k of await caches.keys()) if (k.startsWith('shell-')) await caches.delete(k);
+    } catch { /* sem suporte: só recarrega */ }
+    location.reload();
+  });
   renderMyCard();
   renderRateCard();
   renderFreightCard();
