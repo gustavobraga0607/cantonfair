@@ -584,3 +584,7 @@ body.map-mode main { display: none; }
 .sheet { background: var(--surface); width: 100%; max-width: 520px; border-radius: 16px 16px 0 0; padding: 16px 16px calc(16px + env(safe-area-inset-bottom));
   display: grid; gap: 8px; }
 .sheet-title { font-weight: 600; text-align: center; padding: 4px 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-photo { display: flex; align-items: center; gap: 10px; }
+.scan-photo img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; cursor: zoom-in; flex: none; }
+.scan-photo-actions { display: grid; gap: 6px; justify-items: start; }
+.scan-photo .btn { gap: 6px; }

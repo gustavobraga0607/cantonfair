@@ -1776,6 +1776,11 @@ async function viewProductScan(query) {
   // Incoterm padrão: ao escolher, aplica a todos os produtos da lista (e aos das próximas fotos).
   // Depois dá para trocar o de um produto específico no próprio item.
   let incotermChosen = false;
+  // Nacionalização "para todos": preenche na hora a de cada produto (que continua editável).
+  document.getElementById('nat').addEventListener('input', (e) => {
+    for (const it of items) it.nat = e.target.value;
+    itemsEl.querySelectorAll('[data-k=nat]').forEach((el) => { el.value = e.target.value; });
+  });
   document.getElementById('incoterm-all').addEventListener('change', (e) => {
     incotermChosen = true;
     for (const it of items) it.incoterm = e.target.value;
@@ -1801,6 +1806,7 @@ async function viewProductScan(query) {
       items.push({
         ref: newRef(), include: true, name: r.name, price: numText(r.price), currency: r.currency || 'CNY', moq: r.moq ?? '',
         incoterm: incotermChosen ? defaultIncoterm : r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
+        nat: document.getElementById('nat').value, own_photo: null,
         notes: [r.name_original && `Nome original: ${r.name_original}`, tiers && `Preços: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
         photo, use_photo: products.length === 1, target: match ? match.p.id : '',
       });
@@ -1828,13 +1834,19 @@ async function viewProductScan(query) {
         </div>
         <div class="row">
           <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
-          <div></div>
+          <div><label>Nacionaliz. (%)</label><input data-k="nat" inputmode="decimal" value="${esc(it.nat ?? '')}" placeholder="ex.: 85"></div>
         </div>
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
+        <div class="scan-photo">
+          ${it.own_photo ? `<img src="${it.own_photo}" alt="Foto do produto" data-view-photo="${i}">
+            <div class="scan-photo-actions"><span class="item-sub">Foto deste produto</span>
+              <button type="button" class="btn small" data-rm-photo="${i}">${ic('trash')} Remover</button></div>`
+            : `<label class="btn small">${ic('camera')} Foto do produto<input type="file" accept="image/*" data-item-photo="${i}" hidden></label>`}
+        </div>
         ${similar.length ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado</div>
           <select data-k="target"><option value="">Criar produto novo</option>${similar.map(({ p }) =>
             `<option value="${p.id}"${Number(it.target) === p.id ? ' selected' : ''}>Adicionar a oferta em: ${esc(p.name)}</option>`).join('')}</select></div>` : ''}
-        ${it.target ? '' : `<label class="scan-check"><input type="checkbox" data-k="use_photo"${it.use_photo ? ' checked' : ''}> Usar esta foto como foto do produto</label>`}
+        ${it.target || it.own_photo ? '' : `<label class="scan-check"><input type="checkbox" data-k="use_photo"${it.use_photo ? ' checked' : ''}> Usar a foto da lista como foto do produto</label>`}
         <div class="item-error" hidden></div>
       </div>`;
   }
@@ -1855,12 +1867,26 @@ async function viewProductScan(query) {
     it[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
     if (k === 'include') { card.classList.toggle('off', !it.include); updateSave(); }
   });
-  itemsEl.addEventListener('change', (e) => {
+  itemsEl.addEventListener('change', async (e) => {
+    const pi = e.target.dataset.itemPhoto;
+    if (pi !== undefined && e.target.files[0]) {
+      try {
+        const it = items[Number(pi)];
+        it.own_photo = await resizeImage(e.target.files[0]);
+        it.use_photo = false;
+        render();
+      } catch (err) { toast(err.message); }
+      return;
+    }
     const k = e.target.dataset.k;
     if (k === 'target') { items[Number(e.target.closest('.scan-item').dataset.i)].target = e.target.value; render(); }
     if (k === 'name') render(); // atualiza o aviso de parecido
   });
   itemsEl.addEventListener('click', (e) => {
+    const view = e.target.closest('[data-view-photo]')?.dataset.viewPhoto;
+    if (view !== undefined) { openLightbox(items[Number(view)].own_photo); return; }
+    const rmPhoto = e.target.closest('[data-rm-photo]')?.dataset.rmPhoto;
+    if (rmPhoto !== undefined) { items[Number(rmPhoto)].own_photo = null; render(); return; }
     const rm = e.target.closest('[data-rm]')?.dataset.rm;
     if (rm === undefined) return;
     items.splice(Number(rm), 1);
@@ -1906,8 +1932,6 @@ async function viewProductScan(query) {
     const err = document.getElementById('err');
     err.hidden = true;
     if (reading) { toast('Aguarde terminar a leitura da foto.'); return; }
-    const nat = parseNum(document.getElementById('nat').value);
-    if (Number.isNaN(nat)) { err.textContent = 'Nacionalização (%) inválida.'; err.hidden = false; return; }
     const sid = Number(supplierId) || null;
 
     // Confere tudo antes de enviar o primeiro.
@@ -1919,7 +1943,8 @@ async function viewProductScan(query) {
       const price = parseNum(it.price);
       const moq = parseNum(it.moq, { thousands: true });
       const units = parseNum(it.units_per_40hq, { thousands: true });
-      if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units)) return fail('verifique preço, MOQ e unidades.');
+      const nat = parseNum(it.nat);
+      if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units) || Number.isNaN(nat)) return fail('verifique preço, MOQ, unidades e nacionalização.');
       if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
       // Com fornecedor escolhido, todo produto precisa de preço: sem ele não há oferta e o produto ficaria sem vínculo.
       if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
@@ -1939,9 +1964,15 @@ async function viewProductScan(query) {
         let r;
         if (it.target) {
           r = await addOfferOrQueue(Number(it.target), offer, it.name, { units });
+          // Produto já existente: a foto tirada entra nas fotos deste fornecedor no produto.
+          if (r.saved && it.own_photo && offer) {
+            await api(`/api/products/${it.target}/photos`, { method: 'POST', body: { supplier_id: offer.supplier_id, photo: it.own_photo, photo_thumb: await makeThumb(it.own_photo) } })
+              .catch(() => toast(`A foto de "${it.name}" não foi enviada; adicione pela tela do produto.`));
+          }
         } else {
           const body = { name: it.name.trim(), price_brl: null, units_per_40hq: units, notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
-          if (it.use_photo) Object.assign(body, { photo: it.photo, photo_thumb: await makeThumb(it.photo) });
+          const photo = it.own_photo || (it.use_photo ? it.photo : null);
+          if (photo) Object.assign(body, { photo, photo_thumb: await makeThumb(photo) });
           if (isAdmin()) body.company = company;
           r = await createOrQueue('product', body, body.name);
         }
