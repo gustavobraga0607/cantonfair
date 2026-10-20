@@ -1755,7 +1755,7 @@ async function viewProductScan(query) {
           <div class="hint">Todos os produtos da lista ficam vinculados a este fornecedor, com o preço de cada um. Sem fornecedor, são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
         <div class="row">
           <div><label for="nat">Nacionaliz. (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
-          <div><label for="incoterm-all">Incoterm padrão</label><select id="incoterm-all">${INCOTERMS.map((t) => `<option${t === 'FOB' ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+          <div><label for="incoterm-all">Incoterm para todos</label><select id="incoterm-all">${INCOTERMS.map((t) => `<option${t === 'FOB' ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
         </div>
       </div>
       <div class="card">
@@ -1773,6 +1773,14 @@ async function viewProductScan(query) {
   const itemsEl = document.getElementById('items');
   const box = document.getElementById('ocr-status');
   const saveBtn = document.getElementById('save');
+  // Incoterm padrão: ao escolher, aplica a todos os produtos da lista (e aos das próximas fotos).
+  // Depois dá para trocar o de um produto específico no próprio item.
+  let incotermChosen = false;
+  document.getElementById('incoterm-all').addEventListener('change', (e) => {
+    incotermChosen = true;
+    for (const it of items) it.incoterm = e.target.value;
+    if (items.length) { render(); toast(`Incoterm ${e.target.value} aplicado a todos os produtos.`); }
+  });
   document.getElementById('company')?.addEventListener('change', (e) => {
     location.hash = `#/products/scan?company=${encodeURIComponent(e.target.value)}`;
   });
@@ -1781,6 +1789,7 @@ async function viewProductScan(query) {
   const numText = (v) => (v == null ? '' : String(v).replace('.', ','));
   function addItems(products, photo) {
     const defaultIncoterm = document.getElementById('incoterm-all').value;
+    // Incoterm padrão escolhido pelo usuário vale para todos; senão usa o que a foto indicar.
     for (const r0 of products) {
       // Preço que veio só no texto ("¥16,80 (500 pcs)") vai para o campo de preço.
       const found = r0.price == null ? priceFromText(r0.price_note) : null;
@@ -1791,7 +1800,7 @@ async function viewProductScan(query) {
       const match = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
       items.push({
         ref: newRef(), include: true, name: r.name, price: numText(r.price), currency: r.currency || 'CNY', moq: r.moq ?? '',
-        incoterm: r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
+        incoterm: incotermChosen ? defaultIncoterm : r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
         notes: [r.name_original && `Nome original: ${r.name_original}`, tiers && `Preços: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
         photo, use_photo: products.length === 1, target: match ? match.p.id : '',
       });
