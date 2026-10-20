@@ -632,3 +632,9 @@ body.map-mode main { display: none; }
 .adj-row { display: flex; gap: 12px; align-items: center; }
 .adj-img { width: 120px; height: 76px; object-fit: contain; background: var(--neutral-bg); border-radius: 8px; flex: none; cursor: zoom-in; }
 .adj-row .item-body { min-width: 0; }
+
+/* Pedidos para entrar na empresa */
+.join-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.join-row .actions { margin: 0; }
+.pending-card { text-align: center; margin-top: 24px; }
+.pending-icon .ic { width: 44px; height: 44px; color: var(--primary, #c8102e); }

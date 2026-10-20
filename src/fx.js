@@ -63,8 +63,10 @@ function createFxService({ db, fetchQuote = fetchUsdBrl, fetchCnyQuote = null, n
   let inflight = null;
 
   const read = async () => {
-    const row = await db.get('SELECT * FROM fx_quotes WHERE pair = ?', ['USD-BRL']);
-    const cny = await db.get('SELECT rate FROM fx_quotes WHERE pair = ?', ['CNY-BRL']);
+    // As duas cotações numa consulta só.
+    const rows = await db.all("SELECT * FROM fx_quotes WHERE pair IN ('USD-BRL', 'CNY-BRL')");
+    const row = rows.find((r) => r.pair === 'USD-BRL');
+    const cny = rows.find((r) => r.pair === 'CNY-BRL');
     return row ? { ...row, cny_rate: cny?.rate ?? null } : row;
   };
 

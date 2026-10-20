@@ -74,6 +74,31 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     res.end(payload);
   }
 
+  // Envio "pacote" do app: [4 bytes = tamanho do JSON][JSON][fotos em binário]. As fotos chegam
+  // sem a conversão em texto (base64 aumenta 33%) e viram data URLs aqui, como se viessem no JSON.
+  const BUNDLE_TYPE = 'application/vnd.missao.bundle';
+  const isBundle = (req) => String(req.headers['content-type'] || '').startsWith(BUNDLE_TYPE);
+  function parseBundle(buf) {
+    const len = buf.readUInt32LE(0);
+    const json = JSON.parse(buf.subarray(4, 4 + len).toString('utf8'));
+    const bins = Array.isArray(json.__bins) ? json.__bins : [];
+    delete json.__bins;
+    let at = 4 + len;
+    const parts = bins.map(([mime, size]) => {
+      if (!/^image\/(jpeg|png|webp)$/.test(mime) || !Number.isInteger(size) || size < 0 || at + size > buf.length) throw new Error('pacote');
+      const part = `data:${mime};base64,${buf.subarray(at, at + size).toString('base64')}`;
+      at += size;
+      return part;
+    });
+    const fill = (v) => {
+      if (typeof v === 'string') { const m = /^\u0000bin:(\d+)$/.exec(v); return m ? parts[Number(m[1])] ?? null : v; }
+      if (Array.isArray(v)) return v.map(fill);
+      if (v && typeof v === 'object') { for (const k of Object.keys(v)) v[k] = fill(v[k]); return v; }
+      return v;
+    };
+    return fill(json);
+  }
+
   function readJson(req) {
     return new Promise((resolve, reject) => {
       let size = 0;
@@ -89,7 +114,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         if (tooBig) return;
         if (!chunks.length) return resolve({});
         let v;
-        try { v = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+        try { v = isBundle(req) ? parseBundle(Buffer.concat(chunks)) : JSON.parse(Buffer.concat(chunks).toString('utf8')); }
         catch { return reject(new HttpError(400, 'JSON inválido.')); }
         if (v === null || typeof v !== 'object' || Array.isArray(v)) return reject(new HttpError(400, 'JSON inválido.'));
         resolve(v);
@@ -156,7 +181,36 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     if (id) await q.run('DELETE FROM images WHERE id = ? AND cnpj = ?', [id, cnpj]);
   }
 
-  const photoUrl = (id) => (id ? `/uploads/${id}` : null);
+  // Link assinado da foto (/uploads/<id>/<assinatura>): abre sem consultar a sessão e pode ficar
+  // guardado na CDN da Vercel. Só recebe o link quem tem acesso ao cadastro.
+  let uploadKey = null;
+  async function ensureUploadKey() {
+    if (uploadKey) return;
+    if (process.env.UPLOAD_URL_SECRET) { uploadKey = process.env.UPLOAD_URL_SECRET; return; }
+    await db.run("INSERT INTO app_settings (key, value, updated_at) VALUES ('upload_url_secret', ?, ?) ON CONFLICT (key) DO NOTHING",
+      [crypto.randomBytes(32).toString('hex'), now()]);
+    uploadKey = (await db.get("SELECT value FROM app_settings WHERE key = 'upload_url_secret'")).value;
+  }
+  const uploadSig = (id) => crypto.createHmac('sha256', uploadKey).update(id).digest('base64url').slice(0, 22);
+  const photoUrl = (id) => (id ? `/uploads/${id}/${uploadSig(id)}` : null);
+
+  // Sessão lembrada por alguns segundos em cada instância: evita uma ida ao banco por requisição.
+  // Quem aguarda aprovação não fica no cache (a aprovação vale na hora).
+  const SESSION_TTL = 20_000;
+  const sessionCache = new Map();
+  async function sessionUserOf(req) {
+    const sid = parseCookies(req).sid;
+    if (!sid) return null;
+    const hit = sessionCache.get(sid);
+    if (hit && Date.now() - hit.at < SESSION_TTL) return hit.user;
+    const user = await auth.getSessionUser(db, sid);
+    if (sessionCache.size > 2000) sessionCache.clear();
+    if (user && user.status !== 'pending') sessionCache.set(sid, { user, at: Date.now() });
+    else sessionCache.delete(sid);
+    return user;
+  }
+  // Mudanças no usuário (excluir, mudar de empresa, novo cartão) esquecem as sessões dele.
+  const forgetUser = (userId) => { for (const [k, v] of sessionCache) if (v.user.id === userId) sessionCache.delete(k); };
 
   // Fotos por fornecedor: apaga as linhas e as imagens (o ON DELETE CASCADE só apagaria as linhas).
   async function removeOfferPhotos(q, cnpj, where, params) {
@@ -219,7 +273,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   // cnpj null = sem restrição de empresa (administrador).
   async function loadSupplier(q, cnpj, id) {
     const s = await q.get(`
-      SELECT s.*, u.name AS updated_by_name, c.name AS company_name FROM suppliers s
+      SELECT s.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate, c.cny_rate FROM suppliers s
       LEFT JOIN users u ON u.id = s.updated_by
       JOIN companies c ON c.cnpj = s.cnpj
       WHERE s.id = ?${companyFilter('s', cnpj)}`, [toId(id), ...companyParam(cnpj)]);
@@ -295,8 +349,12 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   async function productResponse(cnpj, id) {
     const p = await loadProduct(cnpj, id);
-    const photos = await db.all('SELECT id, supplier_id, image_id FROM offer_photos WHERE product_id = ? ORDER BY id', [p.id]);
-    return productOut(p, await offersFor(p.cnpj, [p.id]), ratesOf(p), await freight40hq(), photos);
+    const [photos, offers, freight] = await Promise.all([
+      db.all('SELECT id, supplier_id, image_id FROM offer_photos WHERE product_id = ? ORDER BY id', [p.id]),
+      offersFor(p.cnpj, [p.id]),
+      freight40hq(),
+    ]);
+    return productOut(p, offers, ratesOf(p), freight, photos);
   }
 
   // Normaliza a lista de ofertas enviada pelo cliente e garante que os
@@ -375,9 +433,18 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   }
 
   async function meOut(user) {
+    // Aguardando aprovação: só o necessário para a tela de espera (nada dos dados da empresa).
+    if (user.status === 'pending') {
+      const company = await getCompany(user.cnpj);
+      return {
+        user: { id: user.id, name: user.name, email: user.email, role: 'user', is_admin: false, pending: true, card_photo: null },
+        company: { cnpj: company.cnpj, cnpj_formatted: cnpjUtil.format(company.cnpj), name: company.name, members: [] },
+        pending: true, features: {}, settings: {},
+      };
+    }
     const [company, members, companies, fxStatus, settings] = await Promise.all([
       getCompany(user.cnpj),
-      db.all('SELECT name, email FROM users WHERE cnpj = ? ORDER BY lower(name)', [user.cnpj]),
+      db.all("SELECT id, name, email, status FROM users WHERE cnpj = ? ORDER BY lower(name)", [user.cnpj]),
       isAdmin(user) ? db.all('SELECT cnpj, name, exchange_rate, cny_rate FROM companies ORDER BY lower(coalesce(name, cnpj))') : undefined,
       fx ? fx.read() : null,
       getSettings(),
@@ -392,6 +459,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         name: company.name, exchange_rate: company.exchange_rate, cny_rate: ratesOf(company).CNY, cny_estimated: !company.cny_rate, members,
         rate_mode: company.rate_mode, rate_source: company.rate_source, rate_updated_at: company.rate_updated_at,
       },
+      // Pedidos para entrar na empresa (qualquer pessoa da equipe aprova ou recusa).
+      join_requests: members.filter((m) => m.status === 'pending').map((m) => ({ id: m.id, name: m.name, email: m.email })),
       fx: fxStatus,
       settings,
       companies: companies?.map((c) => ({ ...c, cny_rate: ratesOf(c).CNY, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
@@ -438,6 +507,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
     const passwordHash = await auth.hashPassword(password);
     const role = withRole({ email }).role;
+    // Empresa que já tem equipe: o novo usuário espera alguém dela aprovar (o CNPJ é público).
+    const team = existing ? await db.get("SELECT COUNT(*) AS n FROM users WHERE cnpj = ? AND status = 'active'", [cnpj]) : null;
+    const status = role !== 'admin' && Number(team?.n || 0) > 0 ? 'pending' : 'active';
     // Empresa nova já começa com a cotação do dia (ou 5,50 se as APIs estiverem fora).
     const quote = !existing && fx ? await fx.ensureFresh().catch(() => null) : null;
     let userId;
@@ -446,8 +518,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         await q.run(`INSERT INTO companies (cnpj, name, exchange_rate, cny_rate, rate_source, rate_updated_at, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT (cnpj) DO NOTHING`,
           [cnpj, companyName, quote?.rate ?? 5.5, quote?.cny_rate ?? null, quote?.rate ? quote.source : null, quote?.rate ? quote.quoted_at : null, now()]);
-        const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, role, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id',
-          [name, email, passwordHash, cnpj, role, now()]);
+        const row = await q.get('INSERT INTO users (name, email, password_hash, cnpj, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+          [name, email, passwordHash, cnpj, role, status, now()]);
         return row.id;
       });
     } catch (err) {
@@ -456,7 +528,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     }
     const session = await auth.createSession(db, userId);
     res.setHeader('Set-Cookie', sessionCookie(session.token, session.maxAge));
-    return { status: 201, body: await meOut({ id: userId, name, email, cnpj, role }) };
+    return { status: 201, body: await meOut({ id: userId, name, email, cnpj, role, status }) };
   }, { pub: true });
 
   route('POST', '/api/login', async ({ body, req, res }) => {
@@ -479,12 +551,33 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   }, { pub: true });
 
   route('POST', '/api/logout', async ({ req, res }) => {
+    sessionCache.delete(parseCookies(req).sid);
     await auth.destroySession(db, parseCookies(req).sid);
     res.setHeader('Set-Cookie', sessionCookie('', 0));
     return { ok: true };
   }, { pub: true });
 
   route('GET', '/api/me', async ({ user }) => meOut(await syncRole(user)));
+
+  // Pedido para entrar na empresa: aprovado ou recusado por alguém da equipe (ou pelo administrador).
+  async function joinRequest(user, id) {
+    const target = await db.get("SELECT id, cnpj FROM users WHERE id = ? AND status = 'pending'", [toId(id)]);
+    if (!target || (!isAdmin(user) && target.cnpj !== user.cnpj)) throw new HttpError(404, 'Pedido não encontrado (talvez já respondido).');
+    return target;
+  }
+  route('POST', '/api/company/requests/:id/approve', async ({ user, params }) => {
+    const target = await joinRequest(user, params.id);
+    await db.run("UPDATE users SET status = 'active' WHERE id = ?", [target.id]);
+    return { ok: true };
+  });
+  route('DELETE', '/api/company/requests/:id', async ({ user, params }) => {
+    const target = await joinRequest(user, params.id);
+    await db.tx(async (q) => {
+      await q.run('DELETE FROM sessions WHERE user_id = ?', [target.id]);
+      await q.run("DELETE FROM users WHERE id = ? AND status = 'pending'", [target.id]);
+    });
+    return { ok: true };
+  });
 
   // Câmbio: { mode: 'auto' } volta para a cotação do dia; { exchange_rate } fixa um valor manual.
   route('PUT', '/api/settings', async ({ user, body }) => {
@@ -531,6 +624,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await removeImage(q, user.cnpj, old);
       return photo;
     });
+    forgetUser(user.id);
     return meOut({ ...user, card_photo: id });
   });
 
@@ -540,6 +634,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await q.run('UPDATE users SET card_photo = NULL WHERE id = ?', [user.id]);
       await removeImage(q, user.cnpj, old);
     });
+    forgetUser(user.id);
     return meOut({ ...user, card_photo: null });
   });
 
@@ -559,7 +654,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   route('GET', '/api/admin/users', async ({ user }) => {
     requireAdminUser(user);
     const rows = await db.all(`
-      SELECT u.id, u.name, u.email, u.role, u.cnpj, u.created_at, c.name AS company_name
+      SELECT u.id, u.name, u.email, u.role, u.status, u.cnpj, u.created_at, c.name AS company_name
       FROM users u JOIN companies c ON c.cnpj = u.cnpj ORDER BY lower(u.name)`);
     return rows.map((r) => ({
       ...withRole(r), cnpj_formatted: cnpjUtil.format(r.cnpj), is_self: r.id === user.id,
@@ -593,6 +688,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     if (cnpj !== target.cnpj) {
       await db.tx(async (q) => {
         await q.run('UPDATE users SET cnpj = ? WHERE id = ?', [cnpj, target.id]);
+        forgetUser(target.id);
         // O cartão de visitas pessoal acompanha o usuário.
         if (target.card_photo) await q.run('UPDATE images SET cnpj = ? WHERE id = ?', [cnpj, target.card_photo]);
       });
@@ -607,6 +703,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     if (target.id === user.id) throw new HttpError(400, 'Você não pode excluir o seu próprio usuário.');
     await db.tx(async (q) => {
       for (const [table, col] of USER_REFS) await q.run(`UPDATE ${table} SET ${col} = NULL WHERE ${col} = ?`, [target.id]);
+      forgetUser(target.id);
       await q.run('DELETE FROM sessions WHERE user_id = ?', [target.id]);
       await q.run('DELETE FROM expenses WHERE user_id = ?', [target.id]);
       await q.run('DELETE FROM users WHERE id = ?', [target.id]);
@@ -678,19 +775,20 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   });
 
   route('GET', '/api/suppliers/:id', async ({ user, params }) => {
-    const s = await loadSupplier(db, accessCnpj(user), params.id);
-    const company = await getCompany(s.cnpj);
-    const freight = await freight40hq();
+    // Consultas independentes em paralelo (cada ida ao banco conta no celular).
+    const [s, freight] = await Promise.all([loadSupplier(db, accessCnpj(user), params.id), freight40hq()]);
     // Mesmo formato do cartão da tela do produto: preço deste fornecedor, estimado, se é o melhor e as fotos dele.
     const rows = await db.all(`
       SELECT p.id, p.name, p.price_brl, p.units_per_40hq, ${listPhotoSql('p')} AS cover
       FROM offers o JOIN products p ON p.id = o.product_id
       WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]);
     const ids = rows.map((r) => r.id);
-    const rates = ratesOf(company);
-    const offers = ids.length ? await offersFor(s.cnpj, ids) : [];
-    const photos = ids.length ? await db.all(`SELECT id, product_id, image_id FROM offer_photos
-      WHERE supplier_id = ? AND product_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`, [s.id, ...ids]) : [];
+    const rates = ratesOf(s);
+    const [offers, photos] = ids.length ? await Promise.all([
+      offersFor(s.cnpj, ids),
+      db.all(`SELECT id, product_id, image_id FROM offer_photos
+        WHERE supplier_id = ? AND product_id IN (${ids.map(() => '?').join(',')}) ORDER BY id`, [s.id, ...ids]),
+    ]) : [[], []];
     const products = rows.map((r) => {
       const opts = offers.filter((o) => o.product_id === r.id).map((o) => {
         const fr = offerFreight(o.incoterm, freightPerUnit(freight, r.units_per_40hq));
@@ -1325,20 +1423,29 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   // ---------- arquivos ----------
 
-  // /uploads/<id> = foto; /uploads/<id>/thumb = miniatura (ou a foto, se não houver miniatura).
-  async function serveUpload(res, user, rest) {
-    const [id, variant] = rest.split('/');
+  // /uploads/<id>/<assinatura>[/thumb]: link assinado (público, guardado na CDN).
+  // /uploads/<id>[/thumb]: links antigos, conferindo a sessão.
+  function signedUpload(rest) {
+    const [id, sig, variant, extra] = rest.split('/');
+    if (!sig || sig === 'thumb' || extra !== undefined || (variant && variant !== 'thumb')) return null;
+    const good = Buffer.from(uploadSig(id));
+    const got = Buffer.from(sig);
+    return good.length === got.length && crypto.timingSafeEqual(good, got) ? { id, variant } : false;
+  }
+  async function serveUpload(res, user, rest, signed = null) {
+    const [id, variant] = signed ? [signed.id, signed.variant] : rest.split('/');
     const col = variant === 'thumb' ? 'coalesce(thumb, data)' : 'data';
+    const open = signed || isAdmin(user);
     const img = /^[0-9a-f]{32}$/.test(id) && (!variant || variant === 'thumb')
-      ? await db.get(`SELECT mime, ${col} AS data FROM images WHERE id = ?${isAdmin(user) ? '' : ' AND cnpj = ?'}`,
-        isAdmin(user) ? [id] : [id, user.cnpj])
+      ? await db.get(`SELECT mime, ${col} AS data FROM images WHERE id = ?${open ? '' : ' AND cnpj = ?'}`, open ? [id] : [id, user.cnpj])
       : null;
     if (!img) return send(res, 404, { error: 'Não encontrado.' });
     const data = Buffer.from(img.data);
     // Miniaturas são sempre JPEG; a foto mantém o tipo original.
     if (variant === 'thumb' && sniffImage(data)) img.mime = sniffImage(data);
     // O id é único por foto, então pode ficar em cache indefinidamente.
-    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': img.mime, 'Content-Length': data.length, 'Cache-Control': 'private, max-age=31536000, immutable' });
+    const cache = signed ? 'public, max-age=31536000, s-maxage=31536000, immutable' : 'private, max-age=31536000, immutable';
+    res.writeHead(200, { ...SECURITY_HEADERS, 'Content-Type': img.mime, 'Content-Length': data.length, 'Cache-Control': cache });
     res.end(data);
   }
 
@@ -1370,9 +1477,14 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     // Na Vercel as rotas chegam reescritas para a função com o caminho original em ?__p=
     const pathname = url.searchParams.get('__p') || url.pathname;
     try {
+      if (pathname.startsWith('/uploads/') || pathname.startsWith('/api/')) await ensureUploadKey();
       if (pathname.startsWith('/uploads/')) {
-        const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
-        if (!sessionUser) return send(res, 401, { error: 'Não autenticado.' });
+        const rest = pathname.slice('/uploads/'.length);
+        const signed = signedUpload(rest);
+        if (signed === false) return send(res, 404, { error: 'Não encontrado.' });
+        if (signed) return await serveUpload(res, null, rest, signed);
+        const sessionUser = await sessionUserOf(req);
+        if (!sessionUser || sessionUser.status === 'pending') return send(res, 401, { error: 'Não autenticado.' });
         const user = withRole(sessionUser);
         return await serveUpload(res, user, pathname.slice('/uploads/'.length));
       }
@@ -1388,9 +1500,13 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         let params;
         try { params = Object.fromEntries(r.keys.map((k, i) => [k, decodeURIComponent(m[i + 1])])); }
         catch { throw new HttpError(404, 'Não encontrado.'); }
-        const sessionUser = await auth.getSessionUser(db, parseCookies(req).sid);
+        const sessionUser = await sessionUserOf(req);
         if (!r.pub && !sessionUser) throw new HttpError(401, 'Não autenticado.');
         const user = sessionUser && withRole(sessionUser);
+        // Aguardando aprovação: só vê a própria situação e pode sair.
+        if (user?.status === 'pending' && !r.pub && !(req.method === 'GET' && pathname === '/api/me') && pathname !== '/api/logout') {
+          throw new HttpError(403, 'Seu acesso à empresa ainda aguarda a aprovação de alguém da equipe.');
+        }
         // Mantém a cotação do dia atualizada sem atrasar a resposta (busca em segundo plano;
         // usa cache de 30 min). Só espera se ainda não existe nenhuma cotação.
         // Confere no máximo uma vez por minuto por instância e sem segurar a resposta.
@@ -1399,7 +1515,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
           background(fx.refreshInBackground(background).catch((err) => console.error(err)));
         }
         // Exigir JSON em POST/PUT também protege contra CSRF via formulários de outros sites.
-        if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '')) {
+        if ((req.method === 'POST' || req.method === 'PUT') && !/^application\/json\b/.test(req.headers['content-type'] || '') && !isBundle(req)) {
           throw new HttpError(415, 'Envie os dados em JSON.');
         }
         const body = req.method === 'GET' || req.method === 'DELETE' ? {} : await readJson(req);

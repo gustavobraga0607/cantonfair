@@ -17,7 +17,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS credit_ledger, credit_payments, expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes CASCADE')
+    await db.run('DROP TABLE IF EXISTS credit_ledger, credit_payments, expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes, offer_photos, schema_meta CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -30,6 +30,13 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
   return { base, db, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
+}
+
+// Link da foto sem a assinatura (confere a sessão, como os links antigos).
+const unsignedOf = (url) => url.split('/').slice(0, 3).join('/') + (url.endsWith('/thumb') ? '/thumb' : '');
+// Aprova os pedidos para entrar na empresa de quem aprova.
+async function approveAll(approver) {
+  for (const r of (await approver('GET', '/api/me')).body.join_requests || []) await approver('POST', `/api/company/requests/${r.id}/approve`, {});
 }
 
 function client(base) {
@@ -71,7 +78,26 @@ test('fluxo completo: cadastro, CNPJ compartilhado, fornecedores, produtos e ran
   assert.equal(r.status, 409);
   r = await bruno('POST', '/api/register', { name: 'Bruno', email: 'bruno@x.com', password: '12345678', cnpj: '11222333000181' });
   assert.equal(r.status, 201);
+  // empresa já tem equipe: Bruno espera a aprovação e não vê nada da empresa
+  assert.equal(r.body.user.pending, true);
+  assert.equal(r.body.company.members.length, 0);
+  assert.equal((await bruno('GET', '/api/suppliers')).status, 403);
+  assert.equal((await bruno('GET', '/api/me')).body.pending, true);
+  const req = (await ana('GET', '/api/me')).body.join_requests;
+  assert.deepEqual(req.map((x) => x.name), ['Bruno']);
+  const estranho = client(base);
+  await estranho('POST', '/api/register', { name: 'Estranho', email: 'estranho@w.com', password: '12345678', cnpj: '11444777000161' });
+  assert.equal((await estranho('POST', `/api/company/requests/${req[0].id}/approve`, {})).status, 404, 'outra empresa não aprova');
+  assert.equal((await ana('POST', `/api/company/requests/${req[0].id}/approve`, {})).status, 200);
+  r = await bruno('GET', '/api/me');
+  assert.equal(r.body.pending, undefined);
   assert.equal(r.body.company.members.length, 2);
+  // recusar apaga o pedido
+  const intruso = client(base);
+  await intruso('POST', '/api/register', { name: 'Intruso', email: 'intruso@z.com', password: '12345678', cnpj: '11222333000181' });
+  const reqId = (await ana('GET', '/api/me')).body.join_requests[0].id;
+  assert.equal((await bruno('DELETE', `/api/company/requests/${reqId}`)).status, 200);
+  assert.equal((await intruso('GET', '/api/me')).status, 401, 'recusado perde o acesso');
 
   r = await outra('POST', '/api/register', { name: 'Carla', email: 'carla@y.com', password: '12345678', cnpj: '12.ABC.345/01DE-35' });
   assert.equal(r.status, 201);
@@ -110,7 +136,7 @@ test('fluxo completo: cadastro, CNPJ compartilhado, fornecedores, produtos e ran
 
   // foto acessível pela equipe, não por outra empresa
   assert.equal((await bruno('GET', supA.card_photo)).status, 200);
-  assert.equal((await outra('GET', supA.card_photo)).status, 404);
+  assert.equal((await outra('GET', unsignedOf(supA.card_photo))).status, 404);
 
   // a outra empresa não vê nem usa fornecedores da primeira
   r = await outra('GET', '/api/suppliers');
@@ -224,7 +250,7 @@ test('administrador vê e edita fornecedores e produtos de todas as empresas', a
   assert.equal((await b('GET', `/api/products/${prodA.id}`)).status, 404);
   assert.equal((await b('GET', '/api/suppliers')).body.length, 1);
   assert.equal((await b('GET', '/api/suppliers?company=all')).body.length, 1, 'usuário comum ignora ?company');
-  assert.equal((await b('GET', supA.card_photo)).status, 404);
+  assert.equal((await b('GET', unsignedOf(supA.card_photo))).status, 404);
 
   // admin enxerga tudo, ou filtra por empresa
   r = await admin('GET', '/api/suppliers?company=all');
@@ -411,6 +437,7 @@ test('controle de viagem: cada usuário tem o próprio extrato, com conversão p
   const admin = client(base);
   await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
   await colega('POST', '/api/register', { name: 'C', email: 'c@x.com', password: '12345678', cnpj: '11222333000181' });
+  await approveAll(a);
   await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
   assert.equal((await client(base)('GET', '/api/expenses')).status, 401);
 
@@ -760,11 +787,19 @@ test('cartão de visitas do próprio usuário: salvar, trocar, remover; cada usu
   r = await a('PUT', '/api/me/card', { image: PNG });
   assert.equal(r.status, 200);
   const first = r.body.user.card_photo;
-  assert.match(first, /^\/uploads\/[0-9a-f]{32}$/);
+  assert.match(first, /^\/uploads\/[0-9a-f]{32}\/[\w-]{22}$/, 'link assinado');
   assert.equal((await a('GET', '/api/me')).body.user.card_photo, first, 'persiste');
   assert.equal((await a2('GET', '/api/me')).body.user.card_photo, null, 'colega do mesmo CNPJ não herda o cartão');
   assert.equal((await a('GET', first)).status, 200);
-  assert.equal((await b('GET', first)).status, 404, 'outra empresa não acessa a imagem');
+  // Link assinado abre para quem o tiver (fica na CDN); sem a assinatura certa, não.
+  const unsigned = first.split('/').slice(0, 3).join('/');
+  assert.equal((await b('GET', unsigned)).status, 404, 'outra empresa não acessa pelo link sem assinatura');
+  assert.equal((await a('GET', unsigned)).status, 200, 'link antigo continua para a empresa');
+  assert.equal((await b('GET', `${unsigned}/AAAAAAAAAAAAAAAAAAAAAA`)).status, 404, 'assinatura errada');
+  const res = await fetch(base + first);
+  assert.equal(res.status, 200, 'link assinado abre sem login');
+  assert.match(res.headers.get('cache-control'), /public/);
+  assert.equal((await fetch(base + first + '/thumb')).status, 200);
 
   r = await a('PUT', '/api/me/card', { image: PNG });
   assert.notEqual(r.body.user.card_photo, first);
@@ -792,7 +827,7 @@ test('revisão: imagem falsa recusada, miniaturas, ranking com empresa inexisten
   // foto + miniatura; sem miniatura, /thumb devolve a foto
   let r = await admin('POST', '/api/suppliers', { name: 'S', card_photo: PNG, card_photo_thumb: PNG });
   assert.equal(r.status, 201);
-  let res = await fetch(base + r.body.card_photo + '/thumb', { headers: { Cookie: '' } });
+  let res = await fetch(base + unsignedOf(r.body.card_photo) + '/thumb', { headers: { Cookie: '' } });
   assert.equal(res.status, 401, 'miniatura também exige login');
   const withCookie = await admin('GET', r.body.card_photo + '/thumb');
   assert.equal(withCookie.status, 200);
@@ -911,7 +946,8 @@ test('várias fotos por produto, separadas por fornecedor', async (t) => {
   assert.equal(photosOf(r.body, s1.id).length, 2);
   assert.equal(photosOf(r.body, s2.id).length, 1);
   const url = photosOf(r.body, s1.id)[0].url;
-  assert.equal((await fetch(base + url)).status, 401); // foto exige login
+  assert.equal((await fetch(base + unsignedOf(url))).status, 401); // link sem assinatura exige login
+  assert.equal((await fetch(base + url)).status, 200); // link assinado (CDN)
   assert.equal((await a('GET', url)).status, 200);
   assert.equal((await a('GET', url + '/thumb')).status, 200);
 
@@ -1077,4 +1113,23 @@ test('revisão 3: saldo do intérprete não fica negativo com pedidos ao mesmo t
   assert.equal((await withCookie('POST', '/api/suppliers', 'null')).status, 400);
   assert.equal((await withCookie('POST', '/api/products', JSON.stringify({ name: 'P', offers: [null] }))).status, 400);
   assert.equal((await withCookie('GET', '/api/suppliers/%E0')).status, 404);
+});
+
+test('envio em pacote: fotos em binário junto com o JSON', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const r0 = await fetch(base + '/api/register', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' }) });
+  const cookie = r0.headers.get('set-cookie').split(';')[0];
+  const png = Buffer.from(PNG.split(',')[1], 'base64');
+  const json = Buffer.from(JSON.stringify({ name: 'Pacote', card_photo: '\u0000bin:0', card_photo_thumb: '\u0000bin:1', __bins: [['image/png', png.length], ['image/png', png.length]] }));
+  const len = Buffer.alloc(4); len.writeUInt32LE(json.length, 0);
+  let res = await fetch(base + '/api/suppliers', { method: 'POST', headers: { 'Content-Type': 'application/vnd.missao.bundle', Cookie: cookie }, body: Buffer.concat([len, json, png, png]) });
+  assert.equal(res.status, 201);
+  const s = await res.json();
+  assert.ok(s.card_photo);
+  assert.equal((await fetch(base + s.card_photo)).status, 200);
+  // pacote malformado
+  res = await fetch(base + '/api/suppliers', { method: 'POST', headers: { 'Content-Type': 'application/vnd.missao.bundle', Cookie: cookie }, body: Buffer.from([1, 2]) });
+  assert.equal(res.status, 400);
 });

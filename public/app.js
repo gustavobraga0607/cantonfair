@@ -138,16 +138,54 @@ class StaleNavigation extends Error {}
 // timeout (ms): sinal fraco na feira costuma deixar o envio "pendurado"; passado o tempo,
 // a chamada falha como sem internet (o cadastro vai para a fila e o client_ref evita duplicar).
 // fresh: recusa a cópia salva pelo service worker (dado velho não pode virar base de uma gravação).
+// Fotos dentro do envio vão em binário (base64 deixa 33% maior): [tamanho do JSON][JSON][fotos].
+// O servidor devolve cada foto ao seu campo. Sem fotos, vai JSON comum.
+function bundleBody(body) {
+  const bins = [];
+  const parts = [];
+  const walk = (v) => {
+    if (typeof v === 'string') {
+      const m = /^data:(image\/(?:jpeg|png|webp));base64,/.exec(v);
+      if (!m || v.length < 2000) return v;
+      const raw = atob(v.slice(m[0].length));
+      const bytes = new Uint8Array(raw.length);
+      for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+      bins.push([m[1], bytes.length]);
+      parts.push(bytes);
+      return `\u0000bin:${bins.length - 1}`;
+    }
+    if (Array.isArray(v)) return v.map(walk);
+    if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, walk(x)]));
+    return v;
+  };
+  const json = walk(body);
+  if (!bins.length) return null;
+  const text = new TextEncoder().encode(JSON.stringify({ ...json, __bins: bins }));
+  const len = new Uint8Array(4);
+  new DataView(len.buffer).setUint32(0, text.length, true);
+  return new Blob([len, text, ...parts], { type: 'application/vnd.missao.bundle' });
+}
+
+// Consultas (GET) da tela atual: se o service worker avisar que uma delas mudou, a tela é redesenhada.
+const viewUrls = new Set();
 async function api(path, { method = 'GET', body, background = false, timeout = 0, fresh = false } = {}) {
   const nav = navSeq;
+  if (method === 'GET' && !background) viewUrls.add(path);
   let res;
   const ctrl = timeout ? new AbortController() : null;
   const timer = ctrl && setTimeout(() => ctrl.abort(), timeout);
+  let bundle = null;
+  try { bundle = body && typeof body === 'object' ? bundleBody(body) : null; } catch { bundle = null; }
   try {
     res = await fetch(path, {
       method,
-      headers: body !== undefined ? { 'Content-Type': 'application/json' } : {},
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      headers: {
+        ...(body !== undefined ? { 'Content-Type': bundle ? 'application/vnd.missao.bundle' : 'application/json' } : {}),
+        ...(fresh ? { 'X-Fresh': '1' } : {}),
+        // Formulários de edição: dado atual da rede primeiro (a cópia salva só sem sinal).
+        ...(method === 'GET' && /\/(edit|new)\b/.test(location.hash) ? { 'X-Net-First': '1' } : {}),
+      },
+      body: bundle || (body !== undefined ? JSON.stringify(body) : undefined),
       credentials: 'same-origin',
       signal: ctrl?.signal,
     });
@@ -351,6 +389,42 @@ async function flushOutbox({ manual = false } = {}) {
     // Atualiza só listas e detalhes (formulários, importação, intérprete etc. não perdem o que está na tela).
     if (/^#\/(suppliers|products|ranking|outbox)(\/\d+)?(\?|$)/.test(location.hash) || location.hash === '' || location.hash === '#/') router();
   }
+}
+
+// Aviso no topo: há pedidos para entrar na empresa esperando resposta.
+function refreshJoinBar() {
+  const bar = document.getElementById('join-bar');
+  if (!bar) return;
+  const n = state.me?.join_requests?.length || 0;
+  bar.hidden = !n || location.hash.startsWith('#/account');
+  bar.innerHTML = `${ic('contact')} ${n} pedido(s) para entrar na sua empresa <b>Ver</b>`;
+}
+
+// Cadastrado numa empresa que já tem equipe: espera a aprovação (não vê nada da empresa).
+function viewPending() {
+  setChrome({ title: 'Aguardando aprovação', tab: null, auth: true });
+  const { user, company } = state.me;
+  $app.innerHTML = `
+    <div class="card stack pending-card">
+      <div class="pending-icon">${ic('clock')}</div>
+      <h2 style="margin:0">Aguardando aprovação</h2>
+      <p style="margin:0">Olá, <b>${esc(user.name)}</b>. A empresa <b>${esc(company.name || company.cnpj_formatted)}</b> já tem equipe no app.
+        Para proteger os dados dela, alguém da equipe precisa aprovar o seu acesso em <b>Conta → Pedidos para entrar na empresa</b>.</p>
+      <p class="hint" style="margin:0">Avise um colega. Assim que ele aprovar, toque em “Verificar de novo”.</p>
+      <button type="button" class="btn primary block" id="pending-check">${ic('refresh')} Verificar de novo</button>
+      <button type="button" class="btn block" id="pending-logout">Sair</button>
+    </div>`;
+  document.getElementById('pending-check').addEventListener('click', async (e) => {
+    e.currentTarget.disabled = true;
+    try { state.me = await api('/api/me', { fresh: true }); } catch (err) { toast(err.message); }
+    if (state.me && !state.me.pending) { toast('Acesso aprovado. Bem-vindo(a) à equipe!'); location.hash = '#/ranking'; router(); }
+    else { toast('Ainda aguardando aprovação.'); document.getElementById('pending-check').disabled = false; }
+  });
+  document.getElementById('pending-logout').addEventListener('click', async () => {
+    await api('/api/logout', { method: 'POST', body: {} }).catch(() => {});
+    state.me = null;
+    location.hash = '#/login';
+  });
 }
 
 async function refreshOutboxBar() {
@@ -664,7 +738,7 @@ function viewRegister() {
       if (!r.valid) { hint.className = 'hint err'; hint.textContent = r.message; return; }
       hint.className = 'hint ok';
       hint.textContent = '✓ CNPJ válido' + (r.name ? ` — ${r.name}` : '') +
-        (r.existing ? ' (empresa já cadastrada: você verá os dados da equipe)' : '');
+        (r.existing ? ' (empresa já cadastrada: alguém da equipe precisa aprovar o seu acesso)' : '');
     } catch (err) {
       if (seq === checkSeq) { hint.className = 'hint err'; hint.textContent = err.message; }
     }
@@ -3884,7 +3958,7 @@ function renderMyCard() {
       renderMyCard();
       toast('Cartão de visitas salvo.');
     } catch (err) { toast(err.message); }
-  }, { maxSize: 1800, quality: 0.9 });
+  }, { maxSize: 1500, quality: 0.85 });
 
   const show = () => openLightbox(user.card_photo, { rotateToFit: true });
   document.getElementById('my-card-show')?.addEventListener('click', show);
@@ -3994,8 +4068,10 @@ async function viewAdmin(query) {
     .map((u) => `
       <div class="item admin-row" data-user="${u.id}">
         <div class="item-body">
-          <div class="item-title">${esc(u.name)} ${u.role === 'admin' ? '<span class="badge admin">ADMIN</span>' : ''} ${u.is_self ? '<span class="badge">você</span>' : ''}</div>
+          <div class="item-title">${esc(u.name)} ${u.role === 'admin' ? '<span class="badge admin">ADMIN</span>' : ''} ${u.is_self ? '<span class="badge">você</span>' : ''}
+            ${u.status === 'pending' ? '<span class="badge pending">aguardando aprovação</span>' : ''}</div>
           <div class="item-sub">${esc(u.email)}</div>
+          ${u.status === 'pending' ? `<button type="button" class="btn small primary" data-approve="${u.id}" style="margin-top:6px">${ic('check')} Aprovar</button>` : ''}
           <label class="admin-company">Empresa
             <select data-move="${u.id}">${companies.map((c) => `<option value="${esc(c.cnpj)}" ${c.cnpj === u.cnpj ? 'selected' : ''}>${c.name ? `${esc(c.name)} — ` : ''}${esc(c.cnpj_formatted)}</option>`).join('')}</select>
           </label>
@@ -4043,7 +4119,9 @@ async function viewAdmin(query) {
   list.addEventListener('click', async (e) => {
     const btn = e.target.closest('button');
     if (!btn) return;
-    if (btn.dataset.delUser) {
+    if (btn.dataset.approve) {
+      try { await api(`/api/company/requests/${btn.dataset.approve}/approve`, { method: 'POST', body: {} }); await refresh('Acesso aprovado.'); } catch (err) { toast(err.message); }
+    } else if (btn.dataset.delUser) {
       const u = users.find((x) => String(x.id) === btn.dataset.delUser);
       if (!confirm(`Excluir o usuário ${u.name} (${u.email})?\n\nEle(a) perde o acesso ao app. Os cadastros feitos por ele(a) continuam na empresa.`)) return;
       try { await api(`/api/admin/users/${u.id}`, { method: 'DELETE' }); await refresh('Usuário excluído.'); } catch (err) { toast(err.message); }
@@ -4180,12 +4258,31 @@ async function viewAccount() {
       <a class="item" href="#/admin/models"><div class="thumb">${ic('flask')}</div><div class="item-body">
         <div class="item-title">Teste de modelos de leitura</div>
         <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
-    <h2>Equipe (${company.members.length})</h2>
-    <div class="card"><ul class="members">${company.members.map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
-      <p class="hint">Novos colegas podem se cadastrar com o mesmo CNPJ para acessar os mesmos fornecedores e produtos.</p></div>
+    ${state.me.join_requests?.length ? `<h2 id="equipe">Pedidos para entrar na empresa (${state.me.join_requests.length})</h2>
+    <div class="card stack">${state.me.join_requests.map((r) => `<div class="join-row">
+        <div><b>${esc(r.name)}</b><div class="item-sub">${esc(r.email)}</div></div>
+        <div class="actions"><button type="button" class="btn small danger" data-reject="${r.id}">Recusar</button>
+          <button type="button" class="btn small primary" data-accept="${r.id}">${ic('check')} Aprovar</button></div></div>`).join('')}
+      <p class="hint" style="margin:0">Aprove só quem você conhece: a pessoa passa a ver e editar os fornecedores, produtos e preços da empresa.</p></div>` : ''}
+    <h2${state.me.join_requests?.length ? '' : ' id="equipe"'}>Equipe (${company.members.filter((m) => m.status !== 'pending').length})</h2>
+    <div class="card"><ul class="members">${company.members.filter((m) => m.status !== 'pending').map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
+      <p class="hint">Novos colegas se cadastram com o mesmo CNPJ e entram depois que alguém da equipe aprovar aqui.</p></div>
     <button class="btn block" id="app-update" style="margin-top:20px">${ic('refresh')} Atualizar o app</button>
     <button class="btn block" id="logout" style="margin-top:10px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Missão China by BR Trading</span><span id="app-version"></span></div>`;
+  $app.querySelectorAll('[data-accept], [data-reject]').forEach((b) => b.addEventListener('click', async () => {
+    const accept = Boolean(b.dataset.accept);
+    const r = state.me.join_requests.find((x) => String(x.id) === (b.dataset.accept || b.dataset.reject));
+    if (!accept && !confirm(`Recusar o pedido de ${r.name} (${r.email})? A conta dele(a) será apagada.`)) return;
+    b.disabled = true;
+    try {
+      await api(`/api/company/requests/${r.id}${accept ? '/approve' : ''}`, { method: accept ? 'POST' : 'DELETE', body: accept ? {} : undefined });
+      toast(accept ? `${r.name} agora faz parte da equipe.` : 'Pedido recusado.');
+      viewAccount();
+    } catch (err) { toast(err.message); b.disabled = false; }
+  }));
+  if (location.hash.includes('equipe')) document.getElementById('equipe')?.scrollIntoView();
+  refreshJoinBar();
   // Versão guardada no celular (cache do service worker) e atualização forçada.
   caches?.keys().then((keys) => {
     const v = keys.find((k) => k.startsWith('shell-'));
@@ -4274,7 +4371,11 @@ async function router() {
   const [re, view, isPublic] = match;
   if (!isPublic && !state.me) { location.hash = '#/login'; return; }
   if (isPublic && state.me) { location.hash = '#/ranking'; return; }
-  window.scrollTo(0, 0);
+  if (state.me?.pending) { viewPending(); return; }
+  refreshJoinBar();
+  if (!router.keepScroll) window.scrollTo(0, 0);
+  router.keepScroll = false;
+  viewUrls.clear();
   refreshOutboxBar();
   if (state.me && navigator.onLine && !router.flushed) { router.flushed = true; flushOutbox(); }
   try {
@@ -4287,6 +4388,42 @@ async function router() {
 
 window.addEventListener('hashchange', router);
 router();
+
+// Dados novos chegaram depois de a tela abrir com a cópia salva: redesenha listas e detalhes
+// (sem perder a posição), a não ser que o usuário esteja digitando.
+let refreshTimer = null;
+navigator.serviceWorker?.addEventListener('message', (e) => {
+  const msg = e.data || {};
+  if (msg.type === 'session-expired') {
+    if (state.me) { state.me = null; location.hash = '#/login'; }
+    return;
+  }
+  if (msg.type !== 'api-updated') return;
+  if (msg.url === '/api/me') {
+    api('/api/me', { background: true }).then((me) => {
+      const wasPending = state.me?.pending;
+      state.me = me;
+      refreshJoinBar();
+      if (wasPending && !me.pending) { toast('Acesso aprovado. Bem-vindo(a) à equipe!'); router(); }
+    }).catch(() => {});
+    return;
+  }
+  if (!viewUrls.has(msg.url)) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => {
+    const typing = document.activeElement && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+    const listOrDetail = /^#\/(suppliers|products|ranking|expenses|trip)(\/\d+)?(\?|$)/.test(location.hash) || !location.hash;
+    if (typing || !listOrDetail || !viewUrls.has(msg.url)) return;
+    const y = window.scrollY;
+    const term = document.querySelector('#app input[type=search]')?.value;
+    router.keepScroll = true;
+    Promise.resolve(router()).then(() => {
+      const search = document.querySelector('#app input[type=search]');
+      if (term && search) { search.value = term; search.dispatchEvent(new Event('input')); }
+      window.scrollTo(0, y);
+    });
+  }, 150);
+});
 
 // Service worker: abre o app na hora e mantém os últimos dados disponíveis sem internet.
 if ('serviceWorker' in navigator && location.protocol !== 'file:') {

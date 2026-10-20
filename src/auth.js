@@ -42,10 +42,10 @@ async function createSession(db, userId) {
 async function getSessionUser(db, token) {
   if (!token) return null;
   const row = await db.get(`
-    SELECT u.id, u.name, u.email, u.cnpj, u.role, u.card_photo
+    SELECT u.id, u.name, u.email, u.cnpj, u.role, u.card_photo, u.status
     FROM sessions s JOIN users u ON u.id = s.user_id
     WHERE s.token_hash = ? AND s.expires_at > ?`, [sha256(token), Date.now()]);
-  return row ? { id: row.id, name: row.name, email: row.email, cnpj: row.cnpj, role: row.role || 'user', card_photo: row.card_photo ?? null } : null;
+  return row ? { id: row.id, name: row.name, email: row.email, cnpj: row.cnpj, role: row.role || 'user', card_photo: row.card_photo ?? null, status: row.status || 'active' } : null;
 }
 
 async function destroySession(db, token) {

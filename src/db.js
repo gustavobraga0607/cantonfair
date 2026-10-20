@@ -227,6 +227,8 @@ const ADDED_COLUMNS = [
   ['suppliers', 'client_ref', 'TEXT'],
   ['products', 'client_ref', 'TEXT'],
   ['companies', 'asaas_customer_id', 'TEXT'],
+  // 'pending': entrou numa empresa que já tem equipe e espera a aprovação de alguém dela.
+  ['users', 'status', "TEXT NOT NULL DEFAULT 'active'"],
 ];
 // Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
 const DROPPED_NOT_NULL = [
@@ -353,6 +355,8 @@ function postgres(connectionString) {
   const pool = new Pool({
     connectionString,
     max: Number(process.env.PG_POOL_MAX) || 6,
+    // Conexão parada fica aberta por 60 s (a próxima requisição não refaz TLS + login no banco).
+    idleTimeoutMillis: 60_000,
     ssl: local || /sslmode=disable/.test(connectionString) ? false : { rejectUnauthorized: false },
   });
   const toPg = (sql) => { let i = 0; return sql.replace(/\?/g, () => `$${++i}`); };
@@ -366,15 +370,23 @@ function postgres(connectionString) {
   });
 
   let ready;
-  // Esquema + migrações num único comando: uma ida ao banco só na primeira requisição
-  // de cada instância (deixa o "cold start" na Vercel mais rápido).
-  const migrate = () => pool.query([
+  // Esquema + migrações num único comando. Só roda quando o esquema mudou (versão = hash do SQL):
+  // nas demais instâncias novas é uma consulta só, sem travar tabelas com ALTER TABLE.
+  const migrationSql = [
     schemaFor('postgres'),
     ...ADDED_COLUMNS.map(([table, column, type]) => `ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${typed('postgres', type)};`),
     ...DROPPED_NOT_NULL.map(([table, column]) => `ALTER TABLE ${table} ALTER COLUMN ${column} DROP NOT NULL;`),
     ...ADDED_INDEXES.map((sql) => `${sql};`),
     ...CLEANUP_SQL.map((sql) => `${sql};`),
-  ].join('\n'));
+  ].join('\n');
+  const version = require('node:crypto').createHash('sha256').update(migrationSql).digest('hex').slice(0, 16);
+  const migrate = async () => {
+    const cur = await pool.query("SELECT value FROM schema_meta WHERE key = 'version'").then((r) => r.rows[0]?.value, () => null);
+    if (cur === version) return;
+    await pool.query(`${migrationSql}
+      CREATE TABLE IF NOT EXISTS schema_meta (key TEXT PRIMARY KEY, value TEXT);
+      INSERT INTO schema_meta (key, value) VALUES ('version', '${version}') ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;`);
+  };
   const init = () => (ready ??= migrate().catch((err) => { ready = null; throw err; }));
   const base = wrap(pool);
   const withInit = (m) => async (...a) => { await init(); return base[m](...a); };
