@@ -4268,7 +4268,8 @@ async function viewAccount() {
     <h2${state.me.join_requests?.length ? '' : ' id="equipe"'}>Equipe (${company.members.filter((m) => m.status !== 'pending').length})</h2>
     <div class="card"><ul class="members">${company.members.filter((m) => m.status !== 'pending').map((m) => `<li><b>${esc(m.name)}</b><span class="item-sub">${esc(m.email)}</span></li>`).join('')}</ul>
       <p class="hint">Novos colegas se cadastram com o mesmo CNPJ e entram depois que alguém da equipe aprovar aqui.</p></div>
-    <button class="btn block" id="app-update" style="margin-top:20px">${ic('refresh')} Atualizar o app</button>
+    <button class="btn block danger" id="del-mine" style="margin-top:20px">${ic('trash')} Excluir os produtos que eu cadastrei</button>
+    <button class="btn block" id="app-update" style="margin-top:10px">${ic('refresh')} Atualizar o app</button>
     <button class="btn block" id="logout" style="margin-top:10px">Sair</button>
     <div class="signature"><img class="brand-logo" src="/brand/logo.png" alt="BR Trading"><span>Missão China by BR Trading</span><span id="app-version"></span></div>`;
   $app.querySelectorAll('[data-accept], [data-reject]').forEach((b) => b.addEventListener('click', async () => {
@@ -4283,6 +4284,20 @@ async function viewAccount() {
     } catch (err) { toast(err.message); b.disabled = false; }
   }));
   if (location.hash.includes('equipe')) document.getElementById('equipe')?.scrollIntoView();
+  document.getElementById('del-mine').addEventListener('click', async (e) => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const { count } = await api('/api/products/delete-mine', { method: 'POST', body: { dry: true } });
+      if (!count) { toast('Você não tem produtos cadastrados.'); return; }
+      const typed = prompt(`Excluir os ${count} produto(s) que você cadastrou, com as ofertas e fotos deles?\n\nOs fornecedores continuam. Não dá para desfazer.\n\nPara confirmar, digite EXCLUIR:`);
+      if (typed == null) return;
+      if (typed.trim().toUpperCase() !== 'EXCLUIR') { toast('Exclusão cancelada.'); return; }
+      const r = await api('/api/products/delete-mine', { method: 'POST', body: { confirm: 'EXCLUIR' } });
+      state.suppliers = null;
+      toast(`${r.deleted} produto(s) excluído(s).`);
+    } catch (err) { toast(err.message); } finally { btn.disabled = false; }
+  });
   refreshJoinBar();
   // Versão guardada no celular (cache do service worker) e atualização forçada.
   caches?.keys().then((keys) => {

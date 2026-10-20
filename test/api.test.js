@@ -1133,3 +1133,23 @@ test('envio em pacote: fotos em binário junto com o JSON', async (t) => {
   res = await fetch(base + '/api/suppliers', { method: 'POST', headers: { 'Content-Type': 'application/vnd.missao.bundle', Cookie: cookie }, body: Buffer.from([1, 2]) });
   assert.equal(res.status, 400);
 });
+
+test('excluir os produtos que eu cadastrei (só os meus)', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@x.com', password: '12345678', cnpj: '11222333000181' });
+  await approveAll(a);
+  const s = (await a('POST', '/api/suppliers', { name: 'S' })).body;
+  const p1 = (await a('POST', '/api/products', { name: 'P1', photo: PNG, offers: [{ supplier_id: s.id, price: 1 }] })).body;
+  await a('POST', `/api/products/${p1.id}/photos`, { supplier_id: s.id, photo: PNG });
+  await a('POST', '/api/products', { name: 'P2' });
+  await b('POST', '/api/products', { name: 'Do colega' });
+  assert.equal((await a('POST', '/api/products/delete-mine', { dry: true })).body.count, 2);
+  assert.equal((await a('POST', '/api/products/delete-mine', {})).status, 400, 'exige confirmação');
+  assert.equal((await a('POST', '/api/products/delete-mine', { confirm: 'EXCLUIR' })).body.deleted, 2);
+  assert.deepEqual((await a('GET', '/api/products')).body.map((p) => p.name), ['Do colega']);
+  assert.equal((await a('GET', '/api/suppliers')).body.length, 1, 'fornecedor continua');
+});

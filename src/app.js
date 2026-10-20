@@ -1108,6 +1108,23 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return { ok: true };
   });
 
+  // Exclui de uma vez os produtos que o próprio usuário cadastrou (para recomeçar um teste).
+  // { dry: true } só conta. Exige confirm: 'EXCLUIR'.
+  route('POST', '/api/products/delete-mine', async ({ user, body }) => {
+    const cnpj = accessCnpj(user);
+    const rows = await db.all(`SELECT id, cnpj, photo FROM products p WHERE p.created_by = ?${companyFilter('p', cnpj)}`, [user.id, ...companyParam(cnpj)]);
+    if (body.dry) return { count: rows.length };
+    if (body.confirm !== 'EXCLUIR') throw new HttpError(400, 'Confirme digitando EXCLUIR.');
+    await db.tx(async (q) => {
+      for (const p of rows) {
+        await removeOfferPhotos(q, p.cnpj, 'product_id = ?', [p.id]);
+        await q.run('DELETE FROM products WHERE id = ?', [p.id]);
+        await removeImage(q, p.cnpj, p.photo);
+      }
+    });
+    return { deleted: rows.length };
+  });
+
   // Fotos do produto por fornecedor (cada oferta tem a sua galeria).
   route('POST', '/api/products/:id/photos', async ({ user, params, body }) => {
     const p = await loadProduct(accessCnpj(user), params.id);
