@@ -29,6 +29,13 @@ const estimate = (price, currency, nat, rates, freightUsd = 0) => Math.round(
   (price * (currency === 'USD' ? rates.USD : rates.CNY) + (freightUsd || 0) * rates.USD) * (1 + (nat || 0) / 100) * 100) / 100;
 const ratesOf = (x) => ({ USD: Number(x.exchange_rate), CNY: Number(x.cny_rate) || Number(x.exchange_rate) / 7.2 });
 const CUR_LABEL = { CNY: '¥', USD: 'US$' };
+// Dois botões para adicionar fotos: no Android, o campo que aceita várias fotos abre só a galeria,
+// então a câmera tem um botão próprio (capture) e a galeria outro (várias de uma vez).
+const photoAddTiles = (attr, value) => `
+  <label class="offer-photo offer-photo-add" title="Tirar foto">${ic('camera')}<small>Câmera</small>
+    <input type="file" accept="image/*" capture="environment" ${attr}="${value}"></label>
+  <label class="offer-photo offer-photo-add" title="Escolher da galeria">${ic('image')}<small>Galeria</small>
+    <input type="file" accept="image/*" multiple ${attr}="${value}"></label>`;
 const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 // Preço escrito em texto ("¥16,80 (500 pcs)", "US$ 2.35", "16.8元") → { price, currency }; prefere o yuan.
 function priceFromText(text) {
@@ -1186,10 +1193,7 @@ function offerCardHtml({ title, href, sub = '', thumb = '', best = false, o, uni
           <img src="${esc(thumbUrl(ph.url))}" alt="" loading="lazy" data-full="${esc(ph.url)}">
           <button type="button" class="offer-photo-del" data-del-photo="${productId}:${ph.id}" aria-label="Excluir foto" title="Excluir foto">${ic('trash')}</button>
         </div>`).join('')}
-        ${photos.length < 12 ? `<label class="offer-photo offer-photo-add" title="Adicionar fotos deste fornecedor">
-          ${ic('camera')}<small>${photos.length ? 'Mais fotos' : 'Fotos'}</small>
-          <input type="file" accept="image/*" multiple data-add-photo="${productId}:${supplierId}">
-        </label>` : ''}
+        ${photos.length < 12 ? photoAddTiles('data-add-photo', `${productId}:${supplierId}`) : ''}
       </div>
     </div>`;
 }
@@ -1476,8 +1480,7 @@ async function viewProductForm(id, query) {
           <button type="button" class="offer-photo-del" data-del-old="${i}:${ph.id}" aria-label="Excluir foto">${ic('trash')}</button></div>`).join('')}
         ${fresh.map((d, j) => `<div class="offer-photo"><img src="${d}" alt="" data-full="${d}">
           <button type="button" class="offer-photo-del" data-del-new="${i}:${j}" aria-label="Excluir foto">${ic('trash')}</button></div>`).join('')}
-        ${total < 12 ? `<label class="offer-photo offer-photo-add">${ic('camera')}<small>${total ? 'Mais fotos' : 'Fotos'}</small>
-          <input type="file" accept="image/*" multiple data-add-new="${i}"></label>` : ''}
+        ${total < 12 ? photoAddTiles('data-add-new', i) : ''}
       </div>`;
   }
   renderOffers();
@@ -1910,7 +1913,9 @@ async function viewProductScan(query) {
           ${it.own_photo ? `<img src="${it.own_photo}" alt="Foto do produto" data-view-photo="${i}">
             <div class="scan-photo-actions"><span class="item-sub">Foto deste produto</span>
               <button type="button" class="btn small" data-rm-photo="${i}">${ic('trash')} Remover</button></div>`
-            : `<label class="btn small">${ic('camera')} Foto do produto<input type="file" accept="image/*" data-item-photo="${i}" hidden></label>`}
+            : `<span class="item-sub">Foto do produto</span>
+              <label class="btn small">${ic('camera')} Câmera<input type="file" accept="image/*" capture="environment" data-item-photo="${i}" hidden></label>
+              <label class="btn small">${ic('image')} Galeria<input type="file" accept="image/*" data-item-photo="${i}" hidden></label>`}
         </div>
         ${similar.length ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado</div>
           <select data-k="target"><option value="">Criar produto novo</option>${similar.map(({ p }) =>
