@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText } = require('../src/ocr');
+const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText, cardCorners } = require('../src/ocr');
 
 function fakeClient(response, calls = []) {
   return { beta: { messages: { create: async (params) => { calls.push(params); if (response instanceof Error) throw response; return response; } } } };
@@ -21,7 +21,8 @@ test('envia a imagem com saída estruturada e devolve os campos do cartão', asy
   assert.equal(out.wechat, '', 'campos ausentes viram string vazia');
   assert.equal(out.address, 'No. 88 Jiangnan Rd, Ningbo');
   assert.equal(out.province, 'Zhejiang');
-  assert.deepEqual(Object.keys(out).sort(), Object.keys(FIELDS).sort());
+  assert.deepEqual(Object.keys(out).sort(), [...Object.keys(FIELDS), 'corners'].sort());
+  assert.equal(out.corners, null, 'sem cantos na resposta, sem recorte');
 
   const p = calls[0];
   assert.equal(p.model, 'claude-haiku-5-5', 'Haiku é o modelo principal');
@@ -222,4 +223,15 @@ test('preço deixado só no texto vai para o campo de preço, com a moeda', () =
   const p = guardCurrency({ price: null, currency: '', price_note: '¥16,80 (500 pcs)' });
   assert.equal(p.price, 16.8);
   assert.equal(p.currency, 'CNY');
+});
+
+test('cantos do cartão: válidos viram frações; tortos, cruzados ou pequenos são recusados', () => {
+  const q = (tl, tr, br, bl) => ({ top_left: { x: tl[0], y: tl[1] }, top_right: { x: tr[0], y: tr[1] }, bottom_right: { x: br[0], y: br[1] }, bottom_left: { x: bl[0], y: bl[1] } });
+  assert.deepEqual(cardCorners(q([100, 200], [900, 250], [880, 700], [120, 680])), [[0.1, 0.2], [0.9, 0.25], [0.88, 0.7], [0.12, 0.68]]);
+  // foto girada 90°: o canto superior esquerdo do cartão fica embaixo à esquerda da imagem
+  assert.ok(cardCorners(q([150, 900], [150, 100], [600, 100], [600, 900])));
+  assert.equal(cardCorners(q([100, 200], [880, 700], [900, 250], [120, 680])), null, 'cantos cruzados');
+  assert.equal(cardCorners(q([100, 100], [200, 100], [200, 150], [100, 150])), null, 'pequeno demais');
+  assert.equal(cardCorners(q([100, 100], [1300, 100], [1300, 600], [100, 600])), null, 'fora da imagem');
+  assert.equal(cardCorners(null), null);
 });

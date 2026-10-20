@@ -447,9 +447,9 @@ function makeThumb(dataUrl, size = 240) {
   });
 }
 const thumbUrl = (url) => (url ? `${url}/thumb` : null);
-const thumbImg = (url, fallback = ic('package')) => (url
-  ? `<img class="thumb" src="${esc(thumbUrl(url))}" alt="" loading="lazy" decoding="async" width="64" height="64">`
-  : `<div class="thumb">${fallback}</div>`);
+const thumbImg = (url, fallback = ic('package'), cls = '') => (url
+  ? `<img class="thumb ${cls}" src="${esc(thumbUrl(url))}" alt="" loading="lazy" decoding="async" width="64" height="64">`
+  : `<div class="thumb ${cls}">${fallback}</div>`);
 
 // Liga um <label class="photo-input"> com <input type=file> a uma prévia.
 function bindPhotoInput(root, onChange, { maxSize, quality } = {}) {
@@ -708,7 +708,7 @@ async function viewSuppliers() {
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
         <a class="item" href="${s.pending ? '#/outbox' : `#/suppliers/${s.id}`}">
-          ${thumbImg(s.card_photo, ic('contact'))}
+          ${thumbImg(s.card_photo, ic('contact'), 'card-thumb')}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
             ${pendingTag(s)}
@@ -852,7 +852,88 @@ const provinceOptions = (selected) => `<option value="">Selecione…</option>${(
 // Lê o cartão de visita pela API e atualiza o cadastro com o que foi lido: campos que o cartão
 // traz são substituídos (foto nova = dados novos); os que ele não traz ficam como estão.
 let ocrSeq = 0;
-async function readBusinessCard(form, dataUrl) {
+// Cartão de visita endireitado: recorta o fundo e corrige a perspectiva a partir dos 4 cantos
+// (frações da imagem, na ordem do texto: superior-esq., superior-dir., inferior-dir., inferior-esq.).
+// Feito no próprio celular; devolve null se não der para recortar.
+function straightenCard(dataUrl, corners, { margin = 0.012, maxSide = 1280 } = {}) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve(null);
+    img.onload = () => {
+      try {
+        const W = img.naturalWidth;
+        const H = img.naturalHeight;
+        let p = corners.map(([x, y]) => [x * W, y * H]);
+        // Pequena folga para não cortar a borda do cartão.
+        const cx = p.reduce((a, q) => a + q[0], 0) / 4;
+        const cy = p.reduce((a, q) => a + q[1], 0) / 4;
+        p = p.map(([x, y]) => [Math.min(W - 1, Math.max(0, cx + (x - cx) * (1 + 2 * margin))), Math.min(H - 1, Math.max(0, cy + (y - cy) * (1 + 2 * margin)))]);
+        const d = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+        let w = Math.max(d(p[0], p[1]), d(p[3], p[2]));
+        let h = Math.max(d(p[0], p[3]), d(p[1], p[2]));
+        const k = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.round(w * k);
+        h = Math.round(h * k);
+        if (w < 60 || h < 40) { resolve(null); return; }
+        const srcCanvas = document.createElement('canvas');
+        srcCanvas.width = W;
+        srcCanvas.height = H;
+        const sctx = srcCanvas.getContext('2d');
+        sctx.drawImage(img, 0, 0);
+        const src = sctx.getImageData(0, 0, W, H).data;
+        // Transformação do retângulo de saída (u, v ∈ [0, 1]) para o quadrilátero da foto.
+        const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = p;
+        const sx = x0 - x1 + x2 - x3;
+        const sy = y0 - y1 + y2 - y3;
+        let a; let b; let c; let dd; let e; let f; let g = 0; let hh = 0;
+        if (Math.abs(sx) < 1e-9 && Math.abs(sy) < 1e-9) {
+          a = x1 - x0; b = x3 - x0; c = x0; dd = y1 - y0; e = y3 - y0; f = y0;
+        } else {
+          const dx1 = x1 - x2; const dx2 = x3 - x2; const dy1 = y1 - y2; const dy2 = y3 - y2;
+          const den = dx1 * dy2 - dx2 * dy1;
+          g = (sx * dy2 - dx2 * sy) / den;
+          hh = (dx1 * sy - sx * dy1) / den;
+          a = x1 - x0 + g * x1; b = x3 - x0 + hh * x3; c = x0;
+          dd = y1 - y0 + g * y1; e = y3 - y0 + hh * y3; f = y0;
+        }
+        const out = document.createElement('canvas');
+        out.width = w;
+        out.height = h;
+        const octx = out.getContext('2d');
+        const dst = octx.createImageData(w, h);
+        const px = dst.data;
+        for (let j = 0; j < h; j++) {
+          const v = (j + 0.5) / h;
+          for (let i = 0; i < w; i++) {
+            const u = (i + 0.5) / w;
+            const z = g * u + hh * v + 1;
+            const x = (a * u + b * v + c) / z;
+            const y = (dd * u + e * v + f) / z;
+            // Interpolação bilinear.
+            const xi = Math.max(0, Math.min(W - 2, Math.floor(x)));
+            const yi = Math.max(0, Math.min(H - 2, Math.floor(y)));
+            const fx = Math.min(1, Math.max(0, x - xi));
+            const fy = Math.min(1, Math.max(0, y - yi));
+            const i00 = (yi * W + xi) * 4; const i10 = i00 + 4; const i01 = i00 + W * 4; const i11 = i01 + 4;
+            const o = (j * w + i) * 4;
+            for (let ch = 0; ch < 3; ch++) {
+              px[o + ch] = (src[i00 + ch] * (1 - fx) + src[i10 + ch] * fx) * (1 - fy) + (src[i01 + ch] * (1 - fx) + src[i11 + ch] * fx) * fy;
+            }
+            px[o + 3] = 255;
+          }
+        }
+        octx.putImageData(dst, 0, 0);
+        resolve(out.toDataURL('image/jpeg', 0.85));
+      } catch {
+        resolve(null);
+      }
+    };
+    img.src = dataUrl;
+  });
+}
+
+// onCrop(fotoRecortada): chamado quando a leitura encontra os cantos do cartão.
+async function readBusinessCard(form, dataUrl, { onCrop = null, fieldsToo = true } = {}) {
   const box = document.getElementById('ocr-status');
   if (!state.me?.features?.card_ocr) return;
   const seq = ++ocrSeq;
@@ -864,6 +945,14 @@ async function readBusinessCard(form, dataUrl) {
   try {
     const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 60_000 : 1 });
     if (seq !== ocrSeq) return;
+    const cropped = onCrop && card.corners ? await straightenCard(dataUrl, card.corners) : null;
+    if (seq !== ocrSeq) return;
+    if (cropped) onCrop(cropped);
+    if (!fieldsToo) {
+      box.className = cropped ? 'ocr-status ok' : 'ocr-status err';
+      box.textContent = cropped ? '✓ Cartão endireitado e recortado. Salve para manter.' : 'Não consegui encontrar as bordas do cartão nesta foto.';
+      return;
+    }
     const filled = [];
     const fill = (field, value, label) => {
       const el = form[field];
@@ -916,9 +1005,9 @@ async function readBusinessCard(form, dataUrl) {
       filled.push('observações');
     }
     box.className = 'ocr-status ok';
-    box.textContent = filled.length
+    box.textContent = (filled.length
       ? `✓ Cartão lido: ${filled.join(', ')} atualizado(s). Confira antes de salvar.`
-      : 'Cartão lido: os dados já estavam iguais aos do cartão.';
+      : 'Cartão lido: os dados já estavam iguais aos do cartão.') + (cropped ? ' A foto foi endireitada e recortada.' : '');
   } catch (err) {
     if (seq !== ocrSeq) return;
     box.className = 'ocr-status err';
@@ -990,8 +1079,43 @@ async function viewSupplierForm(id) {
     document.getElementById('ocr-status').hidden = true;
     form.querySelector('button[type=submit]').disabled = false;
     delPhoto.hidden = true;
+    undoCrop.hidden = true;
+    straighten.hidden = true;
   });
-  bindPhotoInput(photoBox, (d) => { cardPhoto = d; removePhoto = false; delPhoto.hidden = false; readBusinessCard(form, d); });
+
+  // Cartão endireitado e recortado automaticamente (a partir da leitura), com opção de voltar à foto original.
+  let originalPhoto = null; // foto antes do recorte; 'salva' = a foto que já estava no cadastro
+  const setPreview = (d) => { photoBox.querySelector('.photo-preview').innerHTML = `<img src="${esc(d)}" alt="Prévia">`; };
+  const undoCrop = document.createElement('button');
+  undoCrop.type = 'button';
+  undoCrop.className = 'btn small photo-remove';
+  undoCrop.textContent = 'Usar a foto original (sem recorte)';
+  undoCrop.hidden = true;
+  const straighten = document.createElement('button');
+  straighten.type = 'button';
+  straighten.className = 'btn small photo-remove';
+  straighten.innerHTML = `${ic('sparkles')} Endireitar e recortar o cartão`;
+  straighten.hidden = !(editing && s.card_photo && state.me?.features?.card_ocr);
+  photoBox.append(undoCrop, straighten);
+  const onCrop = (cropped) => { cardPhoto = cropped; setPreview(cropped); undoCrop.hidden = false; straighten.hidden = true; };
+  undoCrop.addEventListener('click', () => {
+    if (originalPhoto === 'salva') { cardPhoto = null; setPreview(s.card_photo); straighten.hidden = false; } else { cardPhoto = originalPhoto; setPreview(originalPhoto); }
+    undoCrop.hidden = true;
+  });
+  // Cartões já cadastrados: lê a foto salva só para achar as bordas (não mexe nos dados do formulário).
+  straighten.addEventListener('click', async () => {
+    straighten.disabled = true;
+    try {
+      const blob = await (await fetch(s.card_photo, { credentials: 'same-origin' })).blob();
+      const dataUrl = await readFileAsDataUrl(blob);
+      originalPhoto = 'salva';
+      await readBusinessCard(form, dataUrl, { onCrop, fieldsToo: false });
+    } catch { toast('Não consegui abrir a foto do cartão.'); } finally { straighten.disabled = false; }
+  });
+  bindPhotoInput(photoBox, (d) => {
+    cardPhoto = d; originalPhoto = d; removePhoto = false; delPhoto.hidden = false; undoCrop.hidden = true; straighten.hidden = true;
+    readBusinessCard(form, d, { onCrop });
+  });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     const box = document.getElementById('err');

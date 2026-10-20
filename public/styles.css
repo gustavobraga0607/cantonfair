@@ -626,3 +626,6 @@ body.map-mode main { display: none; }
 .contact-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(0, 1fr)); gap: 8px; }
 .contact-actions .btn { padding-left: 6px; padding-right: 6px; gap: 6px; font-size: .92rem; white-space: nowrap; }
 .contact-actions .btn svg { width: 16px; height: 16px; flex: none; }
+/* miniatura do cartão de visita no formato do cartão (≈ 1,7 : 1) */
+.thumb.card-thumb { width: 86px; height: 52px; border-radius: 6px; }
+@media (max-width: 420px) { .thumb.card-thumb { width: 76px; height: 46px; } }

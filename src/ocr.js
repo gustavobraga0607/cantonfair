@@ -45,14 +45,55 @@ const FIELDS = {
 
 const BOOL_FIELDS = ['phone_whatsapp', 'phone_wechat'];
 
-const SCHEMA = {
+// Cantos do cartão na foto (para o app recortar o fundo e deixar o cartão em pé).
+const POINT = { type: 'object', properties: { x: { type: 'integer' }, y: { type: 'integer' } }, required: ['x', 'y'], additionalProperties: false };
+const CORNERS_SCHEMA = {
   type: 'object',
-  properties: Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, k === 'province'
-    ? { type: 'string', description: d, enum: ['', ...PROVINCES.map((p) => p.name)] }
-    : BOOL_FIELDS.includes(k) ? { type: 'boolean', description: d } : { type: 'string', description: d }])),
-  required: Object.keys(FIELDS),
+  description: 'Os 4 cantos do cartão de visita na foto, em milésimos: x de 0 (borda esquerda da imagem) a 1000 (direita), '
+    + 'y de 0 (topo da imagem) a 1000 (base). Os nomes seguem o cartão com o texto principal em pé, lido normalmente — '
+    + 'não a imagem: top_left é o canto superior esquerdo do cartão em relação ao texto, mesmo que a foto esteja girada. '
+    + 'Marque os cantos do próprio cartão (a borda do papel), não do fundo nem da mão. Com frente e verso, use o lado com o nome da empresa em inglês.',
+  properties: { top_left: POINT, top_right: POINT, bottom_right: POINT, bottom_left: POINT },
+  required: ['top_left', 'top_right', 'bottom_right', 'bottom_left'],
   additionalProperties: false,
 };
+
+const SCHEMA = {
+  type: 'object',
+  properties: {
+    ...Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, k === 'province'
+      ? { type: 'string', description: d, enum: ['', ...PROVINCES.map((p) => p.name)] }
+      : BOOL_FIELDS.includes(k) ? { type: 'boolean', description: d } : { type: 'string', description: d }])),
+    card_corners: CORNERS_SCHEMA,
+  },
+  required: [...Object.keys(FIELDS), 'card_corners'],
+  additionalProperties: false,
+};
+
+// Cantos válidos → [[x, y] ×4] em frações (0–1), na ordem superior-esq., superior-dir., inferior-dir., inferior-esq.
+// Recusa o que não parece um cartão: fora da imagem, polígono torto/cruzado ou pequeno demais.
+function cardCorners(c) {
+  const keys = ['top_left', 'top_right', 'bottom_right', 'bottom_left'];
+  if (!c || !keys.every((k) => Number.isFinite(c[k]?.x) && Number.isFinite(c[k]?.y))) return null;
+  const pts = keys.map((k) => [c[k].x / 1000, c[k].y / 1000]);
+  if (pts.some(([x, y]) => x < -0.02 || x > 1.02 || y < -0.02 || y > 1.02)) return null;
+  const clamp = (v) => Math.min(1, Math.max(0, v));
+  const p = pts.map(([x, y]) => [clamp(x), clamp(y)]);
+  // Convexo e sem cruzar: os produtos vetoriais dos 4 lados têm o mesmo sinal.
+  const cross = p.map((a, i) => {
+    const b = p[(i + 1) % 4]; const d = p[(i + 2) % 4];
+    return (b[0] - a[0]) * (d[1] - b[1]) - (b[1] - a[1]) * (d[0] - b[0]);
+  });
+  if (!(cross.every((v) => v > 0) || cross.every((v) => v < 0))) return null;
+  const area = Math.abs(p.reduce((s2, a, i) => { const b = p[(i + 1) % 4]; return s2 + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
+  if (area < 0.04) return null;
+  // Proporção de um cartão (mais largo que alto, em relação ao texto): evita recortes absurdos.
+  const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+  const w = (dist(p[0], p[1]) + dist(p[3], p[2])) / 2;
+  const h = (dist(p[0], p[3]) + dist(p[1], p[2])) / 2;
+  if (!h || w / h < 0.4 || w / h > 3.5) return null;
+  return p.map(([x, y]) => [Math.round(x * 10000) / 10000, Math.round(y * 10000) / 10000]);
+}
 
 const SYSTEM = `Você extrai dados de fotos de cartões de visita de fornecedores, tiradas por compradores brasileiros na Feira de Cantão (China).
 Transcreva exatamente o que está escrito; não invente nem complete dados ausentes. Campo sem informação = string vazia.
@@ -167,7 +208,7 @@ function createCardReader({ client, model = MODEL, fallbackModel = null } = {}) 
     }
     if (!PROVINCES.some((p) => p.name === out.province)) out.province = '';
     out.province = provinceFromAddress(out.address, out.province);
-    return preferMessagingPhone(out);
+    return { ...preferMessagingPhone(out), corners: cardCorners(data.card_corners) };
   }
 
   return function readCard(mime, base64, meta) {
@@ -376,5 +417,5 @@ const configLabel = () => `${PRICES[envModel()]?.label || envModel()} + ${PRICES
 
 module.exports = {
   createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
-  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
+  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, cardCorners, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
 };
