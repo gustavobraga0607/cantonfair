@@ -588,3 +588,9 @@ body.map-mode main { display: none; }
 .scan-photo img { width: 72px; height: 72px; object-fit: cover; border-radius: 8px; cursor: zoom-in; flex: none; }
 .scan-photo-actions { display: grid; gap: 6px; justify-items: start; }
 .scan-photo .btn { gap: 6px; }
+.sup-prod { display: flex; gap: 8px; align-items: stretch; }
+.sup-prod > .item { flex: 1; min-width: 0; }
+.sup-prod-cam { flex: none; width: 58px; display: grid; place-items: center; align-content: center; gap: 2px; border: 1px solid var(--border);
+  border-radius: var(--radius); background: var(--surface); color: var(--muted); cursor: pointer; font-size: .7rem; text-align: center; }
+.sup-prod-cam .ic { width: 22px; height: 22px; color: var(--text); }
+.sup-prod-cam.busy { opacity: .6; pointer-events: none; }

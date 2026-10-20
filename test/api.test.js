@@ -979,3 +979,42 @@ test('preços em RMB (padrão) ou US$ e câmbio do yuan', async (t) => {
   assert.equal(sup.products[0].price, 100);
   assert.equal(sup.products[0].estimated_brl, 105);
 });
+
+test('produtos por planilha Excel: modelo com fornecedores e leitura das linhas', async (t) => {
+  const ExcelJS = require('exceljs');
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  const sup = (await a('POST', '/api/suppliers', { name: 'Yiwu Cups Co.' })).body;
+
+  // modelo: aba Produtos + lista de fornecedores da empresa
+  const res = await fetch(base + '/api/products/import-template', { headers: { Cookie: a.cookie?.() || '' } });
+  assert.equal(res.status, 401, 'modelo exige login');
+  const { buildTemplate } = require('../src/product-import');
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.load(await buildTemplate(['Yiwu Cups Co.']));
+  assert.equal(wb.getWorksheet('Fornecedores').getCell('A2').value, 'Yiwu Cups Co.');
+  const ws = wb.getWorksheet('Produtos');
+  ws.spliceRows(2, 2); // tira os exemplos
+  ws.addRow(['Garrafa 1 L', 'yiwu cups co.', '32,50', 'RMB', '1.000', 'fca', 85, 129.9, 12000, 'Inox']);
+  ws.addRow(['Copo 350 ml', 'Fornecedor Novo', 2.35, 'USD', 500, 'FOB', '', '', '', '']);
+  ws.addRow(['', 'Sem nome', 1, '', '', '', '', '', '', '']);
+  ws.addRow(['Marmita', '', '¥22', '', '', '', '', '', '', '']);
+  const file = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+
+  const r = await a('POST', '/api/products/import/parse', { file });
+  assert.equal(r.status, 200);
+  const rows = r.body.rows;
+  assert.equal(rows.length, 3, 'linha sem nome é ignorada');
+  assert.deepEqual(
+    { ...rows[0], line: undefined },
+    { line: undefined, name: 'Garrafa 1 L', supplier_name: 'yiwu cups co.', supplier_id: sup.id, price: 32.5, currency: 'CNY', moq: 1000, incoterm: 'FCA', nat: 85, price_brl: 129.9, units_per_40hq: 12000, notes: 'Inox' },
+  );
+  assert.equal(rows[1].supplier_id, null, 'fornecedor não encontrado fica em branco');
+  assert.equal(rows[1].supplier_name, 'Fornecedor Novo');
+  assert.equal(rows[1].currency, 'USD');
+  assert.equal(rows[2].price, 22);
+  assert.equal(rows[2].currency, 'CNY');
+  assert.equal((await a('POST', '/api/products/import/parse', { file: 'data:text/plain;base64,AAAA' })).status, 400);
+});

@@ -741,18 +741,46 @@ async function viewSupplier(id) {
     </div>
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
     <div class="list">${s.products.length ? s.products.map((p) => `
-      <a class="item" href="#/products/${p.id}">
-        ${thumbImg(p.photo)}
-        <div class="item-body">
-          <div class="item-title">${esc(p.name)}</div>
-          <div class="item-sub">${priceIn(p.price, p.currency)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
-        </div>
-        <div class="item-side"><div>${brl(p.estimated_brl)}</div><div class="item-sub">estimado</div></div>
-      </a>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
+      <div class="sup-prod">
+        <a class="item" href="#/products/${p.id}">
+          ${thumbImg(p.photo)}
+          <div class="item-body">
+            <div class="item-title">${esc(p.name)}</div>
+            <div class="item-sub">${priceIn(p.price, p.currency)}${p.moq ? ' · MOQ ' + p.moq : ''}${p.incoterm ? ' · ' + esc(p.incoterm) : ''}</div>
+          </div>
+          <div class="item-side"><div>${brl(p.estimated_brl)}</div><div class="item-sub">estimado</div></div>
+        </a>
+        <label class="sup-prod-cam" title="Tirar foto deste produto (fica nas fotos deste fornecedor)">
+          ${ic('camera')}<small>${p.photo_count ? `${p.photo_count} foto${p.photo_count > 1 ? 's' : ''}` : 'Foto'}</small>
+          <input type="file" accept="image/*" multiple data-sup-photo="${p.id}" hidden>
+        </label>
+      </div>`).join('') : '<div class="empty">Nenhum produto vinculado.</div>'}
     </div>`;
   document.getElementById('card-photo')?.addEventListener('click', () => openLightbox(s.card_photo));
   bindCopyButtons();
   bindMsgButtons();
+  // Foto do produto direto da lista do fornecedor: entra nas fotos deste fornecedor no produto.
+  $app.querySelectorAll('[data-sup-photo]').forEach((input) => input.addEventListener('change', async () => {
+    const files = [...input.files];
+    input.value = '';
+    if (!files.length) return;
+    const label = input.closest('label');
+    label.classList.add('busy');
+    let sent = 0;
+    try {
+      for (const [i, file] of files.entries()) {
+        label.querySelector('small').textContent = `${i + 1} de ${files.length}…`;
+        const photo = await resizeImage(file, 1024, 0.75);
+        await api(`/api/products/${input.dataset.supPhoto}/photos`, { method: 'POST', body: { supplier_id: s.id, photo, photo_thumb: await makeThumb(photo) } });
+        sent++;
+      }
+      toast(sent > 1 ? `${sent} fotos adicionadas.` : 'Foto adicionada.');
+    } catch (err) {
+      toast(sent ? `${sent} foto(s) enviada(s). ${err.message}` : err.message);
+    } finally {
+      if (location.hash === `#/suppliers/${s.id}`) viewSupplier(s.id);
+    }
+  }));
 }
 
 // Ícones de WhatsApp e WeChat ao lado do telefone.
@@ -1022,6 +1050,7 @@ async function viewProducts() {
     <div class="add-choice" aria-label="Novo produto">
       <a class="btn primary" href="#/products/new">${ic('pen')} Manual<small>digitar os dados</small></a>
       ${state.me?.features?.product_ocr ? `<a class="btn" href="#/products/scan">${ic('camera')} Pela foto<small>catálogo ou tabela</small></a>` : ''}
+      <a class="btn" href="#/products/import">${ic('receipt')} Planilha<small>importar do Excel</small></a>
     </div>
     <div class="toolbar"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
     <div class="list" id="list"></div>
@@ -1274,6 +1303,9 @@ async function viewProductForm(id, query) {
   const rate = rates.USD; // frete (US$)
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
+  // Aberto pelo "+ Produto" de um fornecedor: as fotos tiradas no topo ficam nas fotos desse fornecedor.
+  const fromSupplier = !editing && Number(query.get('supplier')) > 0 ? suppliers.find((x) => x.id === Number(query.get('supplier'))) : null;
+  let lastPhoto = null; // última foto escolhida (para a leitura automática)
 
   const companyField = !isAdmin() ? ''
     : editing
@@ -1312,7 +1344,10 @@ async function viewProductForm(id, query) {
     <form class="stack" id="f" novalidate>
       ${companyField}
       <div class="card stack">
-        <div><label>Foto geral do produto <small class="item-sub">(opcional — as fotos de cada fornecedor ficam mais abaixo)</small></label><div id="photo">${photoInputHtml(p.photo, 'Tire uma foto ou escolha da galeria')}</div>
+        <div>${fromSupplier
+          ? `<label>Foto do produto em ${esc(fromSupplier.name)}</label><div class="hint" style="margin:-2px 0 6px">Pode tirar várias: ficam nas fotos deste fornecedor (mais abaixo).</div>`
+          : '<label>Foto geral do produto <small class="item-sub">(opcional — as fotos de cada fornecedor ficam mais abaixo)</small></label>'}
+          <div id="photo">${photoInputHtml(p.photo, fromSupplier ? 'Fotografe o produto no estande' : 'Tire uma foto ou escolha da galeria')}</div>
           ${state.me?.features?.product_ocr && !editing
             ? `<button type="button" class="btn small block" id="read-photo" hidden style="margin-top:8px">${ic('sparkles')} Preencher os campos com os dados da foto</button>` : ''}
           ${p.photo ? '<button type="button" class="btn small danger" id="rm-photo" style="margin-top:8px">Remover foto</button>' : ''}</div>
@@ -1341,8 +1376,19 @@ async function viewProductForm(id, query) {
 
   // Cadastro manual: a foto é só a foto do produto. A leitura automática é opcional (botão).
   const readBtn = document.getElementById('read-photo');
-  bindPhotoInput(document.getElementById('photo'), (d) => { photo = d; if (readBtn) readBtn.hidden = false; });
-  readBtn?.addEventListener('click', () => { if (photo) readProductPhoto(photo); });
+  bindPhotoInput(document.getElementById('photo'), (d) => {
+    lastPhoto = d;
+    if (fromSupplier) {
+      const o = offers.find((x) => Number(x.supplier_id) === fromSupplier.id) || offers[0];
+      if (o.newPhotos.length + (o.photos?.length || 0) < 12) o.newPhotos.push(d);
+      renderOffers();
+      toast('Foto adicionada às fotos deste fornecedor.');
+    } else {
+      photo = d;
+    }
+    if (readBtn) readBtn.hidden = false;
+  });
+  readBtn?.addEventListener('click', () => { if (lastPhoto) readProductPhoto(lastPhoto); });
   bindCompany();
   document.getElementById('rm-photo')?.addEventListener('click', (e) => {
     photo = null;
@@ -1989,6 +2035,156 @@ async function viewProductScan(query) {
       ? `${saved} produto(s) salvo(s) e ${queued} guardado(s) no celular — serão enviados quando a internet voltar.`
       : `${saved} produto(s) salvo(s).`);
     location.hash = fromSupplier ? `#/suppliers/${fromSupplier}` : '#/products';
+  });
+}
+
+// ===================== cadastro por planilha Excel =====================
+// Baixa o modelo (com a lista de fornecedores), envia a planilha preenchida, confere as linhas e salva.
+// Fornecedor não encontrado fica em branco: o preço vai para as observações para vincular depois.
+
+async function viewProductImport(query) {
+  setChrome({ title: 'Importar planilha', back: '#/products', tab: 'products', form: true });
+  loading();
+  const company = isAdmin() ? query.get('company') || defaultCompany() : ownCnpj();
+  const [suppliers, existing] = await Promise.all([getSuppliers(isAdmin() ? company : null), existingProductNames(company)]);
+  const realSuppliers = suppliers.filter((x) => x.id > 0);
+  let rows = [];
+
+  $app.innerHTML = `
+    <form class="stack" id="f" novalidate>
+      ${isAdmin() ? `<div class="card"><label for="company">Empresa</label><select id="company">${companyOptions(company)}</select></div>` : ''}
+      <div class="card stack">
+        <div><b>1.</b> Baixe o modelo e preencha uma linha por produto. A coluna Fornecedor já vem com a lista dos fornecedores cadastrados.</div>
+        <a class="btn" href="/api/products/import-template${isAdmin() ? `?company=${encodeURIComponent(company)}` : ''}" download>${ic('download')} Baixar modelo da planilha</a>
+        <div><b>2.</b> Envie a planilha preenchida (.xlsx). Você confere tudo antes de salvar.</div>
+        <label class="btn primary">${ic('upload')} Escolher planilha<input type="file" id="file" accept="${XLSX_ACCEPT}" hidden></label>
+        <div class="ocr-status" id="status" hidden></div>
+      </div>
+      <div id="rows" class="stack"></div>
+      <div class="error-box" id="err" hidden></div>
+      <div class="actions form-actions"><button class="btn primary" type="submit" id="save" disabled>Salvar</button></div>
+    </form>`;
+  document.getElementById('company')?.addEventListener('change', (e) => { location.hash = `#/products/import?company=${encodeURIComponent(e.target.value)}`; });
+  const rowsEl = document.getElementById('rows');
+  const status = document.getElementById('status');
+  const saveBtn = document.getElementById('save');
+
+  const numText = (v) => (v == null ? '' : String(v).replace('.', ','));
+  function rowHtml(r, i) {
+    const similar = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
+    const missing = r.supplier_name && !r.supplier_id;
+    return `
+      <div class="card scan-item${r.include ? '' : ' off'}" data-i="${i}">
+        <div class="scan-head">
+          <label class="scan-check"><input type="checkbox" data-k="include"${r.include ? ' checked' : ''}> Cadastrar</label>
+          <span class="item-sub" style="margin-left:auto">linha ${r.line}</span>
+        </div>
+        <div><label>Nome do produto</label><input data-k="name" value="${esc(r.name)}"></div>
+        <div><label>Fornecedor</label><select data-k="supplier_id"><option value="">— sem fornecedor (vincular depois) —</option>${realSuppliers.map((x) =>
+          `<option value="${x.id}"${x.id === Number(r.supplier_id) ? ' selected' : ''}>${esc(x.name)}${x.booth ? ` — ${esc(x.booth)}` : ''}</option>`).join('')}</select>
+          ${missing ? `<div class="hint">“${esc(r.supplier_name)}” não foi encontrado: o produto entra sem fornecedor e o preço fica nas observações.</div>` : ''}</div>
+        <div class="row">
+          <div><label>Preço</label><input data-k="price" inputmode="decimal" value="${esc(r.price)}" placeholder="0,00"></div>
+          <div><label>Moeda</label>${curSelect(r.currency)}</div>
+        </div>
+        <div class="row">
+          <div><label>MOQ</label><input data-k="moq" inputmode="numeric" value="${esc(r.moq)}" placeholder="unid."></div>
+          <div><label>Incoterm</label><select data-k="incoterm"><option value="">—</option>${INCOTERMS.map((t) => `<option${r.incoterm === t ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
+        </div>
+        <div class="row">
+          <div><label>Nacionaliz. (%)</label><input data-k="nat" inputmode="decimal" value="${esc(r.nat)}" placeholder="ex.: 85"></div>
+          <div><label>Preço no Brasil (R$)</label><input data-k="price_brl" inputmode="decimal" value="${esc(r.price_brl)}"></div>
+        </div>
+        <div class="row">
+          <div><label>Unid. / 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(r.units_per_40hq)}"></div>
+          <div></div>
+        </div>
+        <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(r.notes)}</textarea></div>
+        ${similar ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado: ${esc(similar.p.name)}</div>
+          <div class="hint">Se for o mesmo, desmarque “Cadastrar” e adicione a oferta no produto existente.</div></div>` : ''}
+      </div>`;
+  }
+  function render() {
+    rowsEl.innerHTML = rows.map(rowHtml).join('');
+    const n = rows.filter((r) => r.include).length;
+    saveBtn.disabled = !n;
+    saveBtn.textContent = n ? `Salvar ${n} produto(s)` : 'Salvar';
+  }
+  rowsEl.addEventListener('input', (e) => {
+    const k = e.target.dataset.k;
+    if (!k) return;
+    const r = rows[Number(e.target.closest('.scan-item').dataset.i)];
+    r[k] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    if (k === 'include' || k === 'supplier_id') render();
+  });
+
+  document.getElementById('file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > MAX_XLSX) { toast('Planilha muito grande (máximo 3 MB).'); return; }
+    status.hidden = false;
+    status.className = 'ocr-status busy';
+    status.textContent = 'Lendo a planilha…';
+    try {
+      const r = await api('/api/products/import/parse', { method: 'POST', body: { file: await readFileAsDataUrl(file), ...(isAdmin() ? { company } : {}) }, timeout: 60_000 });
+      if (r.error) { status.className = 'ocr-status err'; status.textContent = r.error; return; }
+      rows = r.rows.map((x) => ({ ...x, include: true, price: numText(x.price), nat: numText(x.nat), price_brl: numText(x.price_brl),
+        moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', supplier_id: x.supplier_id ?? '' }));
+      const linked = rows.filter((x) => x.supplier_id).length;
+      status.className = 'ocr-status ok';
+      status.textContent = `✓ ${rows.length} produto(s) lido(s), ${linked} com fornecedor encontrado. Confira e corrija antes de salvar.`;
+      render();
+    } catch (err) {
+      status.className = 'ocr-status err';
+      status.textContent = err.message;
+    }
+  });
+
+  document.getElementById('f').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const err = document.getElementById('err');
+    err.hidden = true;
+    const jobs = [];
+    for (const [i, r] of rows.entries()) {
+      if (!r.include) continue;
+      const fail = (m) => { err.textContent = `Linha ${r.line} (${r.name || 'sem nome'}): ${m}`; err.hidden = false; rowsEl.children[i]?.scrollIntoView({ block: 'center' }); };
+      if (!String(r.name).trim()) return fail('informe o nome.');
+      const price = parseNum(r.price);
+      const moq = parseNum(r.moq, { thousands: true });
+      const nat = parseNum(r.nat);
+      const priceBrl = parseNum(r.price_brl, { thousands: true });
+      const units = parseNum(r.units_per_40hq, { thousands: true });
+      if ([price, moq, nat, priceBrl, units].some(Number.isNaN)) return fail('verifique os números (preço, MOQ, nacionalização, preço no Brasil, unidades).');
+      if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
+      const sid = Number(r.supplier_id) || null;
+      if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
+      const notes = [String(r.notes || '').trim(),
+        !sid && price != null ? `Preço da planilha: ${priceIn(price, r.currency)}${r.supplier_name ? ` · fornecedor: ${r.supplier_name}` : ''}` : ''].filter(Boolean).join('\n');
+      const offer = sid ? { supplier_id: sid, price, currency: r.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: r.incoterm || null, nationalization_pct: nat ?? 0 } : null;
+      const body = { name: r.name.trim(), price_brl: priceBrl, units_per_40hq: units, notes, offers: offer ? [offer] : [], client_ref: r.ref || (r.ref = newRef()) };
+      if (isAdmin()) body.company = company;
+      jobs.push({ r, body });
+    }
+    if (!jobs.length) return;
+    saveBtn.disabled = true;
+    let saved = 0;
+    let queued = 0;
+    try {
+      for (const { r, body } of jobs) {
+        saveBtn.textContent = `Salvando ${saved + queued + 1} de ${jobs.length}…`;
+        const res = await createOrQueue('product', body, body.name);
+        if (res.saved) saved++; else queued++;
+        rows.splice(rows.indexOf(r), 1); // já salvo: não envia de novo se outro falhar
+      }
+    } catch (e2) {
+      render();
+      err.textContent = `${saved + queued} produto(s) salvo(s). Erro no próximo: ${e2.message}`;
+      err.hidden = false;
+      return;
+    }
+    toast(queued ? `${saved} produto(s) salvo(s) e ${queued} guardado(s) no celular — serão enviados quando a internet voltar.` : `${saved} produto(s) importado(s).`);
+    location.hash = '#/products';
   });
 }
 
@@ -3631,6 +3827,7 @@ const routes = [
   [/^\/products$/, viewProducts],
   [/^\/products\/new$/, (m, q) => viewProductForm(null, q)],
   [/^\/products\/scan$/, (m, q) => viewProductScan(q)],
+  [/^\/products\/import$/, (m, q) => viewProductImport(q)],
   [/^\/outbox$/, viewOutbox],
   [/^\/interpreter$/, viewInterpreter],
   [/^\/tourism$/, (m, q) => viewTourism(q)],

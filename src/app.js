@@ -7,6 +7,7 @@ const crypto = require('node:crypto');
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
+const { buildTemplate, parseProductsXlsx } = require('./product-import');
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
 const { fetchCnyBrl } = require('./fx');
@@ -651,11 +652,14 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const company = await getCompany(s.cnpj);
     const freight = await freight40hq();
     const products = (await db.all(`
-      SELECT p.id, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, o.price_usd AS price, o.currency, o.moq, o.incoterm, o.nationalization_pct
+      SELECT p.id, p.name, p.price_brl, p.units_per_40hq, o.price_usd AS price, o.currency, o.moq, o.incoterm, o.nationalization_pct,
+        COALESCE((SELECT op.image_id FROM offer_photos op WHERE op.product_id = p.id AND op.supplier_id = o.supplier_id ORDER BY op.id LIMIT 1),
+          ${listPhotoSql('p')}) AS photo,
+        (SELECT COUNT(*) FROM offer_photos op WHERE op.product_id = p.id AND op.supplier_id = o.supplier_id) AS photo_count
       FROM offers o JOIN products p ON p.id = o.product_id
       WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
       .map((r) => ({
-        ...r, photo: photoUrl(r.photo),
+        ...r, photo: photoUrl(r.photo), photo_count: Number(r.photo_count),
         price: Number(r.price), currency: r.currency || 'USD',
         estimated_brl: round2(estimateBrl(Number(r.price), r.currency || 'USD', r.nationalization_pct, ratesOf(company),
           offerFreight(r.incoterm, freightPerUnit(freight, r.units_per_40hq)))),
@@ -806,6 +810,31 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   });
 
   // --- produtos ---
+
+  // Planilha Excel: modelo (com a lista de fornecedores da empresa) e leitura das linhas para conferência.
+  route('GET', '/api/products/import-template', async ({ user, query, res }) => {
+    const cnpj = isAdmin(user) && query.get('company') ? cnpjUtil.clean(query.get('company')) : user.cnpj;
+    const names = (await db.all('SELECT name FROM suppliers WHERE cnpj = ? ORDER BY lower(name)', [cnpj])).map((r) => r.name);
+    const data = Buffer.from(await buildTemplate(names));
+    res.writeHead(200, {
+      'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'Content-Length': data.length,
+      'Cache-Control': 'private, no-store', 'Content-Disposition': 'attachment; filename="modelo-produtos.xlsx"',
+    });
+    res.end(data);
+    return RAW;
+  });
+
+  route('POST', '/api/products/import/parse', async ({ user, body }) => {
+    const cnpj = await targetCnpj(user, body);
+    const buf = parseXlsxUpload(body.file);
+    const suppliers = await db.all('SELECT id, name FROM suppliers WHERE cnpj = ?', [cnpj]);
+    try {
+      return await parseProductsXlsx(buf, suppliers);
+    } catch (err) {
+      console.error('Planilha de produtos:', err.message);
+      throw new HttpError(400, 'Não consegui ler esta planilha. Salve como .xlsx (Excel) e tente de novo.');
+    }
+  });
 
   route('GET', '/api/products', async ({ user, query }) => {
     const cnpj = listCnpj(user, query);
@@ -1025,7 +1054,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   function parseXlsxUpload(dataUrl) {
     const m = /^data:([\w./+-]*);base64,([A-Za-z0-9+/=]+)$/.exec(String(dataUrl || ''));
-    if (!m) throw new HttpError(400, 'Envie a planilha do roteiro (.xlsx).');
+    if (!m) throw new HttpError(400, 'Envie a planilha em Excel (.xlsx).');
     const buf = Buffer.from(m[2], 'base64');
     // Todo .xlsx é um arquivo ZIP (começa com "PK").
     if (buf.length < 4 || buf[0] !== 0x50 || buf[1] !== 0x4b) throw new HttpError(400, 'Arquivo inválido: envie uma planilha Excel .xlsx (não .xls nem .csv).');

@@ -293,4 +293,4 @@ function normalizeDays(days) {
   return { days: out, start_date: dates[0] || null, end_date: dates[dates.length - 1] || null };
 }
 
-module.exports = { parseItineraryXlsx, normalizeDays, fieldFor, FIELDS };
+module.exports = { parseItineraryXlsx, normalizeDays, fieldFor, FIELDS, cellValue };
