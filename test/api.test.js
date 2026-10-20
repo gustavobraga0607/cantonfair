@@ -29,7 +29,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
     fx: fxQuote ? createFxService({ db, fetchQuote: fxQuote }) : null }));
   await new Promise((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${server.address().port}`;
-  return { base, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
+  return { base, db, close: async () => { await new Promise((r) => server.close(r)); await db.close(); } };
 }
 
 function client(base) {
@@ -884,4 +884,57 @@ test('administração: listar, mudar empresa e excluir usuários; excluir empres
   assert.equal((await admin('GET', '/api/products?company=all')).body.length, 0);
   assert.equal((await admin('GET', sup.card_photo)).status, 404, 'fotos da empresa apagadas');
   assert.equal((await admin('DELETE', '/api/admin/companies/11222333000181')).status, 404);
+});
+
+test('várias fotos por produto, separadas por fornecedor', async (t) => {
+  const { base, close, db } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const s1 = (await a('POST', '/api/suppliers', { name: 'Fornecedor 1' })).body;
+  const s2 = (await a('POST', '/api/suppliers', { name: 'Fornecedor 2' })).body;
+  const s3 = (await a('POST', '/api/suppliers', { name: 'Fornecedor 3' })).body;
+  const p = (await a('POST', '/api/products', { name: 'Copo', offers: [{ supplier_id: s1.id, price_usd: 1 }, { supplier_id: s2.id, price_usd: 2 }] })).body;
+
+  // fornecedor que não está no produto, imagem inválida e outra empresa são recusados
+  assert.equal((await a('POST', `/api/products/${p.id}/photos`, { supplier_id: s3.id, photo: PNG })).status, 400);
+  assert.equal((await a('POST', `/api/products/${p.id}/photos`, { supplier_id: s1.id, photo: 'data:text/plain;base64,AAAA' })).status, 400);
+  assert.equal((await b('POST', `/api/products/${p.id}/photos`, { supplier_id: s1.id, photo: PNG })).status, 404);
+
+  let r = await a('POST', `/api/products/${p.id}/photos`, { supplier_id: s1.id, photo: PNG, photo_thumb: PNG });
+  assert.equal(r.status, 201);
+  await a('POST', `/api/products/${p.id}/photos`, { supplier_id: s1.id, photo: PNG });
+  r = await a('POST', `/api/products/${p.id}/photos`, { supplier_id: s2.id, photo: PNG });
+  const photosOf = (prod, sid) => prod.offers.find((o) => o.supplier_id === sid).photos;
+  assert.equal(photosOf(r.body, s1.id).length, 2);
+  assert.equal(photosOf(r.body, s2.id).length, 1);
+  const url = photosOf(r.body, s1.id)[0].url;
+  assert.equal((await fetch(base + url)).status, 401); // foto exige login
+  assert.equal((await a('GET', url)).status, 200);
+  assert.equal((await a('GET', url + '/thumb')).status, 200);
+
+  // sem foto principal, a lista usa a primeira foto de fornecedor
+  const list = (await a('GET', '/api/products')).body;
+  assert.equal(list[0].photo, null);
+  assert.equal(list[0].list_photo, url);
+
+  // excluir uma foto apaga a imagem
+  const images = async () => Number((await db.get('SELECT COUNT(*) AS n FROM images')).n);
+  assert.equal(await images(), 3);
+  r = await a('DELETE', `/api/products/${p.id}/photos/${photosOf(r.body, s1.id)[1].id}`);
+  assert.equal(photosOf(r.body, s1.id).length, 1);
+  assert.equal(await images(), 2);
+  assert.equal((await b('DELETE', `/api/products/${p.id}/photos/${photosOf(r.body, s1.id)[0].id}`)).status, 404);
+
+  // fornecedor tirado do produto leva as fotos dele junto; as do outro continuam
+  r = await a('PUT', `/api/products/${p.id}`, { name: 'Copo', offers: [{ supplier_id: s2.id, price_usd: 2 }] });
+  assert.equal(r.status, 200);
+  assert.equal(photosOf(r.body, s2.id).length, 1);
+  assert.equal(await images(), 1);
+  // excluir o fornecedor ou o produto apaga o resto
+  assert.equal((await a('DELETE', `/api/suppliers/${s2.id}`)).status, 200);
+  assert.equal(await images(), 0);
+  assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM offer_photos')).n), 0);
 });

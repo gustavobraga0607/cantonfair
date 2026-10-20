@@ -1024,7 +1024,7 @@ async function viewProducts() {
         const b = bestOffer(p);
         return `
         <a class="item" href="#/products/${p.id}">
-          ${thumbImg(p.photo)}
+          ${thumbImg(p.list_photo || p.photo)}
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
             <div class="item-sub">${p.offers.length} fornecedor(es)${b ? ' · melhor: ' + esc(b.supplier_name) : ''}</div>
@@ -1069,14 +1069,14 @@ async function viewProduct(id) {
     <h2>Fornecedores (${p.offers.length})</h2>
     ${p.offers.length ? `
     <div class="list">${p.offers.map((o, i) => `
-      <a class="item rank-item" href="#/suppliers/${o.supplier_id}">
-        <div class="offer-head" style="margin:0">
+      <div class="item rank-item offer-card">
+        <a class="offer-head offer-link" style="margin:0" href="#/suppliers/${o.supplier_id}">
           <div class="item-body">
             <div class="item-title">${i === 0 ? ic('star') + ' ' : ''}${esc(o.supplier_name)}</div>
             <div class="item-sub">${o.supplier_booth ? 'Stand ' + esc(o.supplier_booth) : 'Sem stand'}</div>
           </div>
           ${i === 0 ? '<span class="badge good">melhor preço</span>' : ''}
-        </div>
+        </a>
         <div class="compare four">
           <div>US$<b>${o.price_usd.toLocaleString('pt-BR', { maximumFractionDigits: 4 })}</b></div>
           <div>MOQ<b>${o.moq ?? '—'}</b></div>
@@ -1086,12 +1086,58 @@ async function viewProduct(id) {
         <div class="item-sub" style="margin-top:6px">${o.freight_usd > 0 ? `Frete incluído: ${usd(o.freight_usd)}/un.`
           : FREIGHT_INCLUDED.includes(o.incoterm) && p.units_per_40hq ? `Frete já incluso no ${esc(o.incoterm)}` : 'Sem frete no cálculo'}
         </div>
-      </a>`).join('')}
+        <div class="offer-photos" aria-label="Fotos deste fornecedor">
+          ${(o.photos || []).map((ph) => `<div class="offer-photo">
+            <img src="${esc(thumbUrl(ph.url))}" alt="Foto de ${esc(o.supplier_name)}" loading="lazy" data-full="${esc(ph.url)}">
+            <button type="button" class="offer-photo-del" data-del-photo="${ph.id}" aria-label="Excluir foto" title="Excluir foto">${ic('trash')}</button>
+          </div>`).join('')}
+          ${(o.photos || []).length < 12 ? `<label class="offer-photo offer-photo-add" title="Adicionar fotos deste fornecedor">
+            ${ic('camera')}<small>${(o.photos || []).length ? 'Mais fotos' : 'Fotos'}</small>
+            <input type="file" accept="image/*" multiple data-add-photo="${o.supplier_id}">
+          </label>` : ''}
+        </div>
+      </div>`).join('')}
     </div>
     <p class="hint">${FORMULA} (${brl(p.exchange_rate)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
     : '<div class="empty">Nenhum fornecedor vinculado a este produto.</div>'}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
+  bindOfferPhotos(p);
+}
+
+// Fotos do produto por fornecedor: ver em tela cheia, adicionar (várias de uma vez) e excluir.
+function bindOfferPhotos(p) {
+  $app.querySelectorAll('.offer-photo img').forEach((img) => img.addEventListener('click', () => openLightbox(img.dataset.full)));
+  $app.querySelectorAll('[data-del-photo]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Excluir esta foto?')) return;
+    b.disabled = true;
+    try {
+      await api(`/api/products/${p.id}/photos/${b.dataset.delPhoto}`, { method: 'DELETE' });
+      toast('Foto excluída.');
+      viewProduct(p.id);
+    } catch (err) { b.disabled = false; toast(err.message); }
+  }));
+  $app.querySelectorAll('[data-add-photo]').forEach((input) => input.addEventListener('change', async () => {
+    const files = [...input.files];
+    input.value = '';
+    if (!files.length) return;
+    const label = input.closest('label');
+    label.classList.add('busy');
+    let sent = 0;
+    try {
+      for (const [i, file] of files.entries()) {
+        label.querySelector('small').textContent = `${i + 1} de ${files.length}…`;
+        const photo = await resizeImage(file, 1024, 0.75);
+        await api(`/api/products/${p.id}/photos`, { method: 'POST', body: { supplier_id: Number(input.dataset.addPhoto), photo, photo_thumb: await makeThumb(photo) } });
+        sent++;
+      }
+      toast(sent > 1 ? `${sent} fotos adicionadas.` : 'Foto adicionada.');
+    } catch (err) {
+      toast(sent ? `${sent} foto(s) enviada(s). ${err.message}` : err.message);
+    } finally {
+      if (location.hash === `#/products/${p.id}`) viewProduct(p.id);
+    }
+  }));
 }
 
 // ---- produtos parecidos (evita cadastrar o mesmo produto duas vezes) ----

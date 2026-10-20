@@ -150,6 +150,17 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   const photoUrl = (id) => (id ? `/uploads/${id}` : null);
 
+  // Fotos por fornecedor: apaga as linhas e as imagens (o ON DELETE CASCADE só apagaria as linhas).
+  async function removeOfferPhotos(q, cnpj, where, params) {
+    const rows = await q.all(`SELECT id, image_id FROM offer_photos WHERE ${where}`, params);
+    if (!rows.length) return;
+    await q.run(`DELETE FROM offer_photos WHERE id IN (${rows.map(() => '?').join(',')})`, rows.map((r) => r.id));
+    for (const r of rows) await removeImage(q, cnpj, r.image_id);
+  }
+  const MAX_OFFER_PHOTOS = 12;
+  // Foto das listas: a principal do produto ou, sem ela, a primeira foto de fornecedor.
+  const listPhotoSql = (alias) => `COALESCE(${alias}.photo, (SELECT op.image_id FROM offer_photos op WHERE op.product_id = ${alias}.id ORDER BY op.id LIMIT 1))`;
+
   // ---------- consultas ----------
 
   const getCompany = (cnpj) => db.get('SELECT cnpj, name, exchange_rate, rate_mode, rate_source, rate_updated_at FROM companies WHERE cnpj = ?', [cnpj]);
@@ -241,7 +252,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return freightCache.value;
   }
 
-  function productOut(p, offers, rate, freight = 0) {
+  function productOut(p, offers, rate, freight = 0, photos = null) {
     const perUnit = freightPerUnit(freight, p.units_per_40hq);
     const opts = offers
       .map((o) => ({ ...o, freight: offerFreight(o.incoterm, perUnit) }))
@@ -256,11 +267,12 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         nationalization_pct: o.nationalization_pct,
         freight_usd: round4(o.freight),
         estimated_brl: round2(estimateBrl(o.price_usd, o.nationalization_pct, rate, o.freight)),
+        ...(photos ? { photos: photos.filter((ph) => ph.supplier_id === o.supplier_id).map((ph) => ({ id: ph.id, url: photoUrl(ph.image_id) })) } : {}),
       }))
       .sort((a, b) => a.estimated_brl - b.estimated_brl);
     return {
       id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? null,
-      photo: photoUrl(p.photo), offers: opts,
+      photo: photoUrl(p.photo), list_photo: photoUrl(p.list_photo ?? p.photo), offers: opts,
       company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rate,
       created_at: p.created_at, updated_at: p.updated_at, updated_by_name: p.updated_by_name ?? null,
     };
@@ -268,7 +280,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   async function productResponse(cnpj, id) {
     const p = await loadProduct(cnpj, id);
-    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate, await freight40hq());
+    const photos = await db.all('SELECT id, supplier_id, image_id FROM offer_photos WHERE product_id = ? ORDER BY id', [p.id]);
+    return productOut(p, await offersFor(p.cnpj, [p.id]), p.exchange_rate, await freight40hq(), photos);
   }
 
   // Normaliza a lista de ofertas enviada pelo cliente e garante que os
@@ -585,6 +598,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       throw new HttpError(409, `Esta empresa ainda tem ${n} usuário(s). Exclua ou mude a empresa deles antes de excluir a empresa.`);
     }
     await db.tx(async (q) => {
+      await q.run('DELETE FROM offer_photos WHERE product_id IN (SELECT id FROM products WHERE cnpj = ?)', [cnpj]);
+      await q.run('DELETE FROM offer_photos WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM offers WHERE product_id IN (SELECT id FROM products WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM offers WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM products WHERE cnpj = ?', [cnpj]);
@@ -621,7 +636,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const company = await getCompany(s.cnpj);
     const freight = await freight40hq();
     const products = (await db.all(`
-      SELECT p.id, p.name, p.photo, p.price_brl, p.units_per_40hq, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
+      SELECT p.id, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, o.price_usd, o.moq, o.incoterm, o.nationalization_pct
       FROM offers o JOIN products p ON p.id = o.product_id
       WHERE o.supplier_id = ? AND p.cnpj = ? ORDER BY lower(p.name)`, [s.id, s.cnpj]))
       .map((r) => ({
@@ -767,6 +782,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   route('DELETE', '/api/suppliers/:id', async ({ user, params }) => {
     const s = await loadSupplier(db, accessCnpj(user), params.id);
     await db.tx(async (q) => {
+      await removeOfferPhotos(q, s.cnpj, 'supplier_id = ?', [s.id]);
       await q.run('DELETE FROM suppliers WHERE id = ?', [s.id]);
       await removeImage(q, s.cnpj, s.card_photo);
     });
@@ -784,7 +800,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       return rows.map((r) => ({ id: r.id, name: r.name, company_cnpj: r.cnpj, offer_count: Number(r.offer_count) }));
     }
     const products = await db.all(`
-      SELECT p.*, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate
+      SELECT p.*, ${listPhotoSql('p')} AS list_photo, u.name AS updated_by_name, c.name AS company_name, c.exchange_rate
       FROM products p LEFT JOIN users u ON u.id = p.updated_by
       JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)} ORDER BY lower(p.name)`, companyParam(cnpj));
@@ -842,6 +858,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, units_per_40hq = ?, notes = ?, updated_by = ?, updated_at = ?
                    WHERE id = ?`, [f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, now(), p.id]);
       await replaceOffers(q, p.id, offers);
+      // Fornecedor tirado do produto: as fotos dele neste produto saem junto.
+      const keep = offers.map((o) => o.supplier_id);
+      await removeOfferPhotos(q, p.cnpj, `product_id = ?${keep.length ? ` AND supplier_id NOT IN (${keep.map(() => '?').join(',')})` : ''}`, [p.id, ...keep]);
       if (photo !== p.photo) await removeImage(q, p.cnpj, p.photo);
     });
     return productResponse(p.cnpj, p.id);
@@ -850,10 +869,35 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   route('DELETE', '/api/products/:id', async ({ user, params }) => {
     const p = await loadProduct(accessCnpj(user), params.id);
     await db.tx(async (q) => {
+      await removeOfferPhotos(q, p.cnpj, 'product_id = ?', [p.id]);
       await q.run('DELETE FROM products WHERE id = ?', [p.id]);
       await removeImage(q, p.cnpj, p.photo);
     });
     return { ok: true };
+  });
+
+  // Fotos do produto por fornecedor (cada oferta tem a sua galeria).
+  route('POST', '/api/products/:id/photos', async ({ user, params, body }) => {
+    const p = await loadProduct(accessCnpj(user), params.id);
+    const supplierId = num(body.supplier_id, 'fornecedor', { required: true, integer: true });
+    if (!(await db.get('SELECT 1 AS ok FROM offers WHERE product_id = ? AND supplier_id = ?', [p.id, supplierId]))) {
+      throw new HttpError(400, 'Este fornecedor não está vinculado ao produto.');
+    }
+    const { n } = await db.get('SELECT COUNT(*) AS n FROM offer_photos WHERE product_id = ? AND supplier_id = ?', [p.id, supplierId]);
+    if (Number(n) >= MAX_OFFER_PHOTOS) throw new HttpError(400, `Limite de ${MAX_OFFER_PHOTOS} fotos por fornecedor neste produto.`);
+    const img = parseImage(body.photo);
+    await db.tx(async (q) => {
+      const imageId = await saveImage(q, img, p.cnpj, parseThumb(body.photo_thumb));
+      await q.run('INSERT INTO offer_photos (product_id, supplier_id, image_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)',
+        [p.id, supplierId, imageId, user.id, now()]);
+    });
+    return { status: 201, body: await productResponse(p.cnpj, p.id) };
+  });
+
+  route('DELETE', '/api/products/:id/photos/:photoId', async ({ user, params }) => {
+    const p = await loadProduct(accessCnpj(user), params.id);
+    await db.tx((q) => removeOfferPhotos(q, p.cnpj, 'id = ? AND product_id = ?', [toId(params.photoId), p.id]));
+    return productResponse(p.cnpj, p.id);
   });
 
   registerCredits({
@@ -1081,7 +1125,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   route('GET', '/api/ranking', async ({ user, query }) => {
     const cnpj = listCnpj(user, query);
     const products = await db.all(`
-      SELECT p.id, p.cnpj, p.name, p.photo, p.price_brl, p.units_per_40hq, c.name AS company_name, c.exchange_rate
+      SELECT p.id, p.cnpj, p.name, ${listPhotoSql('p')} AS photo, p.price_brl, p.units_per_40hq, c.name AS company_name, c.exchange_rate
       FROM products p JOIN companies c ON c.cnpj = p.cnpj
       WHERE 1 = 1${companyFilter('p', cnpj)}`, companyParam(cnpj));
     const offers = await offersFor(cnpj, products.map((p) => p.id));

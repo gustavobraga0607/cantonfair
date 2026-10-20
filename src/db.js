@@ -130,6 +130,18 @@ CREATE TABLE IF NOT EXISTS offers (
 CREATE INDEX IF NOT EXISTS idx_offers_product ON offers(product_id);
 CREATE INDEX IF NOT EXISTS idx_offers_supplier ON offers(supplier_id);
 
+-- Fotos de um produto por fornecedor (várias por oferta). As imagens ficam em images.
+CREATE TABLE IF NOT EXISTS offer_photos (
+  id          {{ID}},
+  product_id  INTEGER NOT NULL REFERENCES products(id) ON DELETE CASCADE,
+  supplier_id INTEGER NOT NULL REFERENCES suppliers(id) ON DELETE CASCADE,
+  image_id    TEXT NOT NULL,
+  created_by  INTEGER,
+  created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_offer_photos_product ON offer_photos(product_id);
+CREATE INDEX IF NOT EXISTS idx_offer_photos_supplier ON offer_photos(supplier_id);
+
 -- Controle de viagem: despesas de cada usuário (extrato pessoal).
 CREATE TABLE IF NOT EXISTS expenses (
   id          {{ID}},
