@@ -1018,3 +1018,35 @@ test('produtos por planilha Excel: modelo com fornecedores e leitura das linhas'
   assert.equal(rows[2].currency, 'CNY');
   assert.equal((await a('POST', '/api/products/import/parse', { file: 'data:text/plain;base64,AAAA' })).status, 400);
 });
+
+test('cartão endireitado: troca a foto, guarda a original e permite desfazer', async (t) => {
+  const { base, close, db } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const s = (await a('POST', '/api/suppliers', { name: 'Fang Yuan', card_photo: PNG })).body;
+  const original = s.card_photo;
+  const images = async () => Number((await db.get('SELECT COUNT(*) AS n FROM images')).n);
+  assert.equal(await images(), 1);
+  assert.equal((await b('PUT', `/api/suppliers/${s.id}/card-photo`, { photo: PNG })).status, 404, 'outra empresa');
+
+  let r = await a('PUT', `/api/suppliers/${s.id}/card-photo`, { photo: PNG, photo_thumb: PNG });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.card_photo_adjusted, true);
+  assert.notEqual(r.body.card_photo, original);
+  assert.equal(await images(), 2, 'original guardada');
+  r = await a('PUT', `/api/suppliers/${s.id}/card-photo`, { photo: PNG }); // ajustar de novo
+  assert.equal(await images(), 2, 'a versão ajustada anterior sai');
+  r = await a('POST', `/api/suppliers/${s.id}/card-photo/restore`, {});
+  assert.equal(r.body.card_photo, original);
+  assert.equal(r.body.card_photo_adjusted, false);
+  assert.equal(await images(), 1);
+  assert.equal((await a('POST', `/api/suppliers/${s.id}/card-photo/restore`, {})).status, 400);
+
+  // excluir o fornecedor apaga original e ajustada
+  await a('PUT', `/api/suppliers/${s.id}/card-photo`, { photo: PNG });
+  assert.equal((await a('DELETE', `/api/suppliers/${s.id}`)).status, 200);
+  assert.equal(await images(), 0);
+});

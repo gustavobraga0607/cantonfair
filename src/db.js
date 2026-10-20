@@ -210,6 +210,8 @@ const ADDED_COLUMNS = [
   ['companies', 'rate_updated_at', 'TEXT'],
   // Câmbio do yuan (R$ por ¥), usado nos preços em RMB.
   ['companies', 'cny_rate', '{{REAL}}'],
+  // Foto do cartão antes de ser endireitada/recortada (para desfazer o ajuste).
+  ['suppliers', 'card_photo_original', 'TEXT'],
   // Moeda do preço da oferta (a coluna price_usd guarda o preço nessa moeda). Ofertas antigas eram em US$.
   ['offers', 'currency', "TEXT NOT NULL DEFAULT 'USD'"],
   ['suppliers', 'contact_name', 'TEXT'],

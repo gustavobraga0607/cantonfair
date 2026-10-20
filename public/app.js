@@ -2343,6 +2343,95 @@ async function viewProductImport(query) {
   });
 }
 
+// ===================== ajustar fotos de cartão já cadastradas (administrador) =====================
+// Para cada fornecedor com foto de cartão: lê a foto (só para achar as bordas), endireita e recorta no
+// celular e salva. A foto original fica guardada; "Desfazer" volta para ela.
+
+async function viewAdminCards() {
+  if (!isAdmin()) { location.hash = '#/account'; return; }
+  setChrome({ title: 'Ajustar cartões', back: '#/account', tab: 'account' });
+  loading();
+  const list = (await api('/api/suppliers?company=all')).filter((x) => x.card_photo);
+  const status = new Map(); // id → texto do andamento
+  let running = false;
+
+  function render() {
+    const todo = list.filter((x) => !x.card_photo_adjusted).length;
+    $app.innerHTML = `
+      <div class="card stack">
+        <div>${list.length} fornecedor(es) com foto do cartão · <b>${list.length - todo}</b> já ajustado(s) · <b>${todo}</b> a ajustar.</div>
+        ${state.me?.features?.card_ocr ? '' : '<div class="ocr-status err">Leitura de cartões desligada (ANTHROPIC_API_KEY não configurada).</div>'}
+        <button type="button" class="btn primary" id="run"${running || !todo || !state.me?.features?.card_ocr ? ' disabled' : ''}>${running ? 'Ajustando…' : todo ? `${ic('sparkles')} Ajustar ${todo} cartão(ões)` : '✓ Todos os cartões ajustados'}</button>
+        <p class="hint" style="margin:0">A foto original fica guardada: se algum recorte não ficar bom, toque em “Desfazer” naquele cartão.</p>
+      </div>
+      <div class="list" style="margin-top:12px">${list.map((x) => `
+        <div class="card adj-row">
+          <img class="adj-img" src="${esc(x.card_photo)}" alt="Cartão de ${esc(x.name)}" data-full="${esc(x.card_photo)}">
+          <div class="item-body">
+            <div class="item-title">${esc(x.name)}</div>
+            <div class="item-sub">${esc(x.company_name || companyLabel(x.company_cnpj))}</div>
+            <div class="item-sub">${status.get(x.id) || (x.card_photo_adjusted ? '✓ ajustado' : 'original')}</div>
+            <div class="actions" style="margin-top:6px">
+              ${x.card_photo_adjusted ? `<button type="button" class="btn small" data-undo="${x.id}"${running ? ' disabled' : ''}>Desfazer</button>` : ''}
+              <button type="button" class="btn small" data-one="${x.id}"${running || !state.me?.features?.card_ocr ? ' disabled' : ''}>${x.card_photo_adjusted ? 'Ajustar de novo' : 'Ajustar este'}</button>
+            </div>
+          </div>
+        </div>`).join('')}
+      </div>`;
+    document.getElementById('run')?.addEventListener('click', () => runAll());
+    $app.querySelectorAll('[data-one]').forEach((b) => b.addEventListener('click', () => runAll([Number(b.dataset.one)])));
+    $app.querySelectorAll('[data-undo]').forEach((b) => b.addEventListener('click', () => undo(Number(b.dataset.undo))));
+    $app.querySelectorAll('.adj-img').forEach((im) => im.addEventListener('click', () => openLightbox(im.dataset.full)));
+  }
+
+  async function adjust(x) {
+    // Ajustar de novo parte da foto original (não do recorte anterior).
+    const src = x.card_photo_original || x.card_photo;
+    const dataUrl = await readFileAsDataUrl(await (await fetch(src, { credentials: 'same-origin' })).blob());
+    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: 90_000 });
+    const cropped = card.corners ? await straightenCard(dataUrl, card.corners) : null;
+    if (!cropped) return 'bordas do cartão não encontradas — foto mantida';
+    const saved = await api(`/api/suppliers/${x.id}/card-photo`, { method: 'PUT', body: { photo: cropped, photo_thumb: await makeThumb(cropped) } });
+    Object.assign(x, { card_photo: saved.card_photo, card_photo_adjusted: true, card_photo_original: saved.card_photo_original });
+    return '✓ ajustado agora';
+  }
+
+  async function runAll(ids = null) {
+    if (running) return;
+    running = true;
+    const queue = list.filter((x) => (ids ? ids.includes(x.id) : !x.card_photo_adjusted));
+    let ok = 0;
+    for (const [i, x] of queue.entries()) {
+      status.set(x.id, `ajustando… (${i + 1} de ${queue.length})`);
+      render();
+      try {
+        const msg = await adjust(x);
+        if (msg.startsWith('✓')) ok++;
+        status.set(x.id, msg);
+      } catch (err) {
+        status.set(x.id, `erro: ${err.message}`);
+        if (err instanceof OfflineError || /Muitas leituras/.test(err.message)) break;
+      }
+      if (!location.hash.startsWith('#/admin/cards')) { running = false; return; }
+    }
+    running = false;
+    render();
+    toast(`${ok} cartão(ões) ajustado(s).`);
+  }
+
+  async function undo(id) {
+    const x = list.find((y) => y.id === id);
+    try {
+      const saved = await api(`/api/suppliers/${id}/card-photo/restore`, { method: 'POST', body: {} });
+      Object.assign(x, { card_photo: saved.card_photo, card_photo_adjusted: false, card_photo_original: null });
+      status.set(id, 'foto original restaurada');
+      render();
+    } catch (err) { toast(err.message); }
+  }
+
+  render();
+}
+
 // ===================== teste de modelos de leitura (administrador) =====================
 
 async function viewModelTest() {
@@ -3928,6 +4017,9 @@ async function viewAccount() {
       <a class="item" href="#/admin/credits"><div class="thumb">${ic('card')}</div><div class="item-body">
         <div class="item-title">Créditos do intérprete (empresas)</div>
         <div class="item-sub">Saldos e consumo de cada empresa, cortesias, pacotes e pagamentos do Asaas</div></div></a>
+      <a class="item" href="#/admin/cards"><div class="thumb">${ic('contact')}</div><div class="item-body">
+        <div class="item-title">Ajustar fotos dos cartões</div>
+        <div class="item-sub">Endireitar e recortar as fotos de cartão de visita já cadastradas, com opção de desfazer</div></div></a>
       <a class="item" href="#/admin/models"><div class="thumb">${ic('flask')}</div><div class="item-body">
         <div class="item-title">Teste de modelos de leitura</div>
         <div class="item-sub">Comparar acerto, custo e tempo da leitura de cartões e produtos entre os modelos de IA</div></div></a>` : ''}
@@ -4001,6 +4093,7 @@ const routes = [
   [/^\/account$/, viewAccount],
   [/^\/admin$/, (m, q) => viewAdmin(q)],
   [/^\/admin\/models$/, viewModelTest],
+  [/^\/admin\/cards$/, viewAdminCards],
 ];
 
 async function router() {

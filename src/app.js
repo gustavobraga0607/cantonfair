@@ -203,7 +203,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       phone_whatsapp: !!Number(s.phone_whatsapp), phone_wechat: !!Number(s.phone_wechat),
       address: s.address ?? null, province: s.province ?? null,
       company_cnpj: s.cnpj, company_name: s.company_name ?? null,
-      card_photo: photoUrl(s.card_photo), created_at: s.created_at, updated_at: s.updated_at,
+      card_photo: photoUrl(s.card_photo), card_photo_adjusted: Boolean(s.card_photo_original), card_photo_original: photoUrl(s.card_photo_original), created_at: s.created_at, updated_at: s.updated_at,
       updated_by_name: s.updated_by_name ?? null,
       product_count: s.product_count == null ? undefined : Number(s.product_count),
     };
@@ -823,7 +823,39 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await q.run(`UPDATE suppliers SET name = ?, card_photo = ?, booth = ?, contact_name = ?, phone = ?, phone_whatsapp = ?, phone_wechat = ?,
                    address = ?, province = ?, notes = ?, updated_by = ?, updated_at = ? WHERE id = ?`,
         [name, photo, f.booth, f.contact_name, f.phone, f.phone_whatsapp, f.phone_wechat, f.address, f.province, f.notes, user.id, now(), s.id]);
-      if (removing) await removeImage(q, s.cnpj, s.card_photo);
+      if (removing) {
+        await removeImage(q, s.cnpj, s.card_photo);
+        // A foto original (antes do ajuste automático) deixa de valer junto.
+        if (s.card_photo_original) {
+          await q.run('UPDATE suppliers SET card_photo_original = NULL WHERE id = ?', [s.id]);
+          await removeImage(q, s.cnpj, s.card_photo_original);
+        }
+      }
+    });
+    return supplierOut(await loadSupplier(db, s.cnpj, s.id));
+  });
+
+  // Cartão endireitado/recortado no celular: troca a foto e guarda a original para poder desfazer.
+  route('PUT', '/api/suppliers/:id/card-photo', async ({ user, params, body }) => {
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
+    if (!s.card_photo) throw new HttpError(400, 'Este fornecedor não tem foto do cartão.');
+    const img = parseImage(body.photo);
+    await db.tx(async (q) => {
+      const id = await saveImage(q, img, s.cnpj, parseThumb(body.photo_thumb));
+      const original = s.card_photo_original || s.card_photo;
+      await q.run('UPDATE suppliers SET card_photo = ?, card_photo_original = ? WHERE id = ?', [id, original, s.id]);
+      // Ajustado de novo: a versão ajustada anterior sai (a original continua guardada).
+      if (s.card_photo_original) await removeImage(q, s.cnpj, s.card_photo);
+    });
+    return supplierOut(await loadSupplier(db, s.cnpj, s.id));
+  });
+
+  route('POST', '/api/suppliers/:id/card-photo/restore', async ({ user, params }) => {
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
+    if (!s.card_photo_original) throw new HttpError(400, 'Não há foto original guardada.');
+    await db.tx(async (q) => {
+      await q.run('UPDATE suppliers SET card_photo = ?, card_photo_original = NULL WHERE id = ?', [s.card_photo_original, s.id]);
+      await removeImage(q, s.cnpj, s.card_photo);
     });
     return supplierOut(await loadSupplier(db, s.cnpj, s.id));
   });
@@ -834,6 +866,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       await removeOfferPhotos(q, s.cnpj, 'supplier_id = ?', [s.id]);
       await q.run('DELETE FROM suppliers WHERE id = ?', [s.id]);
       await removeImage(q, s.cnpj, s.card_photo);
+      await removeImage(q, s.cnpj, s.card_photo_original);
     });
     return { ok: true };
   });
