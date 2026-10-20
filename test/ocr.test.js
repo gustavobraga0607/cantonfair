@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency } = require('../src/ocr');
+const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText } = require('../src/ocr');
 
 function fakeClient(response, calls = []) {
   return { beta: { messages: { create: async (params) => { calls.push(params); if (response instanceof Error) throw response; return response; } } } };
@@ -211,4 +211,15 @@ test('regras fixas: província pelo endereço e preço em yuan não vira dólar'
   assert.equal(guardCurrency({ price: 2.35, currency: 'USD', price_note: 'US$2.35 (1000 pcs) / ¥17' }).currency, 'USD');
   assert.equal(guardCurrency({ price: 2.35, currency: 'USD', price_note: '' }).currency, 'USD');
   assert.equal(guardCurrency({ price: 2.35, currency: '', price_note: '' }).price, null, 'sem moeda o preço não entra');
+});
+
+test('preço deixado só no texto vai para o campo de preço, com a moeda', () => {
+  assert.deepEqual(priceFromText('¥16,80 (500 pcs) / ¥15,20 (2000 pcs)'), { price: 16.8, currency: 'CNY' });
+  assert.deepEqual(priceFromText('16.8元'), { price: 16.8, currency: 'CNY' });
+  assert.deepEqual(priceFromText('US$ 2.35'), { price: 2.35, currency: 'USD' });
+  assert.deepEqual(priceFromText('RMB 1,280'), { price: 1280, currency: 'CNY' });
+  assert.equal(priceFromText('sob consulta'), null);
+  const p = guardCurrency({ price: null, currency: '', price_note: '¥16,80 (500 pcs)' });
+  assert.equal(p.price, 16.8);
+  assert.equal(p.currency, 'CNY');
 });

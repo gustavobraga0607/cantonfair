@@ -305,14 +305,30 @@ function createProductReader({ client, model = MODEL, fallbackModel = null } = {
   }
 }
 
-// Regras fixas sobre a moeda: preço sem moeda identificada não entra (o usuário digita);
-// marcado como dólar mas escrito só em yuan na nota vira yuan (o modelo às vezes erra a moeda).
+// Preço escrito em texto ("¥16,80 (500 pcs) / ¥15,20", "US$ 2.35", "16.8元") → { price, currency }.
+// Prefere o yuan quando aparecem as duas moedas; pega o primeiro valor (menor quantidade).
+function priceFromText(text) {
+  const t = String(text || '');
+  const n = (v) => Number(String(v).replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''));
+  const cny = /(?:¥|￥|RMB|CNY|人民币)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:元|RMB|CNY|yuan)/i.exec(t);
+  if (cny) return { price: n(cny[1] || cny[2]), currency: 'CNY' };
+  const usd = /(?:US\$|USD|\$|美元)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:USD|美元)/i.exec(t);
+  if (usd) return { price: n(usd[1] || usd[2]), currency: 'USD' };
+  return null;
+}
+
+// Regras fixas sobre a moeda: preço que o modelo deixou só no texto (price_note) vai para o campo de preço;
+// preço sem moeda identificada não entra (o usuário digita); marcado como dólar mas escrito só em yuan vira yuan.
 function guardCurrency(p) {
-  if (p.price == null) return { ...p, currency: '' };
-  if (!p.currency) return { ...p, price: null };
   const note = p.price_note || '';
-  if (p.currency === 'USD' && /¥|rmb|cny|元|人民币/i.test(note) && !/\$|usd|us\$|美元/i.test(note)) {
-    const nums = (note.match(/\d+(?:[.,]\d+)?/g) || []).map((n) => Number(n.replace(',', '.')));
+  if (p.price == null || !p.currency) {
+    const found = priceFromText(note);
+    if (found && Number.isFinite(found.price) && found.price > 0) return { ...p, ...found };
+    if (p.price == null) return { ...p, currency: '' };
+    return { ...p, price: null, currency: '' };
+  }
+  if (p.currency === 'USD' && /¥|￥|rmb|cny|元|人民币/i.test(note) && !/\$|usd|us\$|美元/i.test(note)) {
+    const nums = (note.match(/\d+(?:[.,]\d+)?/g) || []).map((x) => Number(x.replace(',', '.')));
     if (nums.includes(p.price)) return { ...p, currency: 'CNY' };
   }
   return p;
@@ -360,5 +376,5 @@ const configLabel = () => `${PRICES[envModel()]?.label || envModel()} + ${PRICES
 
 module.exports = {
   createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
-  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
+  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
 };

@@ -29,6 +29,15 @@ const estimate = (price, currency, nat, rates, freightUsd = 0) => Math.round(
   (price * (currency === 'USD' ? rates.USD : rates.CNY) + (freightUsd || 0) * rates.USD) * (1 + (nat || 0) / 100) * 100) / 100;
 const ratesOf = (x) => ({ USD: Number(x.exchange_rate), CNY: Number(x.cny_rate) || Number(x.exchange_rate) / 7.2 });
 const CUR_LABEL = { CNY: '¥', USD: 'US$' };
+// Preço escrito em texto ("¥16,80 (500 pcs)", "US$ 2.35", "16.8元") → { price, currency }; prefere o yuan.
+function priceFromText(text) {
+  const t = String(text || '');
+  const n = (v) => Number(String(v).replace(/,(\d{1,2})$/, '.$1').replace(/,/g, ''));
+  const cny = /(?:¥|￥|RMB|CNY|人民币)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:元|RMB|CNY|yuan)/i.exec(t);
+  if (cny) return { price: n(cny[1] || cny[2]), currency: 'CNY' };
+  const usd = /(?:US\$|USD|\$|美元)\s*(\d+(?:[.,]\d+)?)|(\d+(?:[.,]\d+)?)\s*(?:USD|美元)/i.exec(t);
+  return usd ? { price: n(usd[1] || usd[2]), currency: 'USD' } : null;
+}
 const priceIn = (n, cur) => (n == null ? '—' : `${CUR_LABEL[cur] || '¥'} ${Number(n).toLocaleString('pt-BR', { minimumFractionDigits: 2, maximumFractionDigits: 4 })}`);
 const curSelect = (cur) => `<select data-k="currency" class="cur-select" aria-label="Moeda">
   <option value="CNY"${cur === 'USD' ? '' : ' selected'}>¥ RMB (yuan)</option><option value="USD"${cur === 'USD' ? ' selected' : ''}>US$ (dólar)</option></select>`;
@@ -1474,7 +1483,9 @@ async function viewProductForm(id, query) {
       if (seq === ocrSeq) submit.disabled = false;
     }
   }
-  function applyRead(r, box) {
+  function applyRead(r0, box) {
+    const found = r0.price == null ? priceFromText(r0.price_note) : null;
+    const r = found ? { ...r0, ...found } : r0;
     const filled = [];
     const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
     set(form.name, r.name, 'nome');
@@ -1741,7 +1752,7 @@ async function viewProductScan(query) {
         <div><label for="supplier">Fornecedor</label>
           <select id="supplier"><option value="">— escolha o fornecedor —</option>${suppliers.map((s) =>
             `<option value="${s.id}"${s.id === Number(supplierId) ? ' selected' : ''}>${esc(s.name)}${s.booth ? ` — ${esc(s.booth)}` : ''}${s.pending ? ' (aguardando internet)' : ''}</option>`).join('')}</select>
-          <div class="hint">Sem fornecedor, os produtos são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
+          <div class="hint">Todos os produtos da lista ficam vinculados a este fornecedor, com o preço de cada um. Sem fornecedor, são salvos sem preço de oferta. <a href="#/suppliers/new">+ Novo fornecedor</a></div></div>
         <div class="row">
           <div><label for="nat">Nacionaliz. (%) para todos</label><input id="nat" inputmode="decimal" placeholder="ex.: 85"></div>
           <div><label for="incoterm-all">Incoterm padrão</label><select id="incoterm-all">${INCOTERMS.map((t) => `<option${t === 'FOB' ? ' selected' : ''}>${t}</option>`).join('')}</select></div>
@@ -1770,12 +1781,18 @@ async function viewProductScan(query) {
   const numText = (v) => (v == null ? '' : String(v).replace('.', ','));
   function addItems(products, photo) {
     const defaultIncoterm = document.getElementById('incoterm-all').value;
-    for (const r of products) {
+    for (const r0 of products) {
+      // Preço que veio só no texto ("¥16,80 (500 pcs)") vai para o campo de preço.
+      const found = r0.price == null ? priceFromText(r0.price_note) : null;
+      const r = found ? { ...r0, ...found } : r0;
+      // Nas observações só ficam as faixas de preço (quando dizem mais do que o próprio preço).
+      const noteNums = String(r.price_note || '').match(/\d+(?:[.,]\d+)?/g) || [];
+      const tiers = r.price_note && !(noteNums.length === 1 && Number(noteNums[0].replace(',', '.')) === r.price);
       const match = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
       items.push({
         ref: newRef(), include: true, name: r.name, price: numText(r.price), currency: r.currency || 'CNY', moq: r.moq ?? '',
         incoterm: r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
-        notes: [r.name_original && `Nome original: ${r.name_original}`, r.price_note && `Preço: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
+        notes: [r.name_original && `Nome original: ${r.name_original}`, tiers && `Preços: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
         photo, use_photo: products.length === 1, target: match ? match.p.id : '',
       });
     }
@@ -1895,7 +1912,9 @@ async function viewProductScan(query) {
       const units = parseNum(it.units_per_40hq, { thousands: true });
       if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units)) return fail('verifique preço, MOQ e unidades.');
       if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
-      const offer = sid && price != null
+      // Com fornecedor escolhido, todo produto precisa de preço: sem ele não há oferta e o produto ficaria sem vínculo.
+      if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
+      const offer = sid
         ? { supplier_id: sid, price, currency: it.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
       if (it.target && !offer) return fail('para adicionar a oferta a um produto existente, escolha o fornecedor e informe o preço.');
       jobs.push({ it, offer, units });
