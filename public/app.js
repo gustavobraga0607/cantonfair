@@ -932,90 +932,167 @@ function straightenCard(dataUrl, corners, { margin = 0.012, maxSide = 1280 } = {
   });
 }
 
-// onCrop(fotoRecortada): chamado quando a leitura encontra os cantos do cartão.
-async function readBusinessCard(form, dataUrl, { onCrop = null, fieldsToo = true } = {}) {
-  const box = document.getElementById('ocr-status');
-  if (!state.me?.features?.card_ocr) return;
-  const seq = ++ocrSeq;
-  const submit = form.querySelector('button[type=submit]');
-  box.hidden = false;
-  box.className = 'ocr-status busy';
-  box.textContent = 'Lendo o cartão de visita…';
-  submit.disabled = true;
-  try {
-    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 60_000 : 1 });
-    if (seq !== ocrSeq) return;
-    const cropped = onCrop && card.corners ? await straightenCard(dataUrl, card.corners) : null;
-    if (seq !== ocrSeq) return;
-    if (cropped) onCrop(cropped);
-    if (!fieldsToo) {
-      box.className = cropped ? 'ocr-status ok' : 'ocr-status err';
-      box.textContent = cropped ? '✓ Cartão endireitado e recortado. Salve para manter.' : 'Não consegui encontrar as bordas do cartão nesta foto.';
-      return;
-    }
-    const filled = [];
-    const fill = (field, value, label) => {
-      const el = form[field];
-      if (!value || el.value.trim() === value.trim()) return;
-      if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === value)) return; // fora da lista
-      el.value = value;
-      el.classList.add('autofilled');
-      filled.push(label);
+// Reduz a imagem (para consultas leves, como achar os cantos do cartão).
+function shrinkDataUrl(dataUrl, maxSide = 800, quality = 0.75) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onerror = () => resolve(dataUrl);
+    img.onload = () => {
+      const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.naturalWidth * k);
+      c.height = Math.round(img.naturalHeight * k);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      resolve(c.toDataURL('image/jpeg', quality));
     };
-    fill('name', card.company_name || card.company_name_local, 'nome');
-    fill('contact_name', card.contact_name, 'contato');
-    const phoneBefore = form.phone.value;
-    fill('phone', card.phone || card.whatsapp, 'telefone');
-    // WhatsApp/WeChat seguem o que o cartão indica para o telefone lido.
-    if (card.phone && form.phone.value === card.phone) {
-      const changed = phoneBefore !== form.phone.value
-        || form.phone_whatsapp.checked !== !!card.phone_whatsapp || form.phone_wechat.checked !== !!card.phone_wechat;
-      form.phone_whatsapp.checked = !!card.phone_whatsapp;
-      form.phone_wechat.checked = !!card.phone_wechat;
-      if (changed && card.phone_whatsapp) filled.push('WhatsApp');
-      if (changed && card.phone_wechat) filled.push('WeChat');
-    }
-    fill('booth', card.booth, 'stand');
-    fill('address', card.address, 'endereço');
-    fill('province', card.province, 'província');
+    img.src = dataUrl;
+  });
+}
 
-    // Demais informações do cartão vão para as observações: a linha do mesmo tipo
-    // ("E-mail: …") é atualizada; o que o usuário escreveu fica.
-    const extras = [
-      ['Empresa (nome local)', card.company_name && card.company_name_local],
-      ['E-mail', card.email],
-      ['WeChat', card.wechat],
-      ['WhatsApp', card.whatsapp && card.whatsapp.replace(/\D/g, '').slice(-8) !== form.phone.value.replace(/\D/g, '').slice(-8) ? card.whatsapp : ''],
-      ['Outros telefones', card.other_phones],
-      ['Site', card.website],
-      ['Produtos', card.products],
-    ].filter(([, v]) => v);
-    const lines = form.notes.value.trim() ? form.notes.value.trim().split('\n') : [];
-    let notesChanged = false;
-    for (const [k, v] of extras) {
-      const line = `${k}: ${v}`;
-      const i = lines.findIndex((l) => l.startsWith(`${k}: `));
-      if (i >= 0 && lines[i] === line) continue;
-      if (i >= 0) lines[i] = line; else lines.push(line);
-      notesChanged = true;
-    }
-    if (notesChanged) {
-      form.notes.value = lines.join('\n');
-      form.notes.classList.add('autofilled');
-      filled.push('observações');
-    }
-    box.className = 'ocr-status ok';
-    box.textContent = (filled.length
-      ? `✓ Cartão lido: ${filled.join(', ')} atualizado(s). Confira antes de salvar.`
-      : 'Cartão lido: os dados já estavam iguais aos do cartão.') + (cropped ? ' A foto foi endireitada e recortada.' : '');
-  } catch (err) {
-    if (seq !== ocrSeq) return;
-    box.className = 'ocr-status err';
-    box.textContent = err instanceof OfflineError
-      ? 'Sem internet: a leitura automática do cartão não está disponível. Preencha os campos à mão e salve — o fornecedor (com a foto) fica guardado no celular e é enviado quando a conexão voltar.'
-      : err.message;
-  } finally {
-    if (seq === ocrSeq) submit.disabled = false;
+// Foto do cartão endireitada e recortada: consulta rápida só dos cantos (imagem reduzida) e recorte no
+// celular sobre a foto inteira. null = não deu (sem leitor, sem bordas ou sem internet).
+async function cropBusinessCard(dataUrl) {
+  if (!state.me?.features?.card_crop) return null;
+  const { corners } = await api('/api/ocr/card-corners', { method: 'POST', body: { image: await shrinkDataUrl(dataUrl) }, timeout: 40_000, background: true });
+  return corners ? straightenCard(dataUrl, corners) : null;
+}
+
+// Demais informações do cartão (vão para as observações, uma linha por tipo).
+function cardExtras(card, phone) {
+  return [
+    ['Empresa (nome local)', card.company_name && card.company_name_local],
+    ['E-mail', card.email],
+    ['WeChat', card.wechat],
+    ['WhatsApp', card.whatsapp && card.whatsapp.replace(/\D/g, '').slice(-8) !== String(phone || '').replace(/\D/g, '').slice(-8) ? card.whatsapp : ''],
+    ['Outros telefones', card.other_phones],
+    ['Site', card.website],
+    ['Produtos', card.products],
+  ].filter(([, v]) => v);
+}
+// Junta as linhas no texto das observações: a linha do mesmo tipo é atualizada; o que o usuário escreveu fica.
+function mergeNotes(notes, extras) {
+  const lines = String(notes || '').trim() ? String(notes).trim().split('\n') : [];
+  let changed = false;
+  for (const [k, v] of extras) {
+    const line = `${k}: ${v}`;
+    const i = lines.findIndex((l) => l.startsWith(`${k}: `));
+    if (i >= 0 && lines[i] === line) continue;
+    if (i >= 0) lines[i] = line; else lines.push(line);
+    changed = true;
+  }
+  return { text: lines.join('\n'), changed };
+}
+
+// Preenche o formulário do fornecedor com a leitura do cartão; devolve os nomes dos campos alterados.
+function applyCardToForm(form, card) {
+  const filled = [];
+  const fill = (field, value, label) => {
+    const el = form[field];
+    if (!value || el.value.trim() === value.trim()) return;
+    if (el.tagName === 'SELECT' && ![...el.options].some((o) => o.value === value)) return; // fora da lista
+    el.value = value;
+    el.classList.add('autofilled');
+    filled.push(label);
+  };
+  fill('name', card.company_name || card.company_name_local, 'nome');
+  fill('contact_name', card.contact_name, 'contato');
+  const phoneBefore = form.phone.value;
+  fill('phone', card.phone || card.whatsapp, 'telefone');
+  // WhatsApp/WeChat seguem o que o cartão indica para o telefone lido.
+  if (card.phone && form.phone.value === card.phone) {
+    const changed = phoneBefore !== form.phone.value
+      || form.phone_whatsapp.checked !== !!card.phone_whatsapp || form.phone_wechat.checked !== !!card.phone_wechat;
+    form.phone_whatsapp.checked = !!card.phone_whatsapp;
+    form.phone_wechat.checked = !!card.phone_wechat;
+    if (changed && card.phone_whatsapp) filled.push('WhatsApp');
+    if (changed && card.phone_wechat) filled.push('WeChat');
+  }
+  fill('booth', card.booth, 'stand');
+  fill('address', card.address, 'endereço');
+  fill('province', card.province, 'província');
+  const notes = mergeNotes(form.notes.value, cardExtras(card, form.phone.value));
+  if (notes.changed) {
+    form.notes.value = notes.text;
+    form.notes.classList.add('autofilled');
+    filled.push('observações');
+  }
+  return filled;
+}
+
+// Leitura que terminou depois de o fornecedor ser salvo: completa só os campos que ficaram vazios.
+async function applyCardToSaved(supplierId, card) {
+  const s = await api(`/api/suppliers/${supplierId}`, { background: true, fresh: true });
+  const phone = s.phone || card.phone || card.whatsapp || '';
+  const notes = mergeNotes(s.notes, cardExtras(card, phone));
+  const body = {
+    name: s.name, contact_name: s.contact_name || card.contact_name || '', phone,
+    phone_whatsapp: s.phone ? s.phone_whatsapp : !!card.phone_whatsapp, phone_wechat: s.phone ? s.phone_wechat : !!card.phone_wechat,
+    booth: s.booth || card.booth || '', address: s.address || card.address || '', province: s.province || card.province || '', notes: notes.text,
+  };
+  const changed = ['contact_name', 'phone', 'booth', 'address', 'province'].some((k) => (body[k] || '') !== (s[k] || '')) || notes.changed;
+  if (changed) await api(`/api/suppliers/${supplierId}`, { method: 'PUT', body, background: true });
+  return changed;
+}
+
+// Leitura do cartão no formulário: dados e recorte em paralelo; nenhum dos dois bloqueia o "Salvar".
+// Devolve o "trabalho" para o formulário continuar em segundo plano se o usuário salvar antes do fim.
+function readBusinessCard(form, dataUrl, { onCrop = null, readFields = true } = {}) {
+  const box = document.getElementById('ocr-status');
+  const seq = ++ocrSeq;
+  const job = { photo: dataUrl, saved: false, readDone: !readFields, cropDone: !onCrop };
+  const current = () => seq === ocrSeq && !job.saved && document.body.contains(form);
+  const show = (cls, text) => { if (!current()) return; box.hidden = false; box.className = `ocr-status ${cls}`; box.textContent = text; };
+  const parts = [];
+  const update = () => {
+    if (!job.readDone || !job.cropDone) { show('busy', readFields ? 'Lendo o cartão de visita… (pode salvar; o que faltar é completado depois)' : 'Endireitando a foto do cartão…'); return; }
+    if (job.readError && !parts.length) { show('err', job.readError); return; }
+    show(parts.length ? 'ok' : 'err', parts.length ? parts.join(' ') : 'Não consegui encontrar as bordas do cartão nesta foto.');
+  };
+  job.read = readFields && state.me?.features?.card_ocr
+    ? api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: navigator.onLine ? 60_000 : 1, background: true })
+      .then((card) => {
+        if (current()) {
+          const filled = applyCardToForm(form, card);
+          parts.unshift(filled.length ? `✓ Cartão lido: ${filled.join(', ')} atualizado(s). Confira antes de salvar.` : 'Cartão lido: os dados já estavam iguais aos do cartão.');
+        }
+        return card;
+      })
+      .catch((err) => {
+        job.readError = err instanceof OfflineError
+          ? 'Sem internet: a leitura automática do cartão não está disponível. Preencha os campos à mão e salve — o fornecedor (com a foto) fica guardado no celular e é enviado quando a conexão voltar.'
+          : err.message;
+        return null;
+      })
+      .finally(() => { job.readDone = true; update(); })
+    : Promise.resolve(null).finally(() => { job.readDone = true; });
+  job.crop = onCrop
+    ? cropBusinessCard(dataUrl).catch(() => null).then((cropped) => {
+      if (cropped && current()) { onCrop(cropped); parts.push('A foto foi endireitada e recortada.'); }
+      return cropped;
+    }).finally(() => { job.cropDone = true; update(); })
+    : Promise.resolve(null);
+  update();
+  return job;
+}
+
+// O usuário salvou antes de a leitura/recorte do cartão terminar: o que faltar é aplicado ao cadastro salvo.
+// samePhoto = a foto salva é a do trabalho (senão o recorte é descartado).
+function finishCardJob(job, supplierId, samePhoto) {
+  if (!job || job.saved) return;
+  job.saved = true;
+  const refresh = () => { state.suppliers = null; if (location.hash === `#/suppliers/${supplierId}`) router(); };
+  if (!job.cropDone && samePhoto) {
+    job.crop.then(async (cropped) => {
+      if (!cropped) return;
+      await api(`/api/suppliers/${supplierId}/card-photo`, { method: 'PUT', body: { photo: cropped, photo_thumb: await makeThumb(cropped) }, background: true });
+      toast('Foto do cartão endireitada e recortada.');
+      refresh();
+    }).catch(() => {});
+  }
+  if (!job.readDone) {
+    job.read.then(async (card) => {
+      if (card && await applyCardToSaved(supplierId, card)) { toast('Dados do cartão completados no fornecedor.'); refresh(); }
+    }).catch(() => {});
   }
 }
 
@@ -1025,6 +1102,7 @@ async function viewSupplierForm(id) {
   loading();
   const s = editing ? await api(`/api/suppliers/${id}`) : {};
   let cardPhoto = null;
+  let cardJob = null; // leitura/recorte do cartão em andamento (continua depois de salvar)
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
   const photoHint = state.me?.features?.card_ocr
     ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria';
@@ -1074,6 +1152,7 @@ async function viewSupplierForm(id) {
     if (!confirm('Excluir a foto do cartão? Os dados do fornecedor continuam salvos.')) return;
     ocrSeq++; // descarta leitura em andamento
     cardPhoto = null;
+    cardJob = null;
     removePhoto = Boolean(s.card_photo);
     photoBox.querySelector('.photo-preview').innerHTML = `<div style="padding:24px">${ic('camera')}<br>${esc(photoHint)}</div>`;
     document.getElementById('ocr-status').hidden = true;
@@ -1095,10 +1174,23 @@ async function viewSupplierForm(id) {
   straighten.type = 'button';
   straighten.className = 'btn small photo-remove';
   straighten.innerHTML = `${ic('sparkles')} Endireitar e recortar o cartão`;
-  straighten.hidden = !(editing && s.card_photo && state.me?.features?.card_ocr);
+  straighten.hidden = !(editing && s.card_photo && !s.card_photo_adjusted && state.me?.features?.card_crop);
+  undoCrop.hidden = !(editing && s.card_photo_adjusted);
   photoBox.append(undoCrop, straighten);
   const onCrop = (cropped) => { cardPhoto = cropped; setPreview(cropped); undoCrop.hidden = false; straighten.hidden = true; };
-  undoCrop.addEventListener('click', () => {
+  undoCrop.addEventListener('click', async () => {
+    // Foto já salva recortada: volta à original guardada no servidor.
+    if (originalPhoto === null && s.card_photo_adjusted) {
+      try {
+        const saved = await api(`/api/suppliers/${id}/card-photo/restore`, { method: 'POST', body: {} });
+        Object.assign(s, { card_photo: saved.card_photo, card_photo_adjusted: false });
+        setPreview(saved.card_photo);
+        undoCrop.hidden = true;
+        straighten.hidden = !state.me?.features?.card_crop;
+        toast('Foto original do cartão restaurada.');
+      } catch (err) { toast(err.message); }
+      return;
+    }
     if (originalPhoto === 'salva') { cardPhoto = null; setPreview(s.card_photo); straighten.hidden = false; } else { cardPhoto = originalPhoto; setPreview(originalPhoto); }
     undoCrop.hidden = true;
   });
@@ -1109,12 +1201,13 @@ async function viewSupplierForm(id) {
       const blob = await (await fetch(s.card_photo, { credentials: 'same-origin' })).blob();
       const dataUrl = await readFileAsDataUrl(blob);
       originalPhoto = 'salva';
-      await readBusinessCard(form, dataUrl, { onCrop, fieldsToo: false });
+      cardJob = readBusinessCard(form, dataUrl, { onCrop, readFields: false });
+      await cardJob.crop;
     } catch { toast('Não consegui abrir a foto do cartão.'); } finally { straighten.disabled = false; }
   });
   bindPhotoInput(photoBox, (d) => {
     cardPhoto = d; originalPhoto = d; removePhoto = false; delPhoto.hidden = false; undoCrop.hidden = true; straighten.hidden = true;
-    readBusinessCard(form, d, { onCrop });
+    cardJob = readBusinessCard(form, d, { onCrop });
   });
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1129,19 +1222,28 @@ async function viewSupplierForm(id) {
         phone_whatsapp: form.phone_whatsapp.checked, phone_wechat: form.phone_wechat.checked,
         booth: form.booth.value, address: form.address.value, province: form.province.value, notes: form.notes.value,
       };
-      if (cardPhoto) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
+      // Foto já salva endireitada aqui: vai pela rota que guarda a original (permite desfazer depois).
+      const straightened = editing && originalPhoto === 'salva' && cardPhoto;
+      if (cardPhoto && !straightened) Object.assign(body, { card_photo: cardPhoto, card_photo_thumb: await makeThumb(cardPhoto) });
       else if (removePhoto) body.remove_card_photo = true;
       if (form.company) body.company = form.company.value;
       if (editing) {
         const saved = await api(`/api/suppliers/${id}`, { method: 'PUT', body });
+        if (straightened) await api(`/api/suppliers/${id}/card-photo`, { method: 'PUT', body: { photo: cardPhoto, photo_thumb: await makeThumb(cardPhoto) } });
         toast('Fornecedor salvo.');
+        finishCardJob(cardJob, saved.id, body.card_photo === cardJob?.photo || !body.card_photo);
         location.hash = `#/suppliers/${saved.id}`;
         return;
       }
       body.client_ref = formRef;
       const { saved } = await createOrQueue('supplier', body, body.name);
       state.suppliers = null;
-      if (saved) { toast('Fornecedor salvo.'); location.hash = `#/suppliers/${saved.id}`; return; }
+      if (saved) {
+        toast('Fornecedor salvo.');
+        finishCardJob(cardJob, saved.id, body.card_photo === cardJob?.photo);
+        location.hash = `#/suppliers/${saved.id}`;
+        return;
+      }
       toast('Sem internet: fornecedor guardado no celular. Ele será enviado quando a conexão voltar.');
       location.hash = '#/suppliers';
     } catch (err) {
@@ -2360,8 +2462,8 @@ async function viewAdminCards() {
     $app.innerHTML = `
       <div class="card stack">
         <div>${list.length} fornecedor(es) com foto do cartão · <b>${list.length - todo}</b> já ajustado(s) · <b>${todo}</b> a ajustar.</div>
-        ${state.me?.features?.card_ocr ? '' : '<div class="ocr-status err">Leitura de cartões desligada (ANTHROPIC_API_KEY não configurada).</div>'}
-        <button type="button" class="btn primary" id="run"${running || !todo || !state.me?.features?.card_ocr ? ' disabled' : ''}>${running ? 'Ajustando…' : todo ? `${ic('sparkles')} Ajustar ${todo} cartão(ões)` : '✓ Todos os cartões ajustados'}</button>
+        ${state.me?.features?.card_crop ? '' : '<div class="ocr-status err">Leitura de cartões desligada (ANTHROPIC_API_KEY não configurada).</div>'}
+        <button type="button" class="btn primary" id="run"${running || !todo || !state.me?.features?.card_crop ? ' disabled' : ''}>${running ? 'Ajustando…' : todo ? `${ic('sparkles')} Ajustar ${todo} cartão(ões)` : '✓ Todos os cartões ajustados'}</button>
         <p class="hint" style="margin:0">A foto original fica guardada: se algum recorte não ficar bom, toque em “Desfazer” naquele cartão.</p>
       </div>
       <div class="list" style="margin-top:12px">${list.map((x) => `
@@ -2373,7 +2475,7 @@ async function viewAdminCards() {
             <div class="item-sub">${status.get(x.id) || (x.card_photo_adjusted ? '✓ ajustado' : 'original')}</div>
             <div class="actions" style="margin-top:6px">
               ${x.card_photo_adjusted ? `<button type="button" class="btn small" data-undo="${x.id}"${running ? ' disabled' : ''}>Desfazer</button>` : ''}
-              <button type="button" class="btn small" data-one="${x.id}"${running || !state.me?.features?.card_ocr ? ' disabled' : ''}>${x.card_photo_adjusted ? 'Ajustar de novo' : 'Ajustar este'}</button>
+              <button type="button" class="btn small" data-one="${x.id}"${running || !state.me?.features?.card_crop ? ' disabled' : ''}>${x.card_photo_adjusted ? 'Ajustar de novo' : 'Ajustar este'}</button>
             </div>
           </div>
         </div>`).join('')}
@@ -2388,8 +2490,7 @@ async function viewAdminCards() {
     // Ajustar de novo parte da foto original (não do recorte anterior).
     const src = x.card_photo_original || x.card_photo;
     const dataUrl = await readFileAsDataUrl(await (await fetch(src, { credentials: 'same-origin' })).blob());
-    const card = await api('/api/ocr/card', { method: 'POST', body: { image: dataUrl }, timeout: 90_000 });
-    const cropped = card.corners ? await straightenCard(dataUrl, card.corners) : null;
+    const cropped = await cropBusinessCard(dataUrl);
     if (!cropped) return 'bordas do cartão não encontradas — foto mantida';
     const saved = await api(`/api/suppliers/${x.id}/card-photo`, { method: 'PUT', body: { photo: cropped, photo_thumb: await makeThumb(cropped) } });
     Object.assign(x, { card_photo: saved.card_photo, card_photo_adjusted: true, card_photo_original: saved.card_photo_original });
@@ -2401,20 +2502,30 @@ async function viewAdminCards() {
     running = true;
     const queue = list.filter((x) => (ids ? ids.includes(x.id) : !x.card_photo_adjusted));
     let ok = 0;
-    for (const [i, x] of queue.entries()) {
-      status.set(x.id, `ajustando… (${i + 1} de ${queue.length})`);
-      render();
-      try {
-        const msg = await adjust(x);
-        if (msg.startsWith('✓')) ok++;
-        status.set(x.id, msg);
-      } catch (err) {
-        status.set(x.id, `erro: ${err.message}`);
-        if (err instanceof OfflineError || /Muitas leituras/.test(err.message)) break;
+    let next = 0;
+    let stop = false;
+    const onPage = () => location.hash.startsWith('#/admin/cards');
+    // 3 cartões ao mesmo tempo.
+    const worker = async () => {
+      while (!stop && next < queue.length) {
+        const x = queue[next++];
+        status.set(x.id, 'ajustando…');
+        if (onPage()) render();
+        try {
+          const msg = await adjust(x);
+          if (msg.startsWith('✓')) ok++;
+          status.set(x.id, msg);
+        } catch (err) {
+          status.set(x.id, `erro: ${err.message}`);
+          if (err instanceof OfflineError || /Muitas leituras/.test(err.message)) stop = true;
+        }
+        if (!onPage()) stop = true;
+        else render();
       }
-      if (!location.hash.startsWith('#/admin/cards')) { running = false; return; }
-    }
+    };
+    await Promise.all([worker(), worker(), worker()]);
     running = false;
+    if (!onPage()) return;
     render();
     toast(`${ok} cartão(ões) ajustado(s).`);
   }

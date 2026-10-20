@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText, cardCorners } = require('../src/ocr');
+const { createCardReader, createProductReader, FIELDS, preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, priceFromText, cardCorners, createCornerReader } = require('../src/ocr');
 
 function fakeClient(response, calls = []) {
   return { beta: { messages: { create: async (params) => { calls.push(params); if (response instanceof Error) throw response; return response; } } } };
@@ -21,8 +21,7 @@ test('envia a imagem com saída estruturada e devolve os campos do cartão', asy
   assert.equal(out.wechat, '', 'campos ausentes viram string vazia');
   assert.equal(out.address, 'No. 88 Jiangnan Rd, Ningbo');
   assert.equal(out.province, 'Zhejiang');
-  assert.deepEqual(Object.keys(out).sort(), [...Object.keys(FIELDS), 'corners'].sort());
-  assert.equal(out.corners, null, 'sem cantos na resposta, sem recorte');
+  assert.deepEqual(Object.keys(out).sort(), Object.keys(FIELDS).sort());
 
   const p = calls[0];
   assert.equal(p.model, 'claude-haiku-5-5', 'Haiku é o modelo principal');
@@ -234,4 +233,15 @@ test('cantos do cartão: válidos viram frações; tortos, cruzados ou pequenos 
   assert.equal(cardCorners(q([100, 100], [200, 100], [200, 150], [100, 150])), null, 'pequeno demais');
   assert.equal(cardCorners(q([100, 100], [1300, 100], [1300, 600], [100, 600])), null, 'fora da imagem');
   assert.equal(cardCorners(null), null);
+});
+
+test('cantos do cartão: consulta leve (esforço mínimo) separada da leitura dos dados', async () => {
+  const calls = [];
+  const corners = { top_left: { x: 100, y: 200 }, top_right: { x: 900, y: 250 }, bottom_right: { x: 880, y: 700 }, bottom_left: { x: 120, y: 680 } };
+  const read = createCornerReader({ client: fakeClient({ stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify({ card_corners: corners }) }] }, calls) });
+  const r = await read('image/jpeg', 'QUJD');
+  assert.deepEqual(r.corners, [[0.1, 0.2], [0.9, 0.25], [0.88, 0.7], [0.12, 0.68]]);
+  assert.equal(calls[0].output_config.effort, 'low');
+  assert.equal(calls[0].max_tokens, 2000);
+  assert.deepEqual(Object.keys(calls[0].output_config.format.schema.properties), ['card_corners']);
 });

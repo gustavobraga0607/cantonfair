@@ -3,7 +3,7 @@
 const path = require('node:path');
 const { open } = require('./db');
 const { createApp } = require('./app');
-const { cardReaderFromEnv, productReaderFromEnv, benchReadersFromEnv } = require('./ocr');
+const { cardReaderFromEnv, cornerReaderFromEnv, productReaderFromEnv, benchReadersFromEnv } = require('./ocr');
 const { createFxService, fetchCnyBrl } = require('./fx');
 const { asaasFromEnv } = require('./asaas');
 const { interpreterFromEnv } = require('./interpreter');
@@ -43,6 +43,7 @@ function appFromEnv({ publicDir, requirePostgres = false } = {}) {
     secureCookies: process.env.SECURE_COOKIES === 'true' || Boolean(process.env.VERCEL),
     adminEmails: (process.env.ADMIN_EMAILS ?? DEFAULT_ADMIN_EMAILS).split(','),
     readCard: cardReaderFromEnv(),
+    readCorners: cornerReaderFromEnv(),
     readProducts: productReaderFromEnv(),
     asaas: asaasFromEnv(),
     asaasWebhookToken: process.env.ASAAS_WEBHOOK_TOKEN || null,

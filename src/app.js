@@ -56,12 +56,13 @@ class HttpError extends Error {
 const now = () => new Date().toISOString();
 
 // background(promise): mantém trabalho rodando depois da resposta (na Vercel usa waitUntil).
-function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readProducts = null, benchReaders = null, asaas = null, interpret = null, asaasWebhookToken = null, fx = null, background = (p) => p.catch(() => {}) }) {
+function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUtil.lookup, cnpjOnlineCheck = true, secureCookies = false, adminEmails = [], readCard = null, readCorners = null, readProducts = null, benchReaders = null, asaas = null, interpret = null, asaasWebhookToken = null, fx = null, background = (p) => p.catch(() => {}) }) {
   const ADMIN_EMAILS = new Set(adminEmails.map((e) => e.trim().toLowerCase()).filter(Boolean));
   const loginLimiter = auth.createRateLimiter();                                     // IP + e-mail
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
   const cnpjLimiter = auth.createRateLimiter({ max: 60 });                           // consultas públicas de CNPJ por IP
   const ocrLimiter = auth.createRateLimiter({ max: 60, windowMs: 60 * 60_000 });     // leituras de cartão por usuário/hora
+  const cornerLimiter = auth.createRateLimiter({ max: 200, windowMs: 60 * 60_000 }); // cantos do cartão (consulta leve)
   const clientIp = (req) => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
     .split(',')[0].trim();
 
@@ -387,7 +388,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       fx: fxStatus,
       settings,
       companies: companies?.map((c) => ({ ...c, cny_rate: ratesOf(c).CNY, cnpj_formatted: cnpjUtil.format(c.cnpj) })),
-      features: { card_ocr: Boolean(readCard), product_ocr: Boolean(readProducts), interpreter: Boolean(interpret), payments: Boolean(asaas) },
+      features: { card_ocr: Boolean(readCard), card_crop: Boolean(readCorners), product_ocr: Boolean(readProducts), interpreter: Boolean(interpret), payments: Boolean(asaas) },
     };
   }
 
@@ -727,6 +728,19 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const img = parseImage(body.image);
     try {
       return await readCard(img.mime, img.data.toString('base64'));
+    } catch (err) {
+      if (err instanceof OcrError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
+  });
+
+  // Cantos do cartão (para endireitar e recortar a foto no celular): consulta rápida, separada da leitura dos dados.
+  route('POST', '/api/ocr/card-corners', async ({ body, user }) => {
+    if (!readCorners) throw new HttpError(503, 'Leitor de cartões não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+    if (!cornerLimiter.hit(String(user.id))) throw new HttpError(429, 'Muitos ajustes de cartão em pouco tempo. Tente mais tarde.');
+    const img = parseImage(body.image);
+    try {
+      return await readCorners(img.mime, img.data.toString('base64'));
     } catch (err) {
       if (err instanceof OcrError) throw new HttpError(err.status, err.message);
       throw err;

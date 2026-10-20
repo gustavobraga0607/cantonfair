@@ -60,15 +60,14 @@ const CORNERS_SCHEMA = {
 
 const SCHEMA = {
   type: 'object',
-  properties: {
-    ...Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, k === 'province'
-      ? { type: 'string', description: d, enum: ['', ...PROVINCES.map((p) => p.name)] }
-      : BOOL_FIELDS.includes(k) ? { type: 'boolean', description: d } : { type: 'string', description: d }])),
-    card_corners: CORNERS_SCHEMA,
-  },
-  required: [...Object.keys(FIELDS), 'card_corners'],
+  properties: Object.fromEntries(Object.entries(FIELDS).map(([k, d]) => [k, k === 'province'
+    ? { type: 'string', description: d, enum: ['', ...PROVINCES.map((p) => p.name)] }
+    : BOOL_FIELDS.includes(k) ? { type: 'boolean', description: d } : { type: 'string', description: d }])),
+  required: Object.keys(FIELDS),
   additionalProperties: false,
 };
+// Só os cantos (consulta separada e rápida, em paralelo com a leitura dos dados).
+const CORNERS_ONLY_SCHEMA = { type: 'object', properties: { card_corners: CORNERS_SCHEMA }, required: ['card_corners'], additionalProperties: false };
 
 // Cantos válidos → [[x, y] ×4] em frações (0–1), na ordem superior-esq., superior-dir., inferior-dir., inferior-esq.
 // Recusa o que não parece um cartão: fora da imagem, polígono torto/cruzado ou pequeno demais.
@@ -128,14 +127,14 @@ class OcrError extends Error {
 
 // Envia a foto ao Claude com saída estruturada e devolve o JSON lido.
 // meta (opcional) recebe modelo, tempo, tokens e custo estimado da leitura.
-async function askVision(client, model, { system, schema, prompt, mime, base64, what, meta }) {
+async function askVision(client, model, { system, schema, prompt, mime, base64, what, meta, effort = null, maxTokens = 16000 }) {
   let response;
   const started = Date.now();
   try {
     response = await client.beta.messages.create({
       model,
-      max_tokens: 16000,
-      output_config: { effort: effortFor(model), format: { type: 'json_schema', schema } },
+      max_tokens: maxTokens,
+      output_config: { effort: effort || effortFor(model), format: { type: 'json_schema', schema } },
       // Se o modelo recusar por política, a API tenta automaticamente o modelo recomendado.
       ...(supportsFallback(model) ? { betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' } : {}),
       system,
@@ -208,11 +207,25 @@ function createCardReader({ client, model = MODEL, fallbackModel = null } = {}) 
     }
     if (!PROVINCES.some((p) => p.name === out.province)) out.province = '';
     out.province = provinceFromAddress(out.address, out.province);
-    return { ...preferMessagingPhone(out), corners: cardCorners(data.card_corners) };
+    return preferMessagingPhone(out);
   }
 
   return function readCard(mime, base64, meta) {
     return withFallback({ model, fallbackModel, meta, weak: weakCard, read: (m) => readWith(m, mime, base64, meta) });
+  };
+}
+
+// Cantos do cartão para endireitar/recortar a foto: tarefa simples, então esforço mínimo e sem
+// modelo de reserva (se falhar, a foto só fica sem recorte). Recebe uma imagem já reduzida.
+function createCornerReader({ client, model = MODEL } = {}) {
+  if (!client) return null;
+  return async function readCorners(mime, base64, meta) {
+    const data = await askVision(client, model, {
+      system: 'Você localiza cartões de visita em fotos. Responda só com os 4 cantos pedidos.',
+      schema: CORNERS_ONLY_SCHEMA, prompt: 'Marque os 4 cantos do cartão de visita nesta foto.', mime, base64, what: 'cantos do cartão', meta,
+      effort: 'low', maxTokens: 2000,
+    });
+    return { corners: cardCorners(data.card_corners) };
   };
 }
 
@@ -395,6 +408,7 @@ const envFallback = () => {
   return !v || v === 'none' || v === envModel() ? null : v;
 };
 const cardReaderFromEnv = () => createCardReader({ client: clientFromEnv(), model: envModel(), fallbackModel: envFallback() });
+const cornerReaderFromEnv = () => createCornerReader({ client: clientFromEnv(), model: envModel() });
 const productReaderFromEnv = () => createProductReader({ client: clientFromEnv(), model: envModel(), fallbackModel: envFallback() });
 // Leitores de cada modelo, para o administrador comparar (teste de modelos).
 function benchReadersFromEnv() {
@@ -416,6 +430,6 @@ const CONFIG_ID = 'config';
 const configLabel = () => `${PRICES[envModel()]?.label || envModel()} + ${PRICES[envFallback()]?.label || envFallback()} de reserva`;
 
 module.exports = {
-  createCardReader, cardReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
+  createCardReader, cardReaderFromEnv, createCornerReader, cornerReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
   preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, cardCorners, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
 };
