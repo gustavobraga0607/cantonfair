@@ -3090,7 +3090,6 @@ async function viewInterpreter() {
   function render() {
     const [a, b] = INTERP_PAIRS[pair];
     $app.innerHTML = `
-      ${subnavHtml('interpreter')}
       ${enabled ? '' : '<div class="ocr-status err">O intérprete ainda não foi configurado (chave da Azure na Vercel).</div>'}
       <div class="card interp-head">
         <div><div class="item-sub">Saldo da empresa</div><b class="interp-bal ${balance < 120 ? 'low' : ''}">${fmtDur(balance)}</b></div>
@@ -3500,7 +3499,7 @@ function dateRange(a, b) {
 }
 
 const subnavHtml = (active) => `<nav class="subnav subnav-page" aria-label="Roteiro">
-  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/interpreter" class="${active === 'interpreter' ? 'active' : ''}">Intérprete</a><a href="#/tourism" class="${active === 'tourism' ? 'active' : ''}">Turismo</a></nav>`;
+  <a href="#/trip" class="${active === 'trip' ? 'active' : ''}">Roteiro</a><a href="#/map" class="${active === 'map' ? 'active' : ''}">Mapa</a><a href="#/tourism" class="${active === 'tourism' ? 'active' : ''}">Turismo</a></nav>`;
 
 // ===================== turismo =====================
 
