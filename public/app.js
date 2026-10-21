@@ -785,7 +785,7 @@ async function viewSuppliers() {
       .some((v) => (v || '').toLowerCase().includes(term)));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((s) => `
-        <a class="item" href="${s.pending ? '#/outbox' : `#/suppliers/${s.id}`}">
+        <a class="item" href="${s.pending ? '#/outbox' : `#/suppliers/${s.id}`}"${s.pending ? '' : ` data-supplier="${s.id}"`}>
           ${thumbImg(s.card_photo, ic('contact'), 'card-thumb')}
           <div class="item-body">
             <div class="item-title">${esc(s.name)}</div>
@@ -801,6 +801,22 @@ async function viewSuppliers() {
   render();
   bindScopeBar();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
+  // Pressionar e segurar um fornecedor: opção de excluir.
+  onLongPress(document.getElementById('list'), '[data-supplier]', (el) => {
+    const sup = list.find((x) => x.id === Number(el.dataset.supplier));
+    if (!sup) return;
+    actionSheet(sup.name, [{ label: 'Excluir fornecedor', danger: true, run: async () => {
+      const extra = sup.product_count ? `\n\nAs ofertas dele em ${plural(sup.product_count, 'produto', 'produtos')} também serão removidas (os produtos continuam).` : '';
+      if (!confirm(`Excluir o fornecedor "${sup.name}"?${extra}`)) return;
+      try {
+        await api(`/api/suppliers/${sup.id}`, { method: 'DELETE' });
+        list.splice(list.indexOf(sup), 1);
+        state.suppliers = null;
+        render(document.getElementById('q').value);
+        toast('Fornecedor excluído.');
+      } catch (err) { toast(err.message); }
+    } }]);
+  });
 }
 
 // Botão "Adicionar produtos": as mesmas três formas nas telas de Produtos e do fornecedor.
