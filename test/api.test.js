@@ -1153,3 +1153,20 @@ test('excluir os produtos que eu cadastrei (só os meus)', async (t) => {
   assert.deepEqual((await a('GET', '/api/products')).body.map((p) => p.name), ['Do colega']);
   assert.equal((await a('GET', '/api/suppliers')).body.length, 1, 'fornecedor continua');
 });
+
+test('excluir vários produtos de uma vez (só os da própria empresa)', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const ids = [];
+  for (const n of ['P1', 'P2', 'P3']) ids.push((await a('POST', '/api/products', { name: n, photo: PNG })).body.id);
+  const other = (await b('POST', '/api/products', { name: 'Outra' })).body.id;
+  assert.equal((await a('POST', '/api/products/delete-many', { ids: [] })).status, 400);
+  const r = await a('POST', '/api/products/delete-many', { ids: [ids[0], ids[2], other] });
+  assert.equal(r.body.deleted, 2, 'produto de outra empresa não é excluído');
+  assert.deepEqual((await a('GET', '/api/products')).body.map((p) => p.name), ['P2']);
+  assert.equal((await b('GET', '/api/products')).body.length, 1);
+});

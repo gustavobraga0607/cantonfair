@@ -639,3 +639,24 @@ body.map-mode main { display: none; }
 .pending-card { text-align: center; margin-top: 24px; }
 .pending-icon .ic { width: 44px; height: 44px; color: var(--primary, #c8102e); }
 .import-cols { margin-top: 6px; font-size: 13px; line-height: 1.5; }
+
+/* Seleção de vários produtos */
+.select-bar {
+  position: fixed; left: 12px; right: 12px; bottom: calc(74px + env(safe-area-inset-bottom)); z-index: 11;
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 4px 16px rgb(0 0 0 / .18);
+}
+.select-bar[hidden] { display: none; }
+.select-bar { flex-wrap: wrap; }
+.select-bar #sel-count { flex: 1 0 100%; font-weight: 600; font-size: .92rem; }
+.select-bar .btn { flex: 1; }
+.list.selecting { padding-bottom: 110px; }
+.list.selecting .item { user-select: none; }
+.item.selected { outline: 2px solid var(--primary); outline-offset: -2px; }
+.sel-check {
+  flex: none; width: 24px; height: 24px; border-radius: 50%; border: 2px solid var(--border);
+  display: flex; align-items: center; justify-content: center; align-self: center;
+}
+.item.selected .sel-check { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.sel-check .ic { width: 15px; height: 15px; }
+.toolbar #sel-start { flex: none; }

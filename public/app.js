@@ -1379,13 +1379,26 @@ async function viewProducts() {
     ${saved.offline ? offlineNote('produtos') : ''}
     ${scopeBarHtml()}
     ${addProductsMenuHtml()}
-    <div class="toolbar" style="margin-top:12px"><input type="search" id="q" placeholder="Buscar produto ou fornecedor"></div>
+    <div class="toolbar" style="margin-top:12px"><input type="search" id="q" placeholder="Buscar produto ou fornecedor">
+      <button type="button" class="btn small" id="sel-start"${saved.length ? '' : ' hidden'}>${ic('check')} Selecionar</button></div>
     <div class="list" id="list"></div>
+    <div class="select-bar" id="select-bar" hidden>
+      <span id="sel-count"></span>
+      <button type="button" class="btn small" id="sel-all">Todos</button>
+      <button type="button" class="btn small" id="sel-cancel">Cancelar</button>
+      <button type="button" class="btn small danger" id="sel-del">${ic('trash')} Excluir</button>
+    </div>
     <a class="fab" href="#/products/new" aria-label="Novo produto">+</a>`;
+  // Seleção de vários produtos para excluir de uma vez (null = fora do modo de seleção).
+  let selected = null;
+  let shown = [];
   const render = (q = '') => {
     const term = q.trim().toLowerCase();
     const rows = list.filter((p) => !term || p.name.toLowerCase().includes(term) ||
       p.offers.some((o) => o.supplier_name.toLowerCase().includes(term)));
+    shown = rows.filter((p) => !p.pending);
+    updateSelectBar();
+    document.getElementById('list').classList.toggle('selecting', Boolean(selected));
     document.getElementById('list').innerHTML = rows.length
       ? rows.map((p) => {
         if (p.pending) {
@@ -1397,7 +1410,8 @@ async function viewProducts() {
         }
         const b = bestOffer(p);
         return `
-        <a class="item" href="#/products/${p.id}" data-product="${p.id}">
+        <a class="item${selected?.has(p.id) ? ' selected' : ''}" href="#/products/${p.id}" data-product="${p.id}">
+          ${selected ? `<span class="sel-check">${selected.has(p.id) ? ic('check') : ''}</span>` : ''}
           ${thumbImg(p.list_photo || p.photo)}
           <div class="item-body">
             <div class="item-title">${esc(p.name)}</div>
@@ -1416,11 +1430,55 @@ async function viewProducts() {
   bindScopeBar();
   bindAddProductsMenu();
   document.getElementById('q').addEventListener('input', (e) => render(e.target.value));
-  // Pressionar e segurar um produto: opção de excluir.
+  const term = () => document.getElementById('q').value;
+  function updateSelectBar() {
+    const bar = document.getElementById('select-bar');
+    bar.hidden = !selected;
+    document.querySelector('.fab').hidden = Boolean(selected);
+    document.getElementById('sel-start').hidden = Boolean(selected) || !saved.length;
+    if (!selected) return;
+    document.getElementById('sel-count').textContent = `${selected.size} selecionado(s)`;
+    document.getElementById('sel-del').disabled = !selected.size;
+    const all = shown.length && shown.every((p) => selected.has(p.id));
+    document.getElementById('sel-all').textContent = all ? 'Nenhum' : 'Todos';
+  }
+  const startSelect = (id = null) => { selected = new Set(id ? [id] : []); render(term()); };
+  document.getElementById('sel-start').addEventListener('click', () => startSelect());
+  document.getElementById('sel-cancel').addEventListener('click', () => { selected = null; render(term()); });
+  document.getElementById('sel-all').addEventListener('click', () => {
+    const all = shown.every((p) => selected.has(p.id));
+    for (const p of shown) { if (all) selected.delete(p.id); else selected.add(p.id); }
+    render(term());
+  });
+  // No modo de seleção, o toque marca/desmarca em vez de abrir o produto.
+  document.getElementById('list').addEventListener('click', (e) => {
+    if (!selected) return;
+    const el = e.target.closest('[data-product]');
+    if (!el) return;
+    e.preventDefault();
+    const id = Number(el.dataset.product);
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    render(term());
+  });
+  document.getElementById('sel-del').addEventListener('click', async (e) => {
+    const ids = [...selected];
+    if (!ids.length) return;
+    if (!confirm(`Excluir ${plural(ids.length, 'produto', 'produtos')}? As ofertas e as fotos deles também serão apagadas. Não dá para desfazer.`)) return;
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      const r = await api('/api/products/delete-many', { method: 'POST', body: { ids } });
+      for (const id of ids) { const i = list.findIndex((x) => x.id === id); if (i >= 0) list.splice(i, 1); }
+      selected = null;
+      render(term());
+      toast(`${plural(r.deleted, 'produto excluído', 'produtos excluídos')}.`);
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  });
+  // Pressionar e segurar um produto: excluir ou selecionar vários.
   onLongPress(document.getElementById('list'), '[data-product]', (el) => {
     const p = list.find((x) => x.id === Number(el.dataset.product));
-    if (!p) return;
-    actionSheet(p.name, [{ label: 'Excluir produto', danger: true, run: async () => {
+    if (!p || selected) return;
+    actionSheet(p.name, [{ label: 'Selecionar vários', run: () => startSelect(p.id) }, { label: 'Excluir produto', danger: true, run: async () => {
       if (!confirm(`Excluir "${p.name}"? As ofertas e as fotos dele também serão apagadas.`)) return;
       try {
         await api(`/api/products/${p.id}`, { method: 'DELETE' });

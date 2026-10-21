@@ -1108,6 +1108,24 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return { ok: true };
   });
 
+  // Exclui vários produtos escolhidos na lista (só os que o usuário pode acessar).
+  route('POST', '/api/products/delete-many', async ({ user, body }) => {
+    const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter((n) => Number.isInteger(n) && n > 0))] : [];
+    if (!ids.length) throw new HttpError(400, 'Nenhum produto escolhido.');
+    if (ids.length > 500) throw new HttpError(400, 'Escolha no máximo 500 produtos por vez.');
+    const cnpj = accessCnpj(user);
+    const rows = await db.all(`SELECT id, cnpj, photo FROM products p WHERE p.id IN (${ids.map(() => '?').join(',')})${companyFilter('p', cnpj)}`,
+      [...ids, ...companyParam(cnpj)]);
+    await db.tx(async (q) => {
+      for (const p of rows) {
+        await removeOfferPhotos(q, p.cnpj, 'product_id = ?', [p.id]);
+        await q.run('DELETE FROM products WHERE id = ?', [p.id]);
+        await removeImage(q, p.cnpj, p.photo);
+      }
+    });
+    return { deleted: rows.length };
+  });
+
   // Exclui de uma vez os produtos que o próprio usuário cadastrou (para recomeçar um teste).
   // { dry: true } só conta. Exige confirm: 'EXCLUIR'.
   route('POST', '/api/products/delete-mine', async ({ user, body }) => {
