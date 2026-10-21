@@ -1170,3 +1170,20 @@ test('excluir vários produtos de uma vez (só os da própria empresa)', async (
   assert.deepEqual((await a('GET', '/api/products')).body.map((p) => p.name), ['P2']);
   assert.equal((await b('GET', '/api/products')).body.length, 1);
 });
+
+test('produto: qtd por caixa × caixas por container = unidades por 40HQ', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  let r = await a('POST', '/api/products', { name: 'Caixa', units_per_box: 50, boxes_per_40hq: 240 });
+  assert.equal(r.status, 201);
+  assert.deepEqual([r.body.units_per_box, r.body.boxes_per_40hq, r.body.units_per_40hq], [50, 240, 12000]);
+  assert.equal((await a('POST', '/api/products', { name: 'Só uma', units_per_box: 50 })).status, 400, 'precisa das duas');
+  // PUT sem os campos de caixa (ex.: oferta pela tela do fornecedor) mantém a embalagem
+  r = await a('PUT', `/api/products/${r.body.id}`, { name: 'Caixa', units_per_40hq: 12000, offers: [] });
+  assert.deepEqual([r.body.units_per_box, r.body.boxes_per_40hq, r.body.units_per_40hq], [50, 240, 12000]);
+  // cadastro antigo: só o total
+  r = await a('POST', '/api/products', { name: 'Antigo', units_per_40hq: 9000 });
+  assert.deepEqual([r.body.units_per_box, r.body.units_per_40hq], [null, 9000]);
+});

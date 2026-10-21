@@ -1595,6 +1595,7 @@ async function viewProduct(id, query = new URLSearchParams()) {
       </div>
       <div>${savingBadge(p.price_brl, b?.estimated_brl)}</div>
       ${p.units_per_40hq ? `<div><div class="item-sub">Container 40HQ</div>
+        ${p.units_per_box && p.boxes_per_40hq ? `<div>${p.units_per_box.toLocaleString('pt-BR')} por caixa × ${p.boxes_per_40hq.toLocaleString('pt-BR')} caixas por container</div>` : ''}
         <div>${p.units_per_40hq.toLocaleString('pt-BR')} unidades${freightPerUnit(p.units_per_40hq) != null
           ? ` · frete por unidade <b>${usd(freightPerUnit(p.units_per_40hq))}</b> (${brl(freightPerUnit(p.units_per_40hq) * ratesOf(p).USD)})` : ''}</div></div>` : ''}
       ${p.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(p.notes)}</div></div>` : ''}
@@ -1700,6 +1701,20 @@ async function viewProductForm(id, query) {
   ]);
   const rates = ratesOf(editing ? p : companyInfo(company) || state.me.company);
   const rate = rates.USD; // frete (US$)
+  // Unidades por container = Qtd por caixa × Caixas por container. Cadastro antigo (ou lido da foto)
+  // pode ter só o total: vale enquanto as duas caixas estiverem em branco.
+  let legacyUnits = p.units_per_box && p.boxes_per_40hq ? null : p.units_per_40hq ?? null;
+  const boxVal = (name) => { const el = document.getElementById(name); return el ? parseNum(el.value, { thousands: true }) : null; };
+  const currentUnits = () => {
+    const a = boxVal('units_per_box') ?? (document.getElementById('units_per_box') ? null : p.units_per_box);
+    const b = boxVal('boxes_per_40hq') ?? (document.getElementById('boxes_per_40hq') ? null : p.boxes_per_40hq);
+    return a > 0 && b > 0 ? a * b : (a == null && b == null ? legacyUnits : null);
+  };
+  const unitsHint = () => {
+    const u = currentUnits();
+    const total = u ? `<b>${u.toLocaleString('pt-BR')} unidades por container 40HQ</b>${legacyUnits && u === legacyUnits ? ' (total informado antes; preencha as caixas para atualizar)' : ''}. ` : '';
+    return total + freightHint(u, rate);
+  };
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
   // Aberto pelo "+ Produto" de um fornecedor: as fotos tiradas no topo ficam nas fotos desse fornecedor.
@@ -1756,9 +1771,13 @@ async function viewProductForm(id, query) {
           <div class="dup-box" id="dup-box" hidden></div></div>
         <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
           <div class="hint">Preço de referência praticado no mercado brasileiro.</div></div>
-        <div><label for="units_per_40hq">Unid. por 40HQ</label>
-          <input id="units_per_40hq" name="units_per_40hq" inputmode="numeric" value="${p.units_per_40hq ?? ''}" placeholder="ex.: 12000">
-          <div class="hint" id="freight-hint">${freightHint(p.units_per_40hq, rate)}</div></div>
+        <div class="row">
+          <div><label for="units_per_box">Qtd por caixa</label>
+            <input id="units_per_box" name="units_per_box" inputmode="numeric" value="${p.units_per_box ?? ''}" placeholder="ex.: 50"></div>
+          <div><label for="boxes_per_40hq">Caixas por container</label>
+            <input id="boxes_per_40hq" name="boxes_per_40hq" inputmode="numeric" value="${p.boxes_per_40hq ?? ''}" placeholder="ex.: 240"></div>
+        </div>
+        <div class="hint" id="freight-hint">${unitsHint()}</div>
         <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(p.notes)}</textarea></div>
       </div>
       <div class="card">
@@ -1799,12 +1818,16 @@ async function viewProductForm(id, query) {
 
   const form = document.getElementById('f');
   const offersEl = document.getElementById('offers');
+  const refreshUnits = () => {
+    document.getElementById('freight-hint').innerHTML = unitsHint();
+    offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
+  };
 
   function offerCalc(o) {
     const priceV = parseNum(o.price);
     const natV = parseNum(o.nationalization_pct) || 0;
     if (priceV == null || Number.isNaN(priceV)) return '<span class="item-sub">Informe o preço</span>';
-    const perUnit = freightPerUnit(parseNum(form.units_per_40hq.value, { thousands: true })) || 0;
+    const perUnit = freightPerUnit(currentUnits()) || 0;
     const freight = offerFreight(o.incoterm, perUnit);
     const est = estimate(priceV, o.currency, natV, rates, freight);
     const br = parseNum(form.price_brl.value, { thousands: true });
@@ -1935,7 +1958,7 @@ async function viewProductForm(id, query) {
     const filled = [];
     const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
     set(form.name, r.name, 'nome');
-    set(form.units_per_40hq, r.units_per_40hq, 'unidades/40HQ');
+    if (r.units_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim() && !legacyUnits) { legacyUnits = r.units_per_40hq; filled.push('unidades/40HQ'); }
     const o = offers.find((x) => !String(x.price).trim()) || offers[0];
     if (r.price != null && !String(o.price).trim()) { o.price = String(r.price).replace('.', ','); o.currency = r.currency || 'CNY'; filled.push(`preço (${CUR_LABEL[o.currency]})`); }
     if (r.moq != null && !String(o.moq ?? '').trim()) { o.moq = r.moq; filled.push('MOQ'); }
@@ -1948,7 +1971,7 @@ async function viewProductForm(id, query) {
       filled.push('observações');
     }
     renderOffers();
-    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value, { thousands: true }), rate);
+    document.getElementById('freight-hint').innerHTML = unitsHint();
     checkDuplicates();
     box.className = 'ocr-status ok';
     box.textContent = filled.length ? `✓ Foto lida: ${filled.join(', ')} preenchido(s). Confira antes de salvar.` : 'Foto lida, mas os campos já estavam preenchidos.';
@@ -2076,10 +2099,8 @@ async function viewProductForm(id, query) {
     }
     renderOffers();
   });
-  form.units_per_40hq.addEventListener('input', () => {
-    document.getElementById('freight-hint').innerHTML = freightHint(parseNum(form.units_per_40hq.value, { thousands: true }), rate);
-    offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
-  });
+  form.units_per_box.addEventListener('input', refreshUnits);
+  form.boxes_per_40hq.addEventListener('input', refreshUnits);
   form.price_brl.addEventListener('input', () => {
     offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
   });
@@ -2111,9 +2132,14 @@ async function viewProductForm(id, query) {
       payloadOffers.push({ supplier_id: Number(o.supplier_id), price, currency: o.currency || 'CNY', moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
     }
 
-    const units = parseNum(form.units_per_40hq.value, { thousands: true });
-    if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('Unidades por container 40HQ deve ser um número inteiro.');
-    const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, notes: form.notes.value, offers: payloadOffers };
+    const perBox = parseNum(form.units_per_box.value, { thousands: true });
+    const boxes = parseNum(form.boxes_per_40hq.value, { thousands: true });
+    for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
+      if (v !== null && !(Number.isInteger(v) && v > 0)) return fail(`${label} deve ser um número inteiro.`);
+    }
+    if ((perBox === null) !== (boxes === null)) return fail('Informe a Qtd por caixa e as Caixas por container (as duas), ou deixe as duas em branco.');
+    const units = perBox && boxes ? perBox * boxes : legacyUnits;
+    const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, units_per_box: perBox, boxes_per_40hq: boxes, notes: form.notes.value, offers: payloadOffers };
     const btn = form.querySelector('button[type=submit]');
     if (btn.disabled) return; // segundo toque enquanto o primeiro ainda prepara a foto
     btn.disabled = true;

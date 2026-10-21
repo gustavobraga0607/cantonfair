@@ -341,6 +341,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       .sort((a, b) => a.estimated_brl - b.estimated_brl);
     return {
       id: p.id, name: p.name, notes: p.notes, price_brl: p.price_brl, units_per_40hq: p.units_per_40hq ?? null,
+      units_per_box: p.units_per_box ?? null, boxes_per_40hq: p.boxes_per_40hq ?? null,
       photo: photoUrl(p.photo), list_photo: photoUrl(p.list_photo ?? p.photo), offers: opts,
       company_cnpj: p.cnpj, company_name: p.company_name ?? null, exchange_rate: rates.USD, cny_rate: rates.CNY,
       created_at: p.created_at, updated_at: p.updated_at, updated_by_name: p.updated_by_name ?? null,
@@ -1044,12 +1045,23 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   route('GET', '/api/products/:id', ({ user, params }) => productResponse(accessCnpj(user), params.id));
 
-  function productFields(body) {
+  // current: produto já salvo (na edição). Sem os campos de caixa no envio, mantém os do cadastro
+  // enquanto o total por container não mudar (ex.: oferta adicionada pela tela do fornecedor).
+  function productFields(body, current = null) {
     const name = str(body.name, 150);
     if (!name) throw new HttpError(400, 'Informe o nome do produto.');
-    const units = num(body.units_per_40hq, 'Unidades por container 40HQ', { integer: true });
+    let units = num(body.units_per_40hq, 'Unidades por container 40HQ', { integer: true });
+    const sent = body.units_per_box !== undefined || body.boxes_per_40hq !== undefined;
+    let perBox = sent ? num(body.units_per_box, 'Qtd por caixa', { integer: true }) : current?.units_per_box ?? null;
+    let boxes = sent ? num(body.boxes_per_40hq, 'Caixas por container', { integer: true }) : current?.boxes_per_40hq ?? null;
+    for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
+      if (v !== null && (v < 1 || v > 10_000_000)) throw new HttpError(400, `${label} inválido.`);
+    }
+    if (perBox && boxes) units = perBox * boxes;
+    else if (sent && (perBox || boxes)) throw new HttpError(400, 'Informe a quantidade por caixa e as caixas por container (as duas).');
+    else if (!sent && current && units !== current.units_per_40hq) { perBox = null; boxes = null; }
     if (units !== null && (units < 1 || units > 100_000_000)) throw new HttpError(400, 'Unidades por container 40HQ inválido.');
-    return { name, price_brl: num(body.price_brl, 'Preço no Brasil'), units_per_40hq: units, notes: str(body.notes, 2000) || null };
+    return { name, price_brl: num(body.price_brl, 'Preço no Brasil'), units_per_40hq: units, units_per_box: perBox, boxes_per_40hq: boxes, notes: str(body.notes, 2000) || null };
   }
 
   route('POST', '/api/products', async ({ user, body }) => {
@@ -1064,9 +1076,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const id = await db.tx(async (q) => {
       const photo = img ? await saveImage(q, img, cnpj, parseThumb(body.photo_thumb)) : null;
       const t = now();
-      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, notes, client_ref, created_by, updated_by, created_at, updated_at)
-                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-        [cnpj, f.name, photo, f.price_brl, f.units_per_40hq, f.notes, ref, user.id, user.id, t, t]);
+      const row = await q.get(`INSERT INTO products (cnpj, name, photo, price_brl, units_per_40hq, units_per_box, boxes_per_40hq, notes, client_ref, created_by, updated_by, created_at, updated_at)
+                               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [cnpj, f.name, photo, f.price_brl, f.units_per_40hq, f.units_per_box, f.boxes_per_40hq, f.notes, ref, user.id, user.id, t, t]);
       await replaceOffers(q, row.id, offers);
       return row.id;
     }).catch(async (err) => {
@@ -1080,15 +1092,15 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
 
   route('PUT', '/api/products/:id', async ({ user, params, body }) => {
     const p = await loadProduct(accessCnpj(user), params.id);
-    const f = productFields(body);
+    const f = productFields(body, p);
     const offers = await parseOffers(p.cnpj, body.offers);
     const img = body.photo && String(body.photo).startsWith('data:') ? parseImage(body.photo) : null;
     await db.tx(async (q) => {
       let photo = p.photo;
       if (body.photo === null) photo = null;
       else if (img) photo = await saveImage(q, img, p.cnpj, parseThumb(body.photo_thumb));
-      await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, units_per_40hq = ?, notes = ?, updated_by = ?, updated_at = ?
-                   WHERE id = ?`, [f.name, photo, f.price_brl, f.units_per_40hq, f.notes, user.id, now(), p.id]);
+      await q.run(`UPDATE products SET name = ?, photo = ?, price_brl = ?, units_per_40hq = ?, units_per_box = ?, boxes_per_40hq = ?, notes = ?, updated_by = ?, updated_at = ?
+                   WHERE id = ?`, [f.name, photo, f.price_brl, f.units_per_40hq, f.units_per_box, f.boxes_per_40hq, f.notes, user.id, now(), p.id]);
       await replaceOffers(q, p.id, offers);
       // Fornecedor tirado do produto: as fotos dele neste produto saem junto.
       const keep = offers.map((o) => o.supplier_id);

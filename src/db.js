@@ -229,6 +229,9 @@ const ADDED_COLUMNS = [
   ['companies', 'asaas_customer_id', 'TEXT'],
   // 'pending': entrou numa empresa que já tem equipe e espera a aprovação de alguém dela.
   ['users', 'status', "TEXT NOT NULL DEFAULT 'active'"],
+  // Embalagem: unidades por caixa × caixas por container 40HQ = units_per_40hq (usado no frete).
+  ['products', 'units_per_box', 'INTEGER'],
+  ['products', 'boxes_per_40hq', 'INTEGER'],
 ];
 // Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
 const DROPPED_NOT_NULL = [
