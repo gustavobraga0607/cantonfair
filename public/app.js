@@ -113,7 +113,7 @@ const FLAG_US = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Es
 const FORMULA = 'Estimado = (preço × câmbio da moeda + frete por unidade × câmbio do dólar) × (1 + % nacionalização)';
 
 // Embalagem nas listas de conferência (foto e planilha): Qtd por caixa e Caixas por container.
-// Sem as duas, vale o total por container lido (units_per_40hq), quando houver.
+// As duas são opcionais; o frete por unidade só entra com as duas (ou com o total por container lido).
 const packInputs = (x) => `
         <div class="row">
           <div><label>Qtd por caixa</label><input data-k="units_per_box" inputmode="numeric" value="${esc(x.units_per_box ?? '')}" placeholder="ex.: 50"></div>
@@ -126,7 +126,6 @@ function packValues(x) {
   for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
     if (v !== null && !(Number.isInteger(v) && v > 0)) return { error: `${label} deve ser um número inteiro.` };
   }
-  if ((perBox === null) !== (boxes === null)) return { error: 'informe a Qtd por caixa e as Caixas por container (as duas), ou deixe as duas em branco.' };
   const total = parseNum(x.units_per_40hq, { thousands: true });
   return { units_per_box: perBox, boxes_per_40hq: boxes, units_per_40hq: perBox && boxes ? perBox * boxes : (Number.isInteger(total) && total > 0 ? total : null) };
 }
@@ -1581,7 +1580,8 @@ function offerCardHtml({ title, href, sub = '', thumb = '', best = false, o, uni
       <div class="m-grid">
         <div>Preço<b>${priceIn(o.price, o.currency)}</b></div><div>MOQ<b>${o.moq ?? '—'}</b></div>
         <div>Incoterm<b>${esc(o.incoterm || '—')}</b></div><div>Nacionaliz.<b>${pct(o.nationalization_pct)}</b></div>
-        ${o.units_per_box && o.boxes_per_40hq ? `<div>Qtd/caixa<b>${o.units_per_box.toLocaleString('pt-BR')}</b></div><div>Caixas/container<b>${o.boxes_per_40hq.toLocaleString('pt-BR')}</b></div>` : ''}
+        ${o.units_per_box ? `<div>Qtd/caixa<b>${o.units_per_box.toLocaleString('pt-BR')}</b></div>` : ''}
+        ${o.boxes_per_40hq ? `<div>Caixas/container<b>${o.boxes_per_40hq.toLocaleString('pt-BR')}</b></div>` : ''}
       </div>
       <div class="m-est"><span class="item-sub">Estimado no Brasil<br><small>${freightNote}</small></span><b>${brl(o.estimated_brl)}</b></div>
       <div class="offer-photos" aria-label="Fotos deste fornecedor">
@@ -1725,7 +1725,7 @@ async function viewProductForm(id, query) {
   const offerUnitsOf = (o) => {
     const a = parseNum(o.units_per_box, { thousands: true });
     const b = parseNum(o.boxes_per_40hq, { thousands: true });
-    return a > 0 && b > 0 ? a * b : (a == null && b == null ? legacyUnits : null);
+    return a > 0 && b > 0 ? a * b : legacyUnits;
   };
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
@@ -1836,7 +1836,7 @@ async function viewProductForm(id, query) {
     const note = freight > 0
       ? `<span class="item-sub">inclui frete ${usd(freight)}/un. (${units.toLocaleString('pt-BR')} un./container)</span>`
       : perUnit > 0 ? `<span class="item-sub">frete já incluso no ${esc(o.incoterm)}</span>`
-        : freight40hq() && !units ? '<span class="item-sub">sem frete: informe a Qtd por caixa e as Caixas por container</span>' : '';
+        : freight40hq() && !units ? '<span class="item-sub">sem frete (para incluir, informe também as Caixas por container)</span>' : '';
     return `<span>Estimado: <b>${brl(est)}</b></span>${note}${br > 0 ? savingBadge(br, est) : ''}`;
   }
 

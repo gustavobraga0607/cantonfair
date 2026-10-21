@@ -380,7 +380,6 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       const sentPack = o.units_per_box !== undefined || o.boxes_per_40hq !== undefined;
       const perBox = sentPack ? num(o.units_per_box, `Qtd por caixa da oferta ${i + 1}`, { integer: true }) : null;
       const boxes = sentPack ? num(o.boxes_per_40hq, `Caixas por container da oferta ${i + 1}`, { integer: true }) : null;
-      if ((perBox === null) !== (boxes === null)) throw new HttpError(400, `Oferta ${i + 1}: informe a Qtd por caixa e as Caixas por container (as duas).`);
       if ((perBox !== null && (perBox < 1 || perBox > 10_000_000)) || (boxes !== null && (boxes < 1 || boxes > 10_000_000))) {
         throw new HttpError(400, `Oferta ${i + 1}: embalagem inválida.`);
       }
@@ -1075,8 +1074,9 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
       if (v !== null && (v < 1 || v > 10_000_000)) throw new HttpError(400, `${label} inválido.`);
     }
+    // As duas preenchidas: total = Qtd por caixa × Caixas por container. Só uma: guarda, sem total (frete).
     if (perBox && boxes) units = perBox * boxes;
-    else if (sent && (perBox || boxes)) throw new HttpError(400, 'Informe a quantidade por caixa e as caixas por container (as duas).');
+    else if (sent && (perBox || boxes)) units = body.units_per_40hq !== undefined ? units : current?.units_per_40hq ?? null;
     else if (!sent && current && units !== current.units_per_40hq) { perBox = null; boxes = null; }
     if (units !== null && (units < 1 || units > 100_000_000)) throw new HttpError(400, 'Unidades por container 40HQ inválido.');
     return { name, price_brl: num(body.price_brl, 'Preço no Brasil'), units_per_40hq: units, units_per_box: perBox, boxes_per_40hq: boxes, notes: str(body.notes, 2000) || null };

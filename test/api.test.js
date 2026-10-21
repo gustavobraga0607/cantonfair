@@ -1179,7 +1179,9 @@ test('produto: qtd por caixa × caixas por container = unidades por 40HQ', async
   let r = await a('POST', '/api/products', { name: 'Caixa', units_per_box: 50, boxes_per_40hq: 240 });
   assert.equal(r.status, 201);
   assert.deepEqual([r.body.units_per_box, r.body.boxes_per_40hq, r.body.units_per_40hq], [50, 240, 12000]);
-  assert.equal((await a('POST', '/api/products', { name: 'Só uma', units_per_box: 50 })).status, 400, 'precisa das duas');
+  const only = await a('POST', '/api/products', { name: 'Só uma', units_per_box: 50 });
+  assert.equal(only.status, 201, 'Caixas por container é opcional');
+  assert.deepEqual([only.body.units_per_box, only.body.boxes_per_40hq, only.body.units_per_40hq], [50, null, null]);
   // PUT sem os campos de caixa (ex.: oferta pela tela do fornecedor) mantém a embalagem
   r = await a('PUT', `/api/products/${r.body.id}`, { name: 'Caixa', units_per_40hq: 12000, offers: [] });
   assert.deepEqual([r.body.units_per_box, r.body.boxes_per_40hq, r.body.units_per_40hq], [50, 240, 12000]);
@@ -1206,7 +1208,9 @@ test('embalagem por fornecedor: cada oferta tem Qtd por caixa e Caixas por conta
   const by = (sid) => r.body.offers.find((o) => o.supplier_id === sid);
   assert.deepEqual([by(s1.id).units_per_40hq, by(s1.id).freight_usd], [12000, 0.5]);
   assert.deepEqual([by(s2.id).units_per_40hq, by(s2.id).freight_usd], [60000, 0.1]);
-  assert.equal((await a('POST', '/api/products', { name: 'X', offers: [{ supplier_id: s1.id, price: 1, units_per_box: 5 }] })).status, 400);
+  const one = await a('POST', '/api/products', { name: 'X', offers: [{ supplier_id: s1.id, price: 1, currency: 'USD', incoterm: 'FOB', units_per_box: 5 }] });
+  assert.equal(one.status, 201, 'só a Qtd por caixa: aceita, sem frete');
+  assert.deepEqual([one.body.offers[0].units_per_box, one.body.offers[0].boxes_per_40hq, one.body.offers[0].freight_usd], [5, null, 0]);
   // gravação sem os campos de embalagem (oferta pela tela do fornecedor) mantém a de cada fornecedor
   r = await a('PUT', `/api/products/${r.body.id}`, { name: 'Fita', offers: [
     { supplier_id: s1.id, price: 9, currency: 'USD', incoterm: 'FOB' }, { supplier_id: s2.id, price: 10, currency: 'USD', incoterm: 'FOB' },
