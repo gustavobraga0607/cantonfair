@@ -313,6 +313,7 @@ async function addOfferToProduct(productId, offer, { units, background = false }
   const p = await api(`/api/products/${productId}`, { background: true, fresh: true, timeout: 25_000 });
   const offers = p.offers.filter((o) => o.supplier_id !== offer.supplier_id).map((o) => ({
     supplier_id: o.supplier_id, price: o.price, currency: o.currency, moq: o.moq, incoterm: o.incoterm, nationalization_pct: o.nationalization_pct,
+    units_per_box: o.units_per_box ?? null, boxes_per_40hq: o.boxes_per_40hq ?? null,
   }));
   offers.push(offer);
   return api(`/api/products/${productId}`, {
@@ -1567,7 +1568,8 @@ function actionSheet(title, actions) {
 // Cartão de oferta, o mesmo nas telas do produto e do fornecedor (só muda quem é o título):
 // Preço · MOQ · Incoterm · Nacionalização, estimado no Brasil e as fotos deste fornecedor no produto.
 function offerCardHtml({ title, href, sub = '', thumb = '', best = false, o, units, productId, supplierId, photos = [] }) {
-  const freightNote = o.freight_usd > 0 ? `inclui frete ${usd(o.freight_usd)}/un.`
+  units = o.units_per_40hq ?? units;
+  const freightNote = o.freight_usd > 0 ? `inclui frete ${usd(o.freight_usd)}/un.${units ? ` (${units.toLocaleString('pt-BR')} un./container)` : ''}`
     : FREIGHT_INCLUDED.includes(o.incoterm) && units ? `frete já incluso no ${esc(o.incoterm)}` : 'sem frete no cálculo';
   return `
     <div class="card mirror">
@@ -1579,6 +1581,7 @@ function offerCardHtml({ title, href, sub = '', thumb = '', best = false, o, uni
       <div class="m-grid">
         <div>Preço<b>${priceIn(o.price, o.currency)}</b></div><div>MOQ<b>${o.moq ?? '—'}</b></div>
         <div>Incoterm<b>${esc(o.incoterm || '—')}</b></div><div>Nacionaliz.<b>${pct(o.nationalization_pct)}</b></div>
+        ${o.units_per_box && o.boxes_per_40hq ? `<div>Qtd/caixa<b>${o.units_per_box.toLocaleString('pt-BR')}</b></div><div>Caixas/container<b>${o.boxes_per_40hq.toLocaleString('pt-BR')}</b></div>` : ''}
       </div>
       <div class="m-est"><span class="item-sub">Estimado no Brasil<br><small>${freightNote}</small></span><b>${brl(o.estimated_brl)}</b></div>
       <div class="offer-photos" aria-label="Fotos deste fornecedor">
@@ -1613,10 +1616,6 @@ async function viewProduct(id, query = new URLSearchParams()) {
         <div>Diferença<b>${p.price_brl && b ? brl(p.price_brl - b.estimated_brl) : '—'}</b></div>
       </div>
       <div>${savingBadge(p.price_brl, b?.estimated_brl)}</div>
-      ${p.units_per_40hq ? `<div><div class="item-sub">Container 40HQ</div>
-        ${p.units_per_box && p.boxes_per_40hq ? `<div>${p.units_per_box.toLocaleString('pt-BR')} por caixa × ${p.boxes_per_40hq.toLocaleString('pt-BR')} caixas por container</div>` : ''}
-        <div>${p.units_per_40hq.toLocaleString('pt-BR')} unidades${freightPerUnit(p.units_per_40hq) != null
-          ? ` · frete por unidade <b>${usd(freightPerUnit(p.units_per_40hq))}</b> (${brl(freightPerUnit(p.units_per_40hq) * ratesOf(p).USD)})` : ''}</div></div>` : ''}
       ${p.notes ? `<div><div class="item-sub">Observações</div><div style="white-space:pre-wrap">${esc(p.notes)}</div></div>` : ''}
       <a class="btn" href="#/products/${p.id}/edit">Editar</a>
     </div>
@@ -1627,7 +1626,7 @@ async function viewProduct(id, query = new URLSearchParams()) {
       best: i === 0, o, units: p.units_per_40hq, productId: p.id, supplierId: o.supplier_id, photos: o.photos || [],
     })).join('')}
     </div>
-    <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container (Qtd por caixa × Caixas por container); não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
+    <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container (Qtd por caixa × Caixas por container de cada fornecedor); não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
     : `<div class="empty">Nenhum fornecedor vinculado a este produto.<br><a class="btn primary" href="#/products/${p.id}/edit">Adicionar fornecedor</a></div>`}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
@@ -1720,19 +1719,13 @@ async function viewProductForm(id, query) {
   ]);
   const rates = ratesOf(editing ? p : companyInfo(company) || state.me.company);
   const rate = rates.USD; // frete (US$)
-  // Unidades por container = Qtd por caixa × Caixas por container. Cadastro antigo (ou lido da foto)
-  // pode ter só o total: vale enquanto as duas caixas estiverem em branco.
-  let legacyUnits = p.units_per_box && p.boxes_per_40hq ? null : p.units_per_40hq ?? null;
-  const boxVal = (name) => { const el = document.getElementById(name); return el ? parseNum(el.value, { thousands: true }) : null; };
-  const currentUnits = () => {
-    const a = boxVal('units_per_box') ?? (document.getElementById('units_per_box') ? null : p.units_per_box);
-    const b = boxVal('boxes_per_40hq') ?? (document.getElementById('boxes_per_40hq') ? null : p.boxes_per_40hq);
+  // Embalagem é de cada fornecedor: unidades por container = Qtd por caixa × Caixas por container da oferta.
+  // Cadastro antigo (ou lido da foto) pode ter só o total no produto: vale para a oferta sem embalagem.
+  let legacyUnits = p.units_per_40hq ?? null;
+  const offerUnitsOf = (o) => {
+    const a = parseNum(o.units_per_box, { thousands: true });
+    const b = parseNum(o.boxes_per_40hq, { thousands: true });
     return a > 0 && b > 0 ? a * b : (a == null && b == null ? legacyUnits : null);
-  };
-  const unitsHint = () => {
-    const u = currentUnits();
-    const total = u ? `<b>${u.toLocaleString('pt-BR')} unidades por container 40HQ</b>${legacyUnits && u === legacyUnits ? ' (total informado antes; preencha as caixas para atualizar)' : ''}. ` : '';
-    return total + freightHint(u, rate);
   };
   let photo; // undefined = sem alteração, null = remover, string = nova foto
   const formRef = newRef(); // o mesmo cadastro enviado duas vezes não duplica
@@ -1788,15 +1781,8 @@ async function viewProductForm(id, query) {
         <div class="ocr-status" id="ocr-status" hidden></div>
         <div><label for="name">Nome do produto <span class="req">*</span></label><input id="name" name="name" value="${esc(p.name)}" required>
           <div class="dup-box" id="dup-box" hidden></div></div>
-        <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl ?? ''}" placeholder="ex.: 129,90">
+        <div><label for="price_brl">Preço no Brasil (R$)</label><input id="price_brl" name="price_brl" inputmode="decimal" value="${p.price_brl != null ? String(p.price_brl).replace('.', ',') : ''}" placeholder="ex.: 129,90">
           <div class="hint">Preço de referência praticado no mercado brasileiro.</div></div>
-        <div class="row">
-          <div><label for="units_per_box">Qtd por caixa</label>
-            <input id="units_per_box" name="units_per_box" inputmode="numeric" value="${p.units_per_box ?? ''}" placeholder="ex.: 50"></div>
-          <div><label for="boxes_per_40hq">Caixas por container</label>
-            <input id="boxes_per_40hq" name="boxes_per_40hq" inputmode="numeric" value="${p.boxes_per_40hq ?? ''}" placeholder="ex.: 240"></div>
-        </div>
-        <div class="hint" id="freight-hint">${unitsHint()}</div>
         <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(p.notes)}</textarea></div>
       </div>
       <div class="card">
@@ -1837,22 +1823,20 @@ async function viewProductForm(id, query) {
 
   const form = document.getElementById('f');
   const offersEl = document.getElementById('offers');
-  const refreshUnits = () => {
-    document.getElementById('freight-hint').innerHTML = unitsHint();
-    offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
-  };
 
   function offerCalc(o) {
     const priceV = parseNum(o.price);
     const natV = parseNum(o.nationalization_pct) || 0;
     if (priceV == null || Number.isNaN(priceV)) return '<span class="item-sub">Informe o preço</span>';
-    const perUnit = freightPerUnit(currentUnits()) || 0;
+    const units = offerUnitsOf(o);
+    const perUnit = freightPerUnit(units) || 0;
     const freight = offerFreight(o.incoterm, perUnit);
     const est = estimate(priceV, o.currency, natV, rates, freight);
     const br = parseNum(form.price_brl.value, { thousands: true });
     const note = freight > 0
-      ? `<span class="item-sub">inclui frete ${usd(freight)}/un.</span>`
-      : perUnit > 0 ? `<span class="item-sub">frete já incluso no ${esc(o.incoterm)}</span>` : '';
+      ? `<span class="item-sub">inclui frete ${usd(freight)}/un. (${units.toLocaleString('pt-BR')} un./container)</span>`
+      : perUnit > 0 ? `<span class="item-sub">frete já incluso no ${esc(o.incoterm)}</span>`
+        : freight40hq() && !units ? '<span class="item-sub">sem frete: informe a Qtd por caixa e as Caixas por container</span>' : '';
     return `<span>Estimado: <b>${brl(est)}</b></span>${note}${br > 0 ? savingBadge(br, est) : ''}`;
   }
 
@@ -1883,6 +1867,11 @@ async function viewProductForm(id, query) {
           <div><label>Nacionalização (%)</label><input data-k="nationalization_pct" inputmode="decimal" value="${esc(o.nationalization_pct ?? '')}" placeholder="ex.: 85"></div>
           <div></div>
         </div>
+        <div class="row" style="margin-top:10px">
+          <div><label>Qtd por caixa</label><input data-k="units_per_box" inputmode="numeric" value="${esc(o.units_per_box ?? '')}" placeholder="ex.: 50"></div>
+          <div><label>Caixas por container</label><input data-k="boxes_per_40hq" inputmode="numeric" value="${esc(o.boxes_per_40hq ?? '')}" placeholder="ex.: 240"></div>
+        </div>
+        ${legacyUnits && !(o.units_per_box && o.boxes_per_40hq) ? `<div class="hint">Cadastro antigo: ${legacyUnits.toLocaleString('pt-BR')} unidades por container (vale enquanto a embalagem estiver em branco).</div>` : ''}
         <div class="offer-calc" data-calc="${i}">${offerCalc(o)}</div>
         ${offerPhotosHtml(o, i)}
       </div>`).join('');
@@ -1977,10 +1966,10 @@ async function viewProductForm(id, query) {
     const filled = [];
     const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
     set(form.name, r.name, 'nome');
-    if (r.units_per_box && r.boxes_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim()) {
-      set(form.units_per_box, r.units_per_box, 'qtd por caixa');
-      set(form.boxes_per_40hq, r.boxes_per_40hq, 'caixas por container');
-    } else if (r.units_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim() && !legacyUnits) { legacyUnits = r.units_per_40hq; filled.push('unidades/40HQ'); }
+    const po = offers.find((x) => !String(x.units_per_box ?? '').trim() && !String(x.boxes_per_40hq ?? '').trim());
+    if (r.units_per_box && r.boxes_per_40hq && po) {
+      po.units_per_box = r.units_per_box; po.boxes_per_40hq = r.boxes_per_40hq; filled.push('embalagem');
+    } else if (r.units_per_40hq && !legacyUnits) { legacyUnits = r.units_per_40hq; filled.push('unidades/40HQ'); }
     const o = offers.find((x) => !String(x.price).trim()) || offers[0];
     if (r.price != null && !String(o.price).trim()) { o.price = String(r.price).replace('.', ','); o.currency = r.currency || 'CNY'; filled.push(`preço (${CUR_LABEL[o.currency]})`); }
     if (r.moq != null && !String(o.moq ?? '').trim()) { o.moq = r.moq; filled.push('MOQ'); }
@@ -1993,7 +1982,6 @@ async function viewProductForm(id, query) {
       filled.push('observações');
     }
     renderOffers();
-    document.getElementById('freight-hint').innerHTML = unitsHint();
     checkDuplicates();
     box.className = 'ocr-status ok';
     box.textContent = filled.length ? `✓ Foto lida: ${filled.join(', ')} preenchido(s). Confira antes de salvar.` : 'Foto lida, mas os campos já estavam preenchidos.';
@@ -2121,8 +2109,6 @@ async function viewProductForm(id, query) {
     }
     renderOffers();
   });
-  form.units_per_box.addEventListener('input', refreshUnits);
-  form.boxes_per_40hq.addEventListener('input', refreshUnits);
   form.price_brl.addEventListener('input', () => {
     offers.forEach((o, i) => { offersEl.querySelector(`[data-calc="${i}"]`).innerHTML = offerCalc(o); });
   });
@@ -2151,17 +2137,13 @@ async function viewProductForm(id, query) {
       const moq = parseNum(o.moq, { thousands: true });
       const nat = parseNum(o.nationalization_pct);
       if (Number.isNaN(moq) || Number.isNaN(nat)) return fail(`Verifique MOQ e % da linha ${i + 1}.`);
-      payloadOffers.push({ supplier_id: Number(o.supplier_id), price, currency: o.currency || 'CNY', moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0 });
+      const pack = packValues(o);
+      if (pack.error) return fail(`Linha ${i + 1}: ${pack.error}`);
+      payloadOffers.push({ supplier_id: Number(o.supplier_id), price, currency: o.currency || 'CNY', moq, incoterm: o.incoterm || null, nationalization_pct: nat ?? 0,
+        units_per_box: pack.units_per_box, boxes_per_40hq: pack.boxes_per_40hq });
     }
 
-    const perBox = parseNum(form.units_per_box.value, { thousands: true });
-    const boxes = parseNum(form.boxes_per_40hq.value, { thousands: true });
-    for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
-      if (v !== null && !(Number.isInteger(v) && v > 0)) return fail(`${label} deve ser um número inteiro.`);
-    }
-    if ((perBox === null) !== (boxes === null)) return fail('Informe a Qtd por caixa e as Caixas por container (as duas), ou deixe as duas em branco.');
-    const units = perBox && boxes ? perBox * boxes : legacyUnits;
-    const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: units, units_per_box: perBox, boxes_per_40hq: boxes, notes: form.notes.value, offers: payloadOffers };
+    const body = { name: form.name.value, price_brl: priceBrl, units_per_40hq: legacyUnits, notes: form.notes.value, offers: payloadOffers };
     const btn = form.querySelector('button[type=submit]');
     if (btn.disabled) return; // segundo toque enquanto o primeiro ainda prepara a foto
     btn.disabled = true;
@@ -2451,7 +2433,8 @@ async function viewProductScan(query) {
       // Com fornecedor escolhido, todo produto precisa de preço: sem ele não há oferta e o produto ficaria sem vínculo.
       if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
       const offer = sid
-        ? { supplier_id: sid, price, currency: it.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
+        ? { supplier_id: sid, price, currency: it.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0,
+          units_per_box: pack.units_per_box, boxes_per_40hq: pack.boxes_per_40hq } : null;
       if (it.target && !offer) return fail('para adicionar a oferta a um produto existente, escolha o fornecedor e informe o preço.');
       jobs.push({ it, offer, pack });
     }
@@ -2465,14 +2448,16 @@ async function viewProductScan(query) {
         saveBtn.textContent = `Salvando ${saved + queued + 1} de ${jobs.length}…`;
         let r;
         if (it.target) {
-          r = await addOfferOrQueue(Number(it.target), offer, it.name, { units: pack.units_per_40hq });
+          r = await addOfferOrQueue(Number(it.target), offer, it.name, { units: pack.units_per_box ? null : pack.units_per_40hq });
           // Produto já existente: a foto tirada entra nas fotos deste fornecedor no produto.
           if (r.saved && it.own_photo && offer) {
             await api(`/api/products/${it.target}/photos`, { method: 'POST', body: { supplier_id: offer.supplier_id, photo: it.own_photo, photo_thumb: await makeThumb(it.own_photo) } })
               .catch(() => toast(`A foto de "${it.name}" não foi enviada; adicione pela tela do produto.`));
           }
         } else {
-          const body = { name: it.name.trim(), price_brl: null, ...pack, notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
+          // Embalagem vai na oferta do fornecedor; sem fornecedor (ou só o total lido), fica no produto.
+          const body = { name: it.name.trim(), price_brl: null, ...(offer ? { units_per_40hq: pack.units_per_box ? null : pack.units_per_40hq } : pack),
+            notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
           const photo = it.own_photo || (it.use_photo ? it.photo : null);
           if (photo) Object.assign(body, { photo, photo_thumb: await makeThumb(photo) });
           if (isAdmin()) body.company = company;
@@ -2618,8 +2603,10 @@ async function viewProductImport(query) {
       if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
       const notes = [String(r.notes || '').trim(),
         !sid && price != null ? `Preço da planilha: ${priceIn(price, r.currency)}${r.supplier_name ? ` · fornecedor: ${r.supplier_name}` : ''}` : ''].filter(Boolean).join('\n');
-      const offer = sid ? { supplier_id: sid, price, currency: r.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: r.incoterm || null, nationalization_pct: nat ?? 0 } : null;
-      const body = { name: r.name.trim(), price_brl: priceBrl, ...pack, notes, offers: offer ? [offer] : [], client_ref: r.ref || (r.ref = newRef()) };
+      const offer = sid ? { supplier_id: sid, price, currency: r.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: r.incoterm || null, nationalization_pct: nat ?? 0,
+        units_per_box: pack.units_per_box, boxes_per_40hq: pack.boxes_per_40hq } : null;
+      // Embalagem vai na oferta do fornecedor; sem fornecedor (ou só o total), fica no produto.
+      const body = { name: r.name.trim(), price_brl: priceBrl, ...(offer ? { units_per_40hq: pack.units_per_box ? null : pack.units_per_40hq } : pack), notes, offers: offer ? [offer] : [], client_ref: r.ref || (r.ref = newRef()) };
       if (isAdmin()) body.company = company;
       jobs.push({ r, body });
     }
@@ -4127,16 +4114,6 @@ async function shareImage(url, { fileName, title, text }) {
 
 const freight40hq = () => state.me?.settings?.freight_40hq_usd ?? null;
 const freightPerUnit = (units) => (freight40hq() != null && units > 0 ? freight40hq() / units : null);
-
-function freightHint(units, rate) {
-  const f = freightPerUnit(units);
-  if (f == null) {
-    return freight40hq() == null
-      ? 'Quantidade que cabe num container 40HQ.'
-      : `Frete 40HQ: ${usd(freight40hq())}. Informe as unidades para ver o frete por unidade.`;
-  }
-  return `Frete por unidade: <b>${usd(f)}</b> (${brl(f * rate)}) — frete 40HQ de ${usd(freight40hq())} ÷ ${units.toLocaleString('pt-BR')} un. Entra no preço estimado.`;
-}
 
 // Cartão do administrador na aba Conta: valor do frete internacional do container 40HQ.
 function renderFreightCard() {

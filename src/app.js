@@ -6,7 +6,7 @@ const crypto = require('node:crypto');
 
 const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
-const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight } = require('./calc');
+const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight, offerUnits } = require('./calc');
 const { buildTemplate, parseProductsXlsx } = require('./product-import');
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
@@ -321,9 +321,8 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   }
 
   function productOut(p, offers, rates, freight = 0, photos = null) {
-    const perUnit = freightPerUnit(freight, p.units_per_40hq);
     const opts = offers
-      .map((o) => ({ ...o, freight: offerFreight(o.incoterm, perUnit) }))
+      .map((o) => ({ ...o, units: offerUnits(o, p.units_per_40hq), freight: offerFreight(o.incoterm, freightPerUnit(freight, offerUnits(o, p.units_per_40hq))) }))
       .map((o) => ({
         id: o.id,
         supplier_id: o.supplier_id,
@@ -334,6 +333,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         moq: o.moq,
         incoterm: o.incoterm,
         nationalization_pct: o.nationalization_pct,
+        units_per_box: o.units_per_box ?? null, boxes_per_40hq: o.boxes_per_40hq ?? null, units_per_40hq: o.units ?? null,
         freight_usd: round4(o.freight),
         estimated_brl: round2(estimateBrl(o.price, o.currency, o.nationalization_pct, rates, o.freight)),
         ...(photos ? { photos: photos.filter((ph) => ph.supplier_id === o.supplier_id).map((ph) => ({ id: ph.id, url: photoUrl(ph.image_id) })) } : {}),
@@ -375,6 +375,15 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       const legacy = o.price === undefined && o.price_usd !== undefined;
       const currency = legacy ? 'USD' : String(o.currency || 'CNY').toUpperCase();
       if (!CURRENCIES_OFFER.includes(currency)) throw new HttpError(400, `Moeda inválida na oferta ${i + 1}.`);
+      // Embalagem deste fornecedor. Sem os campos no envio (app antigo, oferta pela tela do fornecedor),
+      // a gravação mantém a que já estava cadastrada (keepPack).
+      const sentPack = o.units_per_box !== undefined || o.boxes_per_40hq !== undefined;
+      const perBox = sentPack ? num(o.units_per_box, `Qtd por caixa da oferta ${i + 1}`, { integer: true }) : null;
+      const boxes = sentPack ? num(o.boxes_per_40hq, `Caixas por container da oferta ${i + 1}`, { integer: true }) : null;
+      if ((perBox === null) !== (boxes === null)) throw new HttpError(400, `Oferta ${i + 1}: informe a Qtd por caixa e as Caixas por container (as duas).`);
+      if ((perBox !== null && (perBox < 1 || perBox > 10_000_000)) || (boxes !== null && (boxes < 1 || boxes > 10_000_000))) {
+        throw new HttpError(400, `Oferta ${i + 1}: embalagem inválida.`);
+      }
       out.push({
         supplier_id: supplierId,
         price: num(legacy ? o.price_usd : o.price, `preço da oferta ${i + 1}`, { required: true }),
@@ -382,6 +391,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         moq: num(o.moq, `MOQ da oferta ${i + 1}`, { integer: true }),
         incoterm,
         nationalization_pct: num(o.nationalization_pct, `% de nacionalização da oferta ${i + 1}`) ?? 0,
+        units_per_box: perBox, boxes_per_40hq: boxes, keepPack: !sentPack,
       });
     }
     // Todos os fornecedores das ofertas precisam ser da empresa do produto (uma consulta só).
@@ -394,11 +404,18 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   }
 
   async function replaceOffers(q, productId, offers) {
+    // Ofertas sem embalagem no envio mantêm a que estava gravada para o mesmo fornecedor.
+    if (offers.some((o) => o.keepPack)) {
+      const old = new Map((await q.all('SELECT supplier_id, units_per_box, boxes_per_40hq FROM offers WHERE product_id = ?', [productId]))
+        .map((r) => [Number(r.supplier_id), r]));
+      offers = offers.map((o) => (o.keepPack && old.has(o.supplier_id)
+        ? { ...o, units_per_box: old.get(o.supplier_id).units_per_box, boxes_per_40hq: old.get(o.supplier_id).boxes_per_40hq } : o));
+    }
     await q.run('DELETE FROM offers WHERE product_id = ?', [productId]);
     if (!offers.length) return;
-    await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, currency, moq, incoterm, nationalization_pct)
-                 VALUES ${offers.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
-      offers.flatMap((o) => [productId, o.supplier_id, o.price, o.currency, o.moq, o.incoterm, o.nationalization_pct]));
+    await q.run(`INSERT INTO offers (product_id, supplier_id, price_usd, currency, moq, incoterm, nationalization_pct, units_per_box, boxes_per_40hq)
+                 VALUES ${offers.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ')}`,
+      offers.flatMap((o) => [productId, o.supplier_id, o.price, o.currency, o.moq, o.incoterm, o.nationalization_pct, o.units_per_box ?? null, o.boxes_per_40hq ?? null]));
   }
 
   // ---------- rotas ----------
@@ -766,7 +783,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       for (const pr of products) {
         let best = null;
         for (const o of byProduct.get(pr.id) || []) {
-          const est = estimateBrl(o.price, o.currency, o.nationalization_pct, ratesOf(pr), offerFreight(o.incoterm, freightPerUnit(freight, pr.units_per_40hq)));
+          const est = estimateBrl(o.price, o.currency, o.nationalization_pct, ratesOf(pr), offerFreight(o.incoterm, freightPerUnit(freight, offerUnits(o, pr.units_per_40hq))));
           if (!best || est < best.est) best = { est, sid: o.supplier_id };
         }
         if (best) bestCount.set(best.sid, (bestCount.get(best.sid) || 0) + 1);
@@ -792,7 +809,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     ]) : [[], []];
     const products = rows.map((r) => {
       const opts = offers.filter((o) => o.product_id === r.id).map((o) => {
-        const fr = offerFreight(o.incoterm, freightPerUnit(freight, r.units_per_40hq));
+        const fr = offerFreight(o.incoterm, freightPerUnit(freight, offerUnits(o, r.units_per_40hq)));
         return { ...o, freight: fr, est: round2(estimateBrl(o.price, o.currency, o.nationalization_pct, rates, fr)) };
       });
       const mine = opts.find((o) => o.supplier_id === s.id);
@@ -800,6 +817,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       return {
         id: r.id, name: r.name, price_brl: r.price_brl, units_per_40hq: r.units_per_40hq ?? null,
         price: mine.price, currency: mine.currency, moq: mine.moq, incoterm: mine.incoterm, nationalization_pct: mine.nationalization_pct,
+        units_per_box: mine.units_per_box ?? null, boxes_per_40hq: mine.boxes_per_40hq ?? null, units_per_40hq: offerUnits(mine, r.units_per_40hq),
         freight_usd: round4(mine.freight), estimated_brl: mine.est,
         is_best: mine.est === Math.min(...opts.map((o) => o.est)), offer_count: opts.length,
         photo: photoUrl(ph[0]?.image_id ?? r.cover), photo_count: ph.length,

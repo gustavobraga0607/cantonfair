@@ -232,6 +232,9 @@ const ADDED_COLUMNS = [
   // Embalagem: unidades por caixa × caixas por container 40HQ = units_per_40hq (usado no frete).
   ['products', 'units_per_box', 'INTEGER'],
   ['products', 'boxes_per_40hq', 'INTEGER'],
+  // Embalagem de cada fornecedor (a do produto fica só para cadastros antigos).
+  ['offers', 'units_per_box', 'INTEGER'],
+  ['offers', 'boxes_per_40hq', 'INTEGER'],
 ];
 // Colunas que deixaram de ser obrigatórias (bancos existentes também mudam).
 const DROPPED_NOT_NULL = [

@@ -16,6 +16,14 @@ function freightPerUnit(freight40hqUsd, unitsPer40hq) {
   return freight40hqUsd > 0 && unitsPer40hq > 0 ? freight40hqUsd / unitsPer40hq : 0;
 }
 
+// Unidades por container de uma oferta: embalagem do fornecedor (Qtd por caixa × Caixas por container);
+// sem ela, o total antigo guardado no produto.
+function offerUnits(offer, productUnits = null) {
+  const a = Number(offer?.units_per_box);
+  const b = Number(offer?.boxes_per_40hq);
+  return a > 0 && b > 0 ? a * b : productUnits ?? null;
+}
+
 function offerFreight(incoterm, perUnitUsd) {
   return FREIGHT_INCLUDED.has(String(incoterm || '').toUpperCase()) ? 0 : perUnitUsd;
 }
@@ -29,7 +37,7 @@ function buildRanking(products, offers, rates, freight40hqUsd = 0) {
   const units = new Map(products.map((p) => [p.id, p.units_per_40hq]));
   const byProduct = new Map();
   for (const o of offers) {
-    const freight = offerFreight(o.incoterm, freightPerUnit(freight40hqUsd, units.get(o.product_id)));
+    const freight = offerFreight(o.incoterm, freightPerUnit(freight40hqUsd, offerUnits(o, units.get(o.product_id))));
     const estimated = estimateBrl(o.price, o.currency, o.nationalization_pct, rates, freight);
     const list = byProduct.get(o.product_id) || [];
     list.push({ ...o, freight_usd: round4(freight), estimated_brl: round2(estimated) });
@@ -68,4 +76,4 @@ function buildRanking(products, offers, rates, freight40hqUsd = 0) {
   return rows;
 }
 
-module.exports = { estimateBrl, buildRanking, round2, round4, freightPerUnit, offerFreight, FREIGHT_INCLUDED };
+module.exports = { estimateBrl, buildRanking, round2, round4, freightPerUnit, offerFreight, offerUnits, FREIGHT_INCLUDED };

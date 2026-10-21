@@ -1187,3 +1187,32 @@ test('produto: qtd por caixa × caixas por container = unidades por 40HQ', async
   r = await a('POST', '/api/products', { name: 'Antigo', units_per_40hq: 9000 });
   assert.deepEqual([r.body.units_per_box, r.body.units_per_40hq], [null, 9000]);
 });
+
+test('embalagem por fornecedor: cada oferta tem Qtd por caixa e Caixas por container (frete por oferta)', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const admin = client(base);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '11444777000161' });
+  assert.equal((await admin('PUT', '/api/admin/settings', { freight_40hq_usd: 6000 })).status, 200);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  const s1 = (await a('POST', '/api/suppliers', { name: 'S1' })).body;
+  const s2 = (await a('POST', '/api/suppliers', { name: 'S2' })).body;
+  let r = await a('POST', '/api/products', { name: 'Fita', offers: [
+    { supplier_id: s1.id, price: 10, currency: 'USD', incoterm: 'FOB', units_per_box: 50, boxes_per_40hq: 240 },
+    { supplier_id: s2.id, price: 10, currency: 'USD', incoterm: 'FOB', units_per_box: 100, boxes_per_40hq: 600 },
+  ] });
+  assert.equal(r.status, 201);
+  const by = (sid) => r.body.offers.find((o) => o.supplier_id === sid);
+  assert.deepEqual([by(s1.id).units_per_40hq, by(s1.id).freight_usd], [12000, 0.5]);
+  assert.deepEqual([by(s2.id).units_per_40hq, by(s2.id).freight_usd], [60000, 0.1]);
+  assert.equal((await a('POST', '/api/products', { name: 'X', offers: [{ supplier_id: s1.id, price: 1, units_per_box: 5 }] })).status, 400);
+  // gravação sem os campos de embalagem (oferta pela tela do fornecedor) mantém a de cada fornecedor
+  r = await a('PUT', `/api/products/${r.body.id}`, { name: 'Fita', offers: [
+    { supplier_id: s1.id, price: 9, currency: 'USD', incoterm: 'FOB' }, { supplier_id: s2.id, price: 10, currency: 'USD', incoterm: 'FOB' },
+  ] });
+  assert.deepEqual([by(s1.id).units_per_box, by(s1.id).boxes_per_40hq, by(s2.id).units_per_box], [50, 240, 100]);
+  // tela do fornecedor mostra a embalagem dele
+  const sup = (await a('GET', `/api/suppliers/${s2.id}`)).body;
+  assert.equal(sup.products[0].units_per_40hq, 60000);
+});
