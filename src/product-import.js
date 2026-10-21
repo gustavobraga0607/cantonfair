@@ -19,6 +19,8 @@ const COLUMNS = [
   ['incoterm', 'Incoterm', ['incoterm', 'incoterms', 'condicao', 'price terms']],
   ['nat', 'Nacionalização (%)', ['nacionalizacao', 'nacionalizacao (%)', '% nacionalizacao', 'nacionaliz.', 'nacionaliz. (%)', 'nationalization']],
   ['price_brl', 'Preço no Brasil (R$)', ['preco no brasil', 'preco no brasil (r$)', 'preco brasil', 'preco br', 'brazil price']],
+  ['per_box', 'Qtd por caixa', ['qtd por caixa', 'quantidade por caixa', 'unidades por caixa', 'unid. por caixa', 'pcs/ctn', 'pcs per carton', 'qty per carton', 'units per carton']],
+  ['boxes', 'Caixas por container', ['caixas por container', 'caixas por 40hq', 'caixas 40hq', 'cartons per 40hq', 'ctns/40hq', 'ctns per 40hq']],
   ['units', 'Unidades por 40HQ', ['unidades por 40hq', 'unid. / 40hq', 'unidades 40hq', '40hq', 'units per 40hq']],
   ['notes', 'Observações', ['observacoes', 'obs', 'observacao', 'notes', 'especificacoes', 'specs']],
 ];
@@ -26,6 +28,8 @@ const COLUMNS = [
 // Títulos fora da lista exata: reconhecidos por palavras-chave. A ordem importa: "Preço no Brasil",
 // "Preço de venda (R$)" etc. são conferidos antes do preço do fornecedor.
 const FUZZY = [
+  ['per_box', /(qtd|quantidade|unid|pcs|pecas|qty|units).*(caixa|carton|ctn)|(caixa|carton|ctn).*(qtd|unid|pcs|qty)/],
+  ['boxes', /(caixas|cartons|ctns).*(40\s*hq|container|conteiner|contêiner)/],
   ['units', /40\s*hq|container|conteiner|contêiner/],
   ['nat', /nacionaliz|nationaliz|% *nac/],
   ['price_brl', /brasil|brazil|\bbr\b|r\$|\breais\b|\bbrl\b|venda|varejo|revenda|mercado|retail/],
@@ -46,15 +50,17 @@ async function buildTemplate(supplierNames = []) {
   const ExcelJS = require('exceljs');
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet('Produtos');
-  ws.columns = COLUMNS.map(([, label]) => ({ header: label, width: Math.max(14, label.length + 4) }));
+  // O total por 40HQ não vai no modelo (é Qtd por caixa × Caixas por container), mas planilhas antigas com ele são aceitas.
+  const cols = COLUMNS.filter(([k]) => k !== 'units');
+  ws.columns = cols.map(([, label]) => ({ header: label, width: Math.max(14, label.length + 4) }));
   ws.getColumn(1).width = 34;
   ws.getColumn(2).width = 28;
-  ws.getColumn(10).width = 40;
+  ws.getColumn(cols.length).width = 40;
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFEFEF' } };
   ws.views = [{ state: 'frozen', ySplit: 1 }];
-  ws.addRow(['Garrafa térmica inox 500 ml', supplierNames[0] || '', 16.8, 'RMB', 1000, 'FOB', 85, 129.9, 12000, 'Inox 304, caixa com 50']);
-  ws.addRow(['Copo térmico 350 ml', supplierNames[0] || '', 2.35, 'USD', 500, 'FOB', 85, 69.9, '', '']);
+  ws.addRow(['Garrafa térmica inox 500 ml', supplierNames[0] || '', 16.8, 'RMB', 1000, 'FOB', 85, 129.9, 50, 240, 'Inox 304']);
+  ws.addRow(['Copo térmico 350 ml', supplierNames[0] || '', 2.35, 'USD', 500, 'FOB', 85, 69.9, '', '', '']);
 
   // Lista de fornecedores cadastrados: a coluna Fornecedor vira uma lista de escolha.
   const list = wb.addWorksheet('Fornecedores');
@@ -77,7 +83,8 @@ async function buildTemplate(supplierNames = []) {
     '• Fornecedor: escolha um da lista (aba Fornecedores). Se o nome não for encontrado no app, o produto entra sem fornecedor e o preço fica nas observações para você vincular depois, editando o produto.',
     '• Preço: valor unitário, sem converter. Moeda: RMB (yuan, padrão) ou USD (dólar).',
     '• Incoterm: FOB, EXW, FCA, CIF… Nacionalização: só o número (ex.: 85).',
-    '• Preço no Brasil e Unidades por 40HQ são opcionais e servem para o cálculo de vantagem e de frete.',
+    '• Preço no Brasil é opcional e serve para o cálculo de vantagem.',
+    '• Qtd por caixa e Caixas por container são opcionais (preencha as duas): o total por container = Qtd por caixa × Caixas por container, usado no frete por unidade.',
     '• Apague as duas linhas de exemplo antes de importar.',
   ].forEach((t, i) => { help.addRow([t]).font = { bold: i === 0 }; });
   return wb.xlsx.writeBuffer();
@@ -167,7 +174,12 @@ async function parseProductsXlsx(buf, suppliers = []) {
       incoterm: INCOTERMS.includes(incoterm) ? incoterm : '',
       nat: number(get('nat')),
       price_brl: number(get('price_brl')),
-      units_per_40hq: (() => { const n = number(get('units'), { integer: true }); return n != null && n > 0 ? Math.round(n) : null; })(),
+      ...(() => {
+        const int = (k) => { const n = number(get(k), { integer: true }); return n != null && n > 0 ? Math.round(n) : null; };
+        const perBox = int('per_box');
+        const boxes = int('boxes');
+        return { units_per_box: perBox, boxes_per_40hq: boxes, units_per_40hq: perBox && boxes ? perBox * boxes : int('units') };
+      })(),
       notes: text(get('notes')).slice(0, 2000),
     });
   }

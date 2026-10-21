@@ -1033,10 +1033,10 @@ test('produtos por planilha Excel: modelo com fornecedores e leitura das linhas'
   assert.equal(wb.getWorksheet('Fornecedores').getCell('A2').value, 'Yiwu Cups Co.');
   const ws = wb.getWorksheet('Produtos');
   ws.spliceRows(2, 2); // tira os exemplos
-  ws.addRow(['Garrafa 1 L', 'yiwu cups co.', '32,50', 'RMB', '1.000', 'fca', 85, 129.9, 12000, 'Inox']);
-  ws.addRow(['Copo 350 ml', 'Fornecedor Novo', 2.35, 'USD', 500, 'FOB', '', '', '', '']);
-  ws.addRow(['', 'Sem nome', 1, '', '', '', '', '', '', '']);
-  ws.addRow(['Marmita', '', '¥22', '', '', '', '', '', '', '']);
+  ws.addRow(['Garrafa 1 L', 'yiwu cups co.', '32,50', 'RMB', '1.000', 'fca', 85, 129.9, 50, 240, 'Inox']);
+  ws.addRow(['Copo 350 ml', 'Fornecedor Novo', 2.35, 'USD', 500, 'FOB', '', '', '', '', '']);
+  ws.addRow(['', 'Sem nome', 1, '', '', '', '', '', '', '', '']);
+  ws.addRow(['Marmita', '', '¥22', '', '', '', '', '', '', '', '']);
   const file = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
 
   const r = await a('POST', '/api/products/import/parse', { file });
@@ -1045,7 +1045,7 @@ test('produtos por planilha Excel: modelo com fornecedores e leitura das linhas'
   assert.equal(rows.length, 3, 'linha sem nome é ignorada');
   assert.deepEqual(
     { ...rows[0], line: undefined },
-    { line: undefined, name: 'Garrafa 1 L', supplier_name: 'yiwu cups co.', supplier_id: sup.id, price: 32.5, currency: 'CNY', moq: 1000, incoterm: 'FCA', nat: 85, price_brl: 129.9, units_per_40hq: 12000, notes: 'Inox' },
+    { line: undefined, name: 'Garrafa 1 L', supplier_name: 'yiwu cups co.', supplier_id: sup.id, price: 32.5, currency: 'CNY', moq: 1000, incoterm: 'FCA', nat: 85, price_brl: 129.9, units_per_box: 50, boxes_per_40hq: 240, units_per_40hq: 12000, notes: 'Inox' },
   );
   assert.equal(rows[1].supplier_id, null, 'fornecedor não encontrado fica em branco');
   assert.equal(rows[1].supplier_name, 'Fornecedor Novo');

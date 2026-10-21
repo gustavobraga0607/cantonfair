@@ -86,7 +86,7 @@ test('produtos pela foto: lista fechada de Incoterm, números normalizados e ite
   assert.equal(products.length, 3);
   assert.deepEqual(products[0], {
     name: 'Garrafa térmica inox 500 ml', name_original: 'Vacuum flask 500ml', price: 2.35, currency: 'USD', price_note: '', moq: 1000,
-    incoterm: 'FOB', units_per_40hq: 12000, specs: 'Inox 304',
+    incoterm: 'FOB', units_per_box: null, boxes_per_40hq: null, units_per_40hq: 12000, specs: 'Inox 304',
   });
   assert.equal(products[1].price, 16.8, 'preço em yuan fica em yuan');
   assert.equal(products[1].currency, 'CNY');

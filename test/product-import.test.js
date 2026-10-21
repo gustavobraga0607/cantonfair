@@ -28,3 +28,13 @@ test('títulos parecidos: preço no Brasil não vira preço do fornecedor', asyn
   r = await parseProductsXlsx(await sheet(['Produto', 'Preço', 'Preço (R$)'], ['Copo', 10, 50]));
   assert.deepEqual([r.rows[0].price, r.rows[0].price_brl], [10, 50]);
 });
+
+test('embalagem: Qtd por caixa × Caixas por container; planilha antiga com o total continua valendo', async () => {
+  const r = await parseProductsXlsx(Buffer.from(await buildTemplate(['Forn A'])), [{ id: 1, name: 'Forn A' }]);
+  assert.deepEqual([r.rows[0].units_per_box, r.rows[0].boxes_per_40hq, r.rows[0].units_per_40hq], [50, 240, 12000]);
+  assert.equal(r.rows[1].units_per_40hq, null);
+  let old = await parseProductsXlsx(await sheet(['Produto', 'Preço', 'Unidades por 40HQ'], ['Copo', 2, 9000]));
+  assert.deepEqual([old.rows[0].units_per_box, old.rows[0].units_per_40hq], [null, 9000]);
+  old = await parseProductsXlsx(await sheet(['Produto', 'Preço', 'PCS/CTN', 'CTNs per 40HQ'], ['Copo', 2, 24, 500]));
+  assert.equal(old.rows[0].units_per_40hq, 12000);
+});

@@ -279,7 +279,9 @@ const PRODUCT_FIELDS = {
   price_note: 'Faixas de preço por quantidade ou preço em outra moeda, como aparece (ex.: "¥16,80 (500 pcs) / ¥15,20 (2000 pcs)" ou "US$2.35"). Vazio se não houver.',
   moq: 'Quantidade mínima de pedido (MOQ) como número inteiro, ex.: "1000". Sem MOQ = "".',
   incoterm: 'Incoterm do preço, se indicado (FOB, EXW, CIF…). Sem indicação = "".',
-  units_per_40hq: 'Unidades por container 40HQ como número inteiro, se informado. Sem informação = "".',
+  units_per_box: 'Unidades por caixa (caixa master / carton), como número inteiro, ex.: "50" para "50 pcs/ctn". Sem informação = "".',
+  boxes_per_40hq: 'Caixas (cartons) por container 40HQ como número inteiro, se informado. Sem informação = "".',
+  units_per_40hq: 'Unidades por container 40HQ como número inteiro, só se a foto informar o total de unidades. Sem informação = "".',
   specs: 'Outras informações úteis em uma linha: material, dimensões, peso, cores, embalagem/caixa master, código do item.',
 };
 
@@ -351,6 +353,8 @@ function createProductReader({ client, model = MODEL, fallbackModel = null } = {
         price_note: txt(p.price_note),
         moq: toNumber(p.moq, { integer: true }),
         incoterm: INCOTERMS.includes(incoterm) ? incoterm : '',
+        units_per_box: toNumber(p.units_per_box, { integer: true }),
+        boxes_per_40hq: toNumber(p.boxes_per_40hq, { integer: true }),
         units_per_40hq: toNumber(p.units_per_40hq, { integer: true }),
         specs: txt(p.specs, 500),
       };

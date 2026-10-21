@@ -111,6 +111,25 @@ const ICON_PATHS = {
 const ic = (name) => `<svg class="ic" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
 const FLAG_US = '<svg class="flag" viewBox="0 0 30 20" role="img" aria-label="Estados Unidos"><rect width="30" height="20" fill="#fff"/><path d="M0 0h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V7.7H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30v1.54H0zm0 3.08h30V20H0z" fill="#B22234"/><rect width="12" height="10.77" fill="#3C3B6E"/></svg>';
 const FORMULA = 'Estimado = (preço × câmbio da moeda + frete por unidade × câmbio do dólar) × (1 + % nacionalização)';
+
+// Embalagem nas listas de conferência (foto e planilha): Qtd por caixa e Caixas por container.
+// Sem as duas, vale o total por container lido (units_per_40hq), quando houver.
+const packInputs = (x) => `
+        <div class="row">
+          <div><label>Qtd por caixa</label><input data-k="units_per_box" inputmode="numeric" value="${esc(x.units_per_box ?? '')}" placeholder="ex.: 50"></div>
+          <div><label>Caixas por container</label><input data-k="boxes_per_40hq" inputmode="numeric" value="${esc(x.boxes_per_40hq ?? '')}" placeholder="ex.: 240"></div>
+        </div>
+        ${x.units_per_40hq && !(x.units_per_box && x.boxes_per_40hq) ? `<div class="hint">Total lido: ${Number(x.units_per_40hq).toLocaleString('pt-BR')} unidades por container (vale enquanto as caixas estiverem em branco).</div>` : ''}`;
+function packValues(x) {
+  const perBox = parseNum(x.units_per_box, { thousands: true });
+  const boxes = parseNum(x.boxes_per_40hq, { thousands: true });
+  for (const [v, label] of [[perBox, 'Qtd por caixa'], [boxes, 'Caixas por container']]) {
+    if (v !== null && !(Number.isInteger(v) && v > 0)) return { error: `${label} deve ser um número inteiro.` };
+  }
+  if ((perBox === null) !== (boxes === null)) return { error: 'informe a Qtd por caixa e as Caixas por container (as duas), ou deixe as duas em branco.' };
+  const total = parseNum(x.units_per_40hq, { thousands: true });
+  return { units_per_box: perBox, boxes_per_40hq: boxes, units_per_40hq: perBox && boxes ? perBox * boxes : (Number.isInteger(total) && total > 0 ? total : null) };
+}
 const ratesText = (x) => `¥1 = R$ ${fmtRate(ratesOf(x).CNY)} · US$1 = R$ ${fmtRate(ratesOf(x).USD)}`;
 const dateBr = (s) => (s ? new Date(s).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' }) : '');
 
@@ -1608,7 +1627,7 @@ async function viewProduct(id, query = new URLSearchParams()) {
       best: i === 0, o, units: p.units_per_40hq, productId: p.id, supplierId: o.supplier_id, photos: o.photos || [],
     })).join('')}
     </div>
-    <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container; não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
+    <p class="hint">${FORMULA} (${ratesText(p)}). Frete por unidade = frete 40HQ ÷ unidades por container (Qtd por caixa × Caixas por container); não é somado quando o Incoterm já inclui o frete (CFR, CIF, CPT, CIP, DAP, DPU, DDP).</p>`
     : `<div class="empty">Nenhum fornecedor vinculado a este produto.<br><a class="btn primary" href="#/products/${p.id}/edit">Adicionar fornecedor</a></div>`}
     <div class="meta">Atualizado ${dateBr(p.updated_at)}${p.updated_by_name ? ' por ' + esc(p.updated_by_name) : ''}</div>`;
   document.getElementById('photo')?.addEventListener('click', () => openLightbox(p.photo));
@@ -1958,7 +1977,10 @@ async function viewProductForm(id, query) {
     const filled = [];
     const set = (el, v, label) => { if (v == null || v === '' || String(el.value).trim()) return; el.value = v; el.classList.add('autofilled'); filled.push(label); };
     set(form.name, r.name, 'nome');
-    if (r.units_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim() && !legacyUnits) { legacyUnits = r.units_per_40hq; filled.push('unidades/40HQ'); }
+    if (r.units_per_box && r.boxes_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim()) {
+      set(form.units_per_box, r.units_per_box, 'qtd por caixa');
+      set(form.boxes_per_40hq, r.boxes_per_40hq, 'caixas por container');
+    } else if (r.units_per_40hq && !form.units_per_box.value.trim() && !form.boxes_per_40hq.value.trim() && !legacyUnits) { legacyUnits = r.units_per_40hq; filled.push('unidades/40HQ'); }
     const o = offers.find((x) => !String(x.price).trim()) || offers[0];
     if (r.price != null && !String(o.price).trim()) { o.price = String(r.price).replace('.', ','); o.currency = r.currency || 'CNY'; filled.push(`preço (${CUR_LABEL[o.currency]})`); }
     if (r.moq != null && !String(o.moq ?? '').trim()) { o.moq = r.moq; filled.push('MOQ'); }
@@ -2282,7 +2304,7 @@ async function viewProductScan(query) {
       const match = similarProducts(r.name, existing.filter((x) => x.id)).find((x) => x.strong);
       items.push({
         ref: newRef(), include: true, name: r.name, price: numText(r.price), currency: r.currency || 'CNY', moq: r.moq ?? '',
-        incoterm: incotermChosen ? defaultIncoterm : r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '',
+        incoterm: incotermChosen ? defaultIncoterm : r.incoterm || defaultIncoterm, units_per_40hq: r.units_per_40hq ?? '', units_per_box: r.units_per_box ?? '', boxes_per_40hq: r.boxes_per_40hq ?? '',
         nat: document.getElementById('nat').value, own_photo: null,
         notes: [r.name_original && `Nome original: ${r.name_original}`, tiers && `Preços: ${r.price_note}`, r.specs].filter(Boolean).join('\n'),
         photo, use_photo: products.length === 1, target: match ? match.p.id : '',
@@ -2311,8 +2333,9 @@ async function viewProductScan(query) {
         </div>
         <div class="row">
           <div><label>Nacionalização (%)</label><input data-k="nat" inputmode="decimal" value="${esc(it.nat ?? '')}" placeholder="ex.: 85"></div>
-          <div><label>Unid. por 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(it.units_per_40hq)}"></div>
+          <div></div>
         </div>
+        ${packInputs(it)}
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(it.notes)}</textarea></div>
         <div class="scan-photo">
           ${it.own_photo ? `<img src="${it.own_photo}" alt="Foto do produto" data-view-photo="${i}">
@@ -2421,16 +2444,16 @@ async function viewProductScan(query) {
       if (!String(it.name).trim()) return fail('informe o nome.');
       const price = parseNum(it.price);
       const moq = parseNum(it.moq, { thousands: true });
-      const units = parseNum(it.units_per_40hq, { thousands: true });
+      const pack = packValues(it);
       const nat = parseNum(it.nat);
-      if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(units) || Number.isNaN(nat)) return fail('verifique preço, MOQ, unidades e nacionalização.');
-      if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
+      if (Number.isNaN(price) || Number.isNaN(moq) || Number.isNaN(nat)) return fail('verifique preço, MOQ e nacionalização.');
+      if (pack.error) return fail(pack.error);
       // Com fornecedor escolhido, todo produto precisa de preço: sem ele não há oferta e o produto ficaria sem vínculo.
       if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
       const offer = sid
         ? { supplier_id: sid, price, currency: it.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: it.incoterm || null, nationalization_pct: nat ?? 0 } : null;
       if (it.target && !offer) return fail('para adicionar a oferta a um produto existente, escolha o fornecedor e informe o preço.');
-      jobs.push({ it, offer, units });
+      jobs.push({ it, offer, pack });
     }
     if (!jobs.length) return;
 
@@ -2438,18 +2461,18 @@ async function viewProductScan(query) {
     let saved = 0;
     let queued = 0;
     try {
-      for (const { it, offer, units } of jobs) {
+      for (const { it, offer, pack } of jobs) {
         saveBtn.textContent = `Salvando ${saved + queued + 1} de ${jobs.length}…`;
         let r;
         if (it.target) {
-          r = await addOfferOrQueue(Number(it.target), offer, it.name, { units });
+          r = await addOfferOrQueue(Number(it.target), offer, it.name, { units: pack.units_per_40hq });
           // Produto já existente: a foto tirada entra nas fotos deste fornecedor no produto.
           if (r.saved && it.own_photo && offer) {
             await api(`/api/products/${it.target}/photos`, { method: 'POST', body: { supplier_id: offer.supplier_id, photo: it.own_photo, photo_thumb: await makeThumb(it.own_photo) } })
               .catch(() => toast(`A foto de "${it.name}" não foi enviada; adicione pela tela do produto.`));
           }
         } else {
-          const body = { name: it.name.trim(), price_brl: null, units_per_40hq: units, notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
+          const body = { name: it.name.trim(), price_brl: null, ...pack, notes: it.notes, offers: offer ? [offer] : [], client_ref: it.ref };
           const photo = it.own_photo || (it.use_photo ? it.photo : null);
           if (photo) Object.assign(body, { photo, photo_thumb: await makeThumb(photo) });
           if (isAdmin()) body.company = company;
@@ -2529,12 +2552,9 @@ async function viewProductImport(query) {
         </div>
         <div class="row">
           <div><label>Nacionalização (%)</label><input data-k="nat" inputmode="decimal" value="${esc(r.nat)}" placeholder="ex.: 85"></div>
-          <div><label>Unid. por 40HQ</label><input data-k="units_per_40hq" inputmode="numeric" value="${esc(r.units_per_40hq)}"></div>
-        </div>
-        <div class="row">
           <div><label>Preço no Brasil (R$)</label><input data-k="price_brl" inputmode="decimal" value="${esc(r.price_brl)}"></div>
-          <div></div>
         </div>
+        ${packInputs(r)}
         <div><label>Observações</label><textarea data-k="notes" rows="2">${esc(r.notes)}</textarea></div>
         ${similar ? `<div class="dup-box"><div class="dup-title">${ic('alert')} Parecido com produto já cadastrado: ${esc(similar.p.name)}</div>
           <div class="hint">Se for o mesmo, desmarque “Cadastrar” e adicione a oferta no produto existente.</div></div>` : ''}
@@ -2566,7 +2586,7 @@ async function viewProductImport(query) {
       const r = await api('/api/products/import/parse', { method: 'POST', body: { file: await readFileAsDataUrl(file), ...(isAdmin() ? { company } : {}) }, timeout: 60_000 });
       if (r.error) { status.className = 'ocr-status err'; status.textContent = r.error; return; }
       rows = r.rows.map((x) => ({ ...x, include: true, price: numText(x.price), nat: numText(x.nat), price_brl: numText(x.price_brl),
-        moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', supplier_id: x.supplier_id ?? (!x.supplier_name && defaultSupplier ? defaultSupplier.id : '') }));
+        moq: x.moq ?? '', units_per_40hq: x.units_per_40hq ?? '', units_per_box: x.units_per_box ?? '', boxes_per_40hq: x.boxes_per_40hq ?? '', supplier_id: x.supplier_id ?? (!x.supplier_name && defaultSupplier ? defaultSupplier.id : '') }));
       const linked = rows.filter((x) => x.supplier_id).length;
       status.className = 'ocr-status ok';
       status.innerHTML = `✓ ${rows.length} produto(s) lido(s), ${linked} com fornecedor encontrado. Confira e corrija antes de salvar.`
@@ -2591,15 +2611,15 @@ async function viewProductImport(query) {
       const moq = parseNum(r.moq, { thousands: true });
       const nat = parseNum(r.nat);
       const priceBrl = parseNum(r.price_brl, { thousands: true });
-      const units = parseNum(r.units_per_40hq, { thousands: true });
-      if ([price, moq, nat, priceBrl, units].some(Number.isNaN)) return fail('verifique os números (preço, MOQ, nacionalização, preço no Brasil, unidades).');
-      if (units !== null && !(Number.isInteger(units) && units > 0)) return fail('unidades por 40HQ deve ser um número inteiro.');
+      const pack = packValues(r);
+      if ([price, moq, nat, priceBrl].some(Number.isNaN)) return fail('verifique os números (preço, MOQ, nacionalização, preço no Brasil).');
+      if (pack.error) return fail(pack.error);
       const sid = Number(r.supplier_id) || null;
       if (sid && price == null) return fail('informe o preço — sem preço o produto não fica vinculado ao fornecedor.');
       const notes = [String(r.notes || '').trim(),
         !sid && price != null ? `Preço da planilha: ${priceIn(price, r.currency)}${r.supplier_name ? ` · fornecedor: ${r.supplier_name}` : ''}` : ''].filter(Boolean).join('\n');
       const offer = sid ? { supplier_id: sid, price, currency: r.currency || 'CNY', moq: moq != null ? Math.round(moq) : null, incoterm: r.incoterm || null, nationalization_pct: nat ?? 0 } : null;
-      const body = { name: r.name.trim(), price_brl: priceBrl, units_per_40hq: units, notes, offers: offer ? [offer] : [], client_ref: r.ref || (r.ref = newRef()) };
+      const body = { name: r.name.trim(), price_brl: priceBrl, ...pack, notes, offers: offer ? [offer] : [], client_ref: r.ref || (r.ref = newRef()) };
       if (isAdmin()) body.company = company;
       jobs.push({ r, body });
     }
@@ -4130,7 +4150,7 @@ function renderFreightCard() {
         <input id="freight" name="freight" inputmode="decimal" placeholder="ex.: 3500"
           value="${st.freight_40hq_usd != null ? String(st.freight_40hq_usd).replace('.', ',') : ''}"></div>
       <p class="hint" style="margin:0">Vale para todas as empresas. Usado para calcular o frete por unidade dos produtos
-        (frete ÷ unidades por container 40HQ).${st.freight_updated_at ? ` Atualizado em ${dateBr(st.freight_updated_at)}${st.freight_updated_by ? ' por ' + esc(st.freight_updated_by) : ''}.` : ''}</p>
+        (frete ÷ unidades por container: Qtd por caixa × Caixas por container).${st.freight_updated_at ? ` Atualizado em ${dateBr(st.freight_updated_at)}${st.freight_updated_by ? ' por ' + esc(st.freight_updated_by) : ''}.` : ''}</p>
       <button class="btn primary" type="submit">Salvar frete</button>
     </form>`;
   box.querySelector('#freight-form').addEventListener('submit', async (e) => {
