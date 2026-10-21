@@ -894,6 +894,17 @@ async function viewSupplier(id, query = new URLSearchParams()) {
       </div>
       <div class="meta">Atualizado ${dateBr(s.updated_at)}${s.updated_by_name ? ' por ' + esc(s.updated_by_name) : ''}</div>
     </div>
+    <div class="card stack" style="margin-top:14px">
+      <div class="block-title">Fotos do fornecedor</div>
+      <div class="hint" style="margin-top:-6px">Stand, mostruário, pessoas — para lembrar quem é.</div>
+      <div class="offer-photos">
+        ${(s.photos || []).map((ph) => `<div class="offer-photo">
+          <img src="${esc(thumbUrl(ph.url))}" alt="" loading="lazy" data-full="${esc(ph.url)}">
+          <button type="button" class="offer-photo-del" data-del-sup-photo="${ph.id}" aria-label="Excluir foto" title="Excluir foto">${ic('trash')}</button>
+        </div>`).join('')}
+        ${(s.photos || []).length < 20 ? photoAddTiles('data-add-sup-photo', s.id) : ''}
+      </div>
+    </div>
     <h2>Produtos deste fornecedor (${s.products.length})</h2>
     ${addProductsMenuHtml({ supplierId: s.id, company: s.company_cnpj })}
     <div class="list" style="margin-top:12px">${s.products.length ? s.products.map((pr) => offerCardHtml({
@@ -907,6 +918,45 @@ async function viewSupplier(id, query = new URLSearchParams()) {
   bindMsgButtons();
   bindAddProductsMenu();
   bindOfferPhotos();
+  bindSupplierPhotos(s.id);
+}
+
+// Fotos do fornecedor (stand etc.): excluir e adicionar (câmera ou várias da galeria).
+function bindSupplierPhotos(supplierId) {
+  $app.querySelectorAll('[data-del-sup-photo]').forEach((b) => b.addEventListener('click', async () => {
+    if (!confirm('Excluir esta foto?')) return;
+    b.disabled = true;
+    try {
+      await api(`/api/suppliers/${supplierId}/photos/${b.dataset.delSupPhoto}`, { method: 'DELETE' });
+      toast('Foto excluída.');
+      router();
+    } catch (err) { b.disabled = false; toast(err.message); }
+  }));
+  $app.querySelectorAll('[data-add-sup-photo]').forEach((input) => input.addEventListener('change', async () => {
+    const files = [...input.files];
+    input.value = '';
+    if (!files.length) return;
+    const label = input.closest('label');
+    label.classList.add('busy');
+    const hash = location.hash;
+    const sent = await uploadSupplierPhotos(supplierId, files, (i) => { label.querySelector('small').textContent = `${i + 1} de ${files.length}…`; });
+    if (sent.error) toast(sent.count ? `${sent.count} foto(s) enviada(s). ${sent.error}` : sent.error);
+    else toast(sent.count > 1 ? `${sent.count} fotos adicionadas.` : 'Foto adicionada.');
+    if (location.hash === hash) router();
+  }));
+}
+// Envia fotos (arquivos ou data URLs já reduzidas) para o fornecedor; devolve { count, error }.
+async function uploadSupplierPhotos(supplierId, items, onStep = () => {}) {
+  let count = 0;
+  try {
+    for (const [i, it] of items.entries()) {
+      onStep(i);
+      const photo = typeof it === 'string' ? it : await resizeImage(it, 1280, 0.78);
+      await api(`/api/suppliers/${supplierId}/photos`, { method: 'POST', body: { photo, photo_thumb: await makeThumb(photo) } });
+      count++;
+    }
+    return { count, error: null };
+  } catch (err) { return { count, error: err.message }; }
 }
 
 // Ícones de WhatsApp e WeChat ao lado do telefone.
@@ -1236,6 +1286,9 @@ async function viewSupplierForm(id) {
       <div><label for="address">Endereço</label><textarea id="address" name="address" rows="2" placeholder="Rua, número, distrito, cidade">${esc(s.address)}</textarea></div>
       <div><label for="province">Província</label><select id="province" name="province">${provinceOptions(s.province)}</select></div>
       <div><label for="notes">Observações</label><textarea id="notes" name="notes">${esc(s.notes)}</textarea></div>
+      ${editing ? '' : `<div class="block-title block-sep">4. Fotos do fornecedor</div>
+      <div class="hint" style="margin-top:-6px">Opcional: stand, mostruário, pessoas — para lembrar quem é.</div>
+      <div class="offer-photos" id="stand-photos"></div>`}
       <div class="error-box" id="err" hidden></div>
       <div class="actions form-actions">
         ${editing ? '<button type="button" class="btn danger" id="del">Excluir</button>' : ''}
@@ -1309,6 +1362,31 @@ async function viewSupplierForm(id) {
       await cardJob.crop;
     } catch { toast('Não consegui abrir a foto do cartão.'); } finally { straighten.disabled = false; }
   });
+  // Fotos do stand (só no cadastro novo): enviadas logo depois de salvar o fornecedor.
+  const standPhotos = [];
+  const standBox = document.getElementById('stand-photos');
+  const renderStand = () => {
+    if (!standBox) return;
+    standBox.innerHTML = standPhotos.map((d, i) => `<div class="offer-photo"><img src="${d}" alt="" data-full="${d}">
+        <button type="button" class="offer-photo-del" data-del-stand="${i}" aria-label="Excluir foto">${ic('trash')}</button></div>`).join('')
+      + (standPhotos.length < 20 ? photoAddTiles('data-add-stand', 1) : '');
+  };
+  renderStand();
+  standBox?.addEventListener('click', (e) => {
+    const del = e.target.closest('[data-del-stand]');
+    if (del) { standPhotos.splice(Number(del.dataset.delStand), 1); renderStand(); return; }
+    const img = e.target.closest('img');
+    if (img) openLightbox(img.dataset.full);
+  });
+  standBox?.addEventListener('change', async (e) => {
+    if (!e.target.matches('[data-add-stand]')) return;
+    const files = [...e.target.files];
+    for (const f of files) {
+      if (standPhotos.length >= 20) break;
+      try { standPhotos.push(await resizeImage(f, 1280, 0.78)); } catch (err) { toast(err.message); }
+    }
+    renderStand();
+  });
   bindPhotoInput(photoBox, (d) => {
     cardPhoto = d; originalPhoto = d; removePhoto = false; delPhoto.hidden = false; undoCrop.hidden = true; straighten.hidden = true;
     cardJob = readBusinessCard(form, d, { onCrop });
@@ -1345,12 +1423,16 @@ async function viewSupplierForm(id) {
       const { saved } = await createOrQueue('supplier', body, body.name);
       state.suppliers = null;
       if (saved) {
-        toast('Fornecedor salvo.');
         finishCardJob(cardJob, saved.id, body.card_photo === cardJob?.photo);
+        if (standPhotos.length) {
+          const up = await uploadSupplierPhotos(saved.id, standPhotos, (i) => { btn.textContent = `Enviando fotos ${i + 1} de ${standPhotos.length}…`; });
+          toast(up.error ? `Fornecedor salvo, mas ${standPhotos.length - up.count} foto(s) não foram enviadas. Adicione pela tela do fornecedor.` : 'Fornecedor salvo.');
+        } else toast('Fornecedor salvo.');
         location.hash = `#/suppliers/${saved.id}`;
         return;
       }
-      toast('Sem internet: fornecedor guardado no celular. Ele será enviado quando a conexão voltar.');
+      toast(standPhotos.length ? 'Sem internet: fornecedor guardado no celular e enviado quando a conexão voltar. As fotos do stand precisam ser adicionadas depois, com internet.'
+        : 'Sem internet: fornecedor guardado no celular. Ele será enviado quando a conexão voltar.');
       location.hash = '#/suppliers';
     } catch (err) {
       if (cardJob) cardJob.submitting = false;

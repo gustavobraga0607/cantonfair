@@ -220,6 +220,13 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     for (const r of rows) await removeImage(q, cnpj, r.image_id);
   }
   const MAX_OFFER_PHOTOS = 12;
+  async function removeSupplierPhotos(q, cnpj, where, params) {
+    const rows = await q.all(`SELECT id, image_id FROM supplier_photos WHERE ${where}`, params);
+    if (!rows.length) return;
+    await q.run(`DELETE FROM supplier_photos WHERE id IN (${rows.map(() => '?').join(',')})`, rows.map((r) => r.id));
+    for (const r of rows) await removeImage(q, cnpj, r.image_id);
+  }
+  const MAX_SUPPLIER_PHOTOS = 20;
   // Foto das listas: a principal do produto ou, sem ela, a primeira foto de fornecedor.
   const listPhotoSql = (alias) => `COALESCE(${alias}.photo, (SELECT op.image_id FROM offer_photos op WHERE op.product_id = ${alias}.id ORDER BY op.id LIMIT 1))`;
 
@@ -742,6 +749,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     await db.tx(async (q) => {
       await q.run('DELETE FROM offer_photos WHERE product_id IN (SELECT id FROM products WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM offer_photos WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
+      await q.run('DELETE FROM supplier_photos WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM offers WHERE product_id IN (SELECT id FROM products WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM offers WHERE supplier_id IN (SELECT id FROM suppliers WHERE cnpj = ?)', [cnpj]);
       await q.run('DELETE FROM products WHERE cnpj = ?', [cnpj]);
@@ -823,7 +831,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
         photos: ph.map((x) => ({ id: x.id, url: photoUrl(x.image_id) })),
       };
     });
-    return { ...supplierOut(s), products };
+    return { ...supplierOut(s), products, photos: await supplierPhotos(s.id) };
   });
 
   // Província: só aceita as da lista (sem diferenciar maiúsculas); vazio = não informada.
@@ -1007,11 +1015,32 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const s = await loadSupplier(db, accessCnpj(user), params.id);
     await db.tx(async (q) => {
       await removeOfferPhotos(q, s.cnpj, 'supplier_id = ?', [s.id]);
+      await removeSupplierPhotos(q, s.cnpj, 'supplier_id = ?', [s.id]);
       await q.run('DELETE FROM suppliers WHERE id = ?', [s.id]);
       await removeImage(q, s.cnpj, s.card_photo);
       await removeImage(q, s.cnpj, s.card_photo_original);
     });
     return { ok: true };
+  });
+
+  // Fotos do fornecedor (stand etc.), para lembrar quem é.
+  const supplierPhotos = async (id) => (await db.all('SELECT id, image_id FROM supplier_photos WHERE supplier_id = ? ORDER BY id', [id]))
+    .map((r) => ({ id: r.id, url: photoUrl(r.image_id) }));
+  route('POST', '/api/suppliers/:id/photos', async ({ user, params, body }) => {
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
+    const { n } = await db.get('SELECT COUNT(*) AS n FROM supplier_photos WHERE supplier_id = ?', [s.id]);
+    if (Number(n) >= MAX_SUPPLIER_PHOTOS) throw new HttpError(400, `Limite de ${MAX_SUPPLIER_PHOTOS} fotos por fornecedor.`);
+    const img = parseImage(body.photo);
+    await db.tx(async (q) => {
+      const imageId = await saveImage(q, img, s.cnpj, parseThumb(body.photo_thumb));
+      await q.run('INSERT INTO supplier_photos (supplier_id, image_id, created_by, created_at) VALUES (?, ?, ?, ?)', [s.id, imageId, user.id, now()]);
+    });
+    return { status: 201, body: { photos: await supplierPhotos(s.id) } };
+  });
+  route('DELETE', '/api/suppliers/:id/photos/:photoId', async ({ user, params }) => {
+    const s = await loadSupplier(db, accessCnpj(user), params.id);
+    await db.tx((q) => removeSupplierPhotos(q, s.cnpj, 'id = ? AND supplier_id = ?', [toId(params.photoId), s.id]));
+    return { photos: await supplierPhotos(s.id) };
   });
 
   // --- produtos ---

@@ -17,7 +17,7 @@ async function setup({ adminEmails = [], readCard = null, readProducts = null, b
   let db;
   if (process.env.TEST_DATABASE_URL) {
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
-    await db.run('DROP TABLE IF EXISTS credit_ledger, credit_payments, expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes, offer_photos, schema_meta CASCADE')
+    await db.run('DROP TABLE IF EXISTS credit_ledger, credit_payments, expenses, offers, products, suppliers, images, sessions, itineraries, app_settings, users, companies, fx_quotes, offer_photos, supplier_photos, schema_meta CASCADE')
       .catch(() => {});
     await db.close();
     db = open({ databaseUrl: process.env.TEST_DATABASE_URL });
@@ -1219,4 +1219,26 @@ test('embalagem por fornecedor: cada oferta tem Qtd por caixa e Caixas por conta
   // tela do fornecedor mostra a embalagem dele
   const sup = (await a('GET', `/api/suppliers/${s2.id}`)).body;
   assert.equal(sup.products[0].units_per_40hq, 60000);
+});
+
+test('fotos do fornecedor (stand): adicionar, listar, excluir; somem com o fornecedor', async (t) => {
+  const { base, db, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const s = (await a('POST', '/api/suppliers', { name: 'S' })).body;
+  let r = await a('POST', `/api/suppliers/${s.id}/photos`, { photo: PNG, photo_thumb: PNG });
+  assert.equal(r.status, 201);
+  await a('POST', `/api/suppliers/${s.id}/photos`, { photo: PNG });
+  assert.equal((await b('POST', `/api/suppliers/${s.id}/photos`, { photo: PNG })).status, 404, 'outra empresa não');
+  const photos = (await a('GET', `/api/suppliers/${s.id}`)).body.photos;
+  assert.equal(photos.length, 2);
+  assert.equal((await fetch(base + photos[0].url)).status, 200);
+  r = await a('DELETE', `/api/suppliers/${s.id}/photos/${photos[0].id}`);
+  assert.equal(r.body.photos.length, 1);
+  const before = Number((await db.get('SELECT COUNT(*) AS n FROM images')).n);
+  await a('DELETE', `/api/suppliers/${s.id}`);
+  assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM images')).n), before - 1, 'imagem apagada junto');
 });
