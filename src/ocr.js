@@ -28,6 +28,7 @@ const PROVINCES = require('../public/provinces');
 const FIELDS = {
   company_name: 'Nome da empresa, preferencialmente em inglês/alfabeto latino como aparece no cartão.',
   company_name_local: 'Nome da empresa em chinês (ou outro alfabeto), se houver.',
+  company_name_pinyin: 'Nome da empresa em chinês convertido para pinyin, sem tons, palavras agrupadas e com inicial maiúscula (ex.: 宁波方圆锁业有限公司 → "Ningbo Fangyuan Suoye Youxian Gongsi"; 义乌市长城工艺品厂 → "Yiwu Shi Changcheng Gongyipin Chang"). Vazio se não houver nome em chinês.',
   contact_name: 'Nome da pessoa de contato, com cargo entre parênteses se houver (ex.: "Lily Chen (Sales Manager)").',
   phone: 'Telefone principal, em formato internacional (ex.: "+86 138 1234 5678"). Se houver mais de um telefone, escolha SEMPRE o que for WhatsApp ou WeChat (indicado por ícone, rótulo "WhatsApp"/"WeChat"/"微信"/"WA", ou por ser o mesmo número do WeChat/WhatsApp); se nenhum for, prefira o celular.',
   phone_whatsapp: 'true se o cartão indica que o telefone principal é WhatsApp (ícone ou rótulo junto ao número, ou mesmo número do WhatsApp). Senão, false.',
@@ -103,6 +104,27 @@ const isPhone = (v) => /^[+\d][\d\s()-]{6,}$/.test(String(v || '').trim()) && di
 
 // Com mais de um telefone no cartão, o salvo é sempre o de WhatsApp ou WeChat (é por onde os
 // fornecedores chineses respondem). Confere o que o modelo escolheu com os campos WhatsApp/WeChat.
+const hasHan = (t) => /[\u3400-\u9fff\uf900-\ufaff]/.test(String(t || ''));
+// Nome da empresa sempre em alfabeto latino: sem nome em inglês no cartão, usa o pinyin do nome chinês
+// (o da leitura, que entende o contexto; sem ele, conversão automática sílaba a sílaba).
+function pinyinOf(t) {
+  const { pinyin } = require('pinyin-pro');
+  return pinyin(String(t), { toneType: 'none', type: 'array', nonZh: 'consecutive', v: true })
+    .map((w) => w.trim()).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ')
+    .replace(/\s+([,.)])/g, '$1').replace(/\(\s+/g, '(');
+}
+function latinCompanyName(card) {
+  const out = { ...card };
+  const local = hasHan(out.company_name_local) ? out.company_name_local : hasHan(out.company_name) ? out.company_name : '';
+  if (local && (!out.company_name_pinyin || hasHan(out.company_name_pinyin))) out.company_name_pinyin = pinyinOf(local);
+  if (!out.company_name_pinyin) out.company_name_pinyin = '';
+  if (hasHan(out.company_name) || !out.company_name) {
+    if (hasHan(out.company_name) && !out.company_name_local) out.company_name_local = out.company_name;
+    out.company_name = out.company_name_pinyin || out.company_name || '';
+  }
+  return out;
+}
+
 function preferMessagingPhone(card) {
   const out = { ...card };
   const same = (a, b) => digits(a) && digits(a).slice(-8) === digits(b).slice(-8);
@@ -207,7 +229,7 @@ function createCardReader({ client, model = MODEL, fallbackModel = null } = {}) 
     }
     if (!PROVINCES.some((p) => p.name === out.province)) out.province = '';
     out.province = provinceFromAddress(out.address, out.province);
-    return preferMessagingPhone(out);
+    return latinCompanyName(preferMessagingPhone(out));
   }
 
   return function readCard(mime, base64, meta) {
@@ -435,5 +457,5 @@ const configLabel = () => `${PRICES[envModel()]?.label || envModel()} + ${PRICES
 
 module.exports = {
   createCardReader, cardReaderFromEnv, createCornerReader, cornerReaderFromEnv, createProductReader, productReaderFromEnv, benchReadersFromEnv, OcrError, FIELDS,
-  preferMessagingPhone, toNumber, provinceFromAddress, guardCurrency, cardCorners, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
+  preferMessagingPhone, latinCompanyName, toNumber, provinceFromAddress, guardCurrency, cardCorners, priceFromText, PRICES, MODEL, FALLBACK_MODEL, CONFIG_ID, configLabel, envModel, envFallback,
 };

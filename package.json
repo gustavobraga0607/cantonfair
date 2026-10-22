@@ -16,6 +16,7 @@
     "@anthropic-ai/sdk": "0.133.0",
     "@vercel/functions": "3.9.9",
     "exceljs": "4.4.0",
-    "pg": "8.13.1"
+    "pg": "8.13.1",
+    "pinyin-pro": "3.29.4"
   }
 }

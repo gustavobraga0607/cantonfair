@@ -1157,7 +1157,7 @@ function applyCardToForm(form, card) {
     el.classList.add('autofilled');
     filled.push(label);
   };
-  fill('name', card.company_name || card.company_name_local, 'nome');
+  fill('name', card.company_name || card.company_name_pinyin || card.company_name_local, 'nome'); // nome em pinyin quando o cartão só tem chinês
   fill('contact_name', card.contact_name, 'contato');
   const phoneBefore = form.phone.value;
   fill('phone', card.phone || card.whatsapp, 'telefone');

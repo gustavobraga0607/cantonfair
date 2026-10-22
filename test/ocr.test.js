@@ -245,3 +245,14 @@ test('cantos do cartão: consulta leve (esforço mínimo) separada da leitura do
   assert.equal(calls[0].max_tokens, 2000);
   assert.deepEqual(Object.keys(calls[0].output_config.format.schema.properties), ['card_corners']);
 });
+
+test('cartão só com nome em chinês: nome do fornecedor em pinyin (o chinês fica guardado)', () => {
+  const { latinCompanyName } = require('../src/ocr');
+  let c = latinCompanyName({ company_name: '义乌市长城工艺品厂', company_name_local: '', company_name_pinyin: 'Yiwu Shi Changcheng Gongyipin Chang' });
+  assert.equal(c.company_name, 'Yiwu Shi Changcheng Gongyipin Chang', 'usa o pinyin da leitura');
+  assert.equal(c.company_name_local, '义乌市长城工艺品厂');
+  c = latinCompanyName({ company_name: '', company_name_local: '宁波方圆锁业有限公司', company_name_pinyin: '' });
+  assert.equal(c.company_name, 'Ning Bo Fang Yuan Suo Ye You Xian Gong Si', 'sem pinyin da leitura: conversão automática');
+  c = latinCompanyName({ company_name: 'FANG YUAN LOCK CO.,LTD', company_name_local: '宁波方圆锁业有限公司', company_name_pinyin: 'Ningbo Fangyuan Suoye Youxian Gongsi' });
+  assert.equal(c.company_name, 'FANG YUAN LOCK CO.,LTD', 'nome em inglês do cartão continua');
+});
