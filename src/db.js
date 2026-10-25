@@ -268,6 +268,14 @@ const CLEANUP_SQL = [
    WHERE u.role = 'admin' AND u.created_at < '2026-10-18'
      AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.cnpj = u.cnpj AND l.note = 'Cortesia de R$ 10 (20 min) para o administrador')
    GROUP BY u.cnpj`,
+  // Cortesia única: 1 hora de intérprete para cada empresa já cadastrada (o saldo é da equipe).
+  // A nota impede crédito duplicado; a data limita às empresas que existiam no dia.
+  `INSERT INTO credit_ledger (cnpj, user_id, seconds, kind, note, created_at)
+   SELECT u.cnpj, MIN(u.id), 3600, 'grant', 'Cortesia: 1 hora de intérprete', '2026-10-25T12:00:00.000Z'
+   FROM users u
+   WHERE u.created_at < '2026-10-26'
+     AND NOT EXISTS (SELECT 1 FROM credit_ledger l WHERE l.cnpj = u.cnpj AND l.note = 'Cortesia: 1 hora de intérprete')
+   GROUP BY u.cnpj`,
 ];
 
 // Índices criados depois (bancos existentes também recebem).

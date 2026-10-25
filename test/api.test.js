@@ -1242,3 +1242,18 @@ test('fotos do fornecedor (stand): adicionar, listar, excluir; somem com o forne
   await a('DELETE', `/api/suppliers/${s.id}`);
   assert.equal(Number((await db.get('SELECT COUNT(*) AS n FROM images')).n), before - 1, 'imagem apagada junto');
 });
+
+test('cortesia de 1 hora de intérprete para cada empresa existente (uma vez só)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'cantonfair-'));
+  let db = open({ dataDir: dir });
+  const t = '2026-10-20T00:00:00.000Z';
+  await db.run("INSERT INTO companies (cnpj, name, exchange_rate, created_at) VALUES ('11222333000181', 'A', 5.5, ?), ('11444777000161', 'B', 5.5, ?)", [t, t]);
+  await db.run("INSERT INTO users (name, email, password_hash, cnpj, created_at) VALUES ('a', 'a@x', 'h', '11222333000181', ?), ('a2', 'a2@x', 'h', '11222333000181', ?), ('b', 'b@x', 'h', '11444777000161', ?)", [t, t, t]);
+  await db.close();
+  db = open({ dataDir: dir }); // migração roda ao abrir
+  await db.close();
+  db = open({ dataDir: dir }); // e de novo: não duplica
+  const rows = await db.all("SELECT cnpj, SUM(seconds) AS s FROM credit_ledger WHERE note = 'Cortesia: 1 hora de intérprete' GROUP BY cnpj ORDER BY cnpj");
+  assert.deepEqual(rows.map((r) => [r.cnpj, Number(r.s)]), [['11222333000181', 3600], ['11444777000161', 3600]]);
+  await db.close();
+});
