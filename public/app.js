@@ -660,6 +660,38 @@ function companyTag(cnpj) {
   return isAdmin() && cnpj ? `<span class="badge company" title="Empresa">${ic('building')} ${esc(companyLabel(cnpj))}</span>` : '';
 }
 
+// Administrador: mudar o fornecedor ou o produto de empresa (na tela de edição).
+const moveCompanyHtml = (current, what) => `<div><label for="move-company">Empresa</label>
+  <div class="move-company"><select id="move-company">${companyOptions(current)}</select>
+    <button type="button" class="btn small" id="move-btn" disabled>Mudar empresa</button></div>
+  <div class="hint">Como administrador, você pode passar este ${what} para outra empresa.</div></div>`;
+function bindMoveCompany(kind, id, current) {
+  const sel = document.getElementById('move-company');
+  const btn = document.getElementById('move-btn');
+  if (!sel) return;
+  sel.addEventListener('change', () => { btn.disabled = sel.value === current; });
+  btn.addEventListener('click', async () => {
+    const to = sel.value;
+    const name = companyLabel(to);
+    btn.disabled = true;
+    try {
+      const url = `/api/admin/${kind === 'supplier' ? 'suppliers' : 'products'}/${id}/move`;
+      const d = await api(url, { method: 'POST', body: { cnpj: to, dry: true } });
+      const lines = kind === 'supplier'
+        ? [d.moved_products ? `${plural(d.moved_products, 'produto que só tem este fornecedor vai', 'produtos que só têm este fornecedor vão')} junto.` : '',
+          d.removed_offers ? `Em ${plural(d.removed_offers, 'produto', 'produtos')} com outros fornecedores, a oferta dele será removida.` : '']
+        : [d.removed_offers ? `${plural(d.removed_offers, 'oferta de fornecedor', 'ofertas de fornecedores')} da empresa atual será(ão) removida(s) (passe o fornecedor antes, se quiser manter).` : ''];
+      if (!confirm([`Passar este ${kind === 'supplier' ? 'fornecedor' : 'produto'} para ${name}?`, ...lines.filter(Boolean), 'As fotos vão junto.'].join('\n\n'))) {
+        btn.disabled = false; return;
+      }
+      await api(url, { method: 'POST', body: { cnpj: to } });
+      state.suppliers = null;
+      toast(`Agora é da empresa ${name}.`);
+      location.hash = kind === 'supplier' ? `#/suppliers/${id}` : `#/products/${id}`;
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  });
+}
+
 function companyOptions(selected, { all = false } = {}) {
   return (all ? `<option value="all" ${selected === 'all' ? 'selected' : ''}>Todas as empresas</option>` : '') +
     (state.me.companies || []).map((c) => `<option value="${esc(c.cnpj)}" ${c.cnpj === selected ? 'selected' : ''}>
@@ -1262,7 +1294,7 @@ async function viewSupplierForm(id) {
     ? 'Fotografe o cartão ou escolha da galeria — os dados serão preenchidos automaticamente' : 'Fotografe o cartão ou escolha da galeria';
   const companyField = !isAdmin() ? ''
     : editing
-      ? `<div><label>Empresa</label><div>${esc(s.company_name || companyLabel(s.company_cnpj))}</div></div>`
+      ? moveCompanyHtml(s.company_cnpj, 'fornecedor')
       : `<div><label for="company">Empresa</label><select id="company" name="company">${companyOptions(defaultCompany())}</select>
           <div class="hint">Como administrador, você pode cadastrar para qualquer empresa.</div></div>`;
   $app.innerHTML = `
@@ -1443,6 +1475,7 @@ async function viewSupplierForm(id) {
     }
   });
   if (editing) {
+    bindMoveCompany('supplier', s.id, s.company_cnpj);
     document.getElementById('del').addEventListener('click', async () => {
       if (!confirm('Excluir este fornecedor? As ofertas dele nos produtos também serão removidas.')) return;
       try {
@@ -1817,7 +1850,7 @@ async function viewProductForm(id, query) {
 
   const companyField = !isAdmin() ? ''
     : editing
-      ? `<div class="card"><div class="item-sub">Empresa</div><div>${esc(p.company_name || companyLabel(company))}</div></div>`
+      ? `<div class="card">${moveCompanyHtml(p.company_cnpj || company, 'produto')}</div>`
       : `<div class="card"><label for="company">Empresa</label><select id="company">${companyOptions(company)}</select>
           <div class="hint">Os fornecedores disponíveis são os desta empresa.</div></div>`;
   const bindCompany = () => document.getElementById('company')?.addEventListener('change', (e) => {
@@ -1828,6 +1861,7 @@ async function viewProductForm(id, query) {
     $app.innerHTML = `${companyField}<div class="empty">Cadastre um fornecedor ${isAdmin() ? 'nesta empresa ' : ''}antes de cadastrar produtos.<br>
       <a class="btn primary" href="#/suppliers/new">Cadastrar fornecedor</a></div>`;
     bindCompany();
+    if (editing) bindMoveCompany('product', p.id, p.company_cnpj);
     return;
   }
 
@@ -2280,6 +2314,7 @@ async function viewProductForm(id, query) {
   });
 
   if (editing) {
+    bindMoveCompany('product', p.id, p.company_cnpj);
     document.getElementById('del').addEventListener('click', async () => {
       if (!confirm('Excluir este produto?')) return;
       try {

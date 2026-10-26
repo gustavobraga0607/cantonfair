@@ -660,3 +660,6 @@ body.map-mode main { display: none; }
 .item.selected .sel-check { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
 .sel-check .ic { width: 15px; height: 15px; }
 .toolbar #sel-start { flex: none; }
+.move-company { display: flex; gap: 8px; align-items: center; }
+.move-company select { flex: 1; min-width: 0; }
+.move-company .btn { flex: none; }

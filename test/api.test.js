@@ -1257,3 +1257,47 @@ test('cortesia de 1 hora de intérprete para cada empresa existente (uma vez só
   assert.deepEqual(rows.map((r) => [r.cnpj, Number(r.s)]), [['11222333000181', 3600], ['11444777000161', 3600]]);
   await db.close();
 });
+
+test('administrador muda fornecedor e produto de empresa', async (t) => {
+  const { base, close } = await setup({ adminEmails: ['chefe@br.com'] });
+  t.after(close);
+  const admin = client(base);
+  const a = client(base);
+  const b = client(base);
+  await admin('POST', '/api/register', { name: 'Chefe', email: 'chefe@br.com', password: '12345678', cnpj: '12ABC34501DE35' });
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const s1 = (await a('POST', '/api/suppliers', { name: 'S1', card_photo: PNG })).body;
+  const s2 = (await a('POST', '/api/suppliers', { name: 'S2' })).body;
+  await a('POST', `/api/suppliers/${s1.id}/photos`, { photo: PNG });
+  const solo = (await a('POST', '/api/products', { name: 'Só S1', photo: PNG, offers: [{ supplier_id: s1.id, price: 1 }] })).body;
+  await a('POST', `/api/products/${solo.id}/photos`, { supplier_id: s1.id, photo: PNG });
+  const both = (await a('POST', '/api/products', { name: 'S1 e S2', offers: [{ supplier_id: s1.id, price: 1 }, { supplier_id: s2.id, price: 2 }] })).body;
+
+  assert.equal((await a('POST', `/api/admin/suppliers/${s1.id}/move`, { cnpj: '11444777000161' })).status, 403, 'só administrador');
+  let r = await admin('POST', `/api/admin/suppliers/${s1.id}/move`, { cnpj: '11444777000161', dry: true });
+  assert.deepEqual(r.body, { moved_products: 1, removed_offers: 1 });
+  r = await admin('POST', `/api/admin/suppliers/${s1.id}/move`, { cnpj: '11.444.777/0001-61' });
+  assert.equal(r.status, 200);
+  // empresa B vê o fornecedor, o produto que só tinha ele e as fotos
+  const sb = (await b('GET', `/api/suppliers/${s1.id}`)).body;
+  assert.equal(sb.products.length, 1);
+  assert.equal(sb.photos.length, 1);
+  const unsigned = (u) => u.split('/').slice(0, 3).join('/');
+  assert.equal((await b('GET', unsigned(sb.card_photo))).status, 200, 'cartão passou para a empresa B');
+  const pb = (await b('GET', `/api/products/${solo.id}`)).body;
+  assert.equal(pb.offers[0].supplier_id, s1.id);
+  assert.equal(pb.offers[0].photos.length, 1);
+  assert.equal((await b('GET', unsigned(pb.photo))).status, 200);
+  // empresa A: o produto compartilhado ficou só com S2
+  assert.deepEqual((await a('GET', `/api/products/${both.id}`)).body.offers.map((o) => o.supplier_id), [s2.id]);
+  assert.equal((await a('GET', `/api/suppliers/${s1.id}`)).status, 404);
+
+  // produto: muda e perde as ofertas de fornecedores da empresa antiga
+  r = await admin('POST', `/api/admin/products/${both.id}/move`, { cnpj: '11444777000161', dry: true });
+  assert.equal(r.body.removed_offers, 1);
+  r = await admin('POST', `/api/admin/products/${both.id}/move`, { cnpj: '11444777000161' });
+  assert.equal(r.body.removed_offers, 1);
+  assert.equal((await b('GET', `/api/products/${both.id}`)).body.offers.length, 0);
+  assert.equal((await admin('POST', `/api/admin/products/${both.id}/move`, { cnpj: '11444777000161' })).status, 400, 'já é desta empresa');
+});

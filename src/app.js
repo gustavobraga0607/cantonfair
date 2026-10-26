@@ -736,6 +736,69 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     return { ok: true };
   });
 
+  // ---------- administrador: mudar fornecedor ou produto de empresa ----------
+  // As ofertas ligam produtos a fornecedores da mesma empresa, então a mudança leva o que depende dela:
+  // - produto: vai com as ofertas de fornecedores que já estão na empresa nova; as demais saem.
+  // - fornecedor: leva os produtos em que é o único fornecedor; nos demais, a oferta dele sai.
+  // As imagens (fotos, cartões) passam para a empresa nova. { dry: true } só conta.
+  async function moveProduct(q, p, to) {
+    const offers = await q.all('SELECT o.supplier_id, s.cnpj FROM offers o JOIN suppliers s ON s.id = o.supplier_id WHERE o.product_id = ?', [p.id]);
+    const drop = offers.filter((o) => o.cnpj !== to).map((o) => Number(o.supplier_id));
+    if (drop.length) {
+      const marks = drop.map(() => '?').join(',');
+      await removeOfferPhotos(q, p.cnpj, `product_id = ? AND supplier_id IN (${marks})`, [p.id, ...drop]);
+      await q.run(`DELETE FROM offers WHERE product_id = ? AND supplier_id IN (${marks})`, [p.id, ...drop]);
+    }
+    const imgs = [p.photo, ...(await q.all('SELECT image_id FROM offer_photos WHERE product_id = ?', [p.id])).map((r) => r.image_id)].filter(Boolean);
+    if (imgs.length) await q.run(`UPDATE images SET cnpj = ? WHERE cnpj = ? AND id IN (${imgs.map(() => '?').join(',')})`, [to, p.cnpj, ...imgs]);
+    await q.run('UPDATE products SET cnpj = ?, updated_at = ? WHERE id = ?', [to, now(), p.id]);
+    return drop.length;
+  }
+  async function moveTarget(body, from) {
+    const to = cnpjUtil.clean(body.cnpj);
+    if (!(await getCompany(to))) throw new HttpError(400, 'Empresa não encontrada.');
+    if (to === from) throw new HttpError(400, 'O cadastro já é desta empresa.');
+    return to;
+  }
+
+  route('POST', '/api/admin/products/:id/move', async ({ user, params, body }) => {
+    requireAdminUser(user);
+    const p = await db.get('SELECT id, cnpj, photo FROM products WHERE id = ?', [toId(params.id)]);
+    if (!p) throw new HttpError(404, 'Produto não encontrado.');
+    const to = await moveTarget(body, p.cnpj);
+    if (body.dry) {
+      const { n } = await db.get('SELECT COUNT(*) AS n FROM offers o JOIN suppliers s ON s.id = o.supplier_id WHERE o.product_id = ? AND s.cnpj <> ?', [p.id, to]);
+      return { removed_offers: Number(n) };
+    }
+    const removed = await db.tx((q) => moveProduct(q, p, to));
+    return { ok: true, removed_offers: removed };
+  });
+
+  route('POST', '/api/admin/suppliers/:id/move', async ({ user, params, body }) => {
+    requireAdminUser(user);
+    const s = await db.get('SELECT id, cnpj, card_photo, card_photo_original FROM suppliers WHERE id = ?', [toId(params.id)]);
+    if (!s) throw new HttpError(404, 'Fornecedor não encontrado.');
+    const to = await moveTarget(body, s.cnpj);
+    // Produtos com oferta deste fornecedor e quantos fornecedores cada um tem.
+    const links = await db.all(`SELECT p.id, p.cnpj, p.photo, (SELECT COUNT(*) FROM offers x WHERE x.product_id = p.id) AS n
+      FROM offers o JOIN products p ON p.id = o.product_id WHERE o.supplier_id = ?`, [s.id]);
+    const solo = links.filter((l) => Number(l.n) === 1);
+    const shared = links.filter((l) => Number(l.n) > 1);
+    if (body.dry) return { moved_products: solo.length, removed_offers: shared.length };
+    await db.tx(async (q) => {
+      for (const l of shared) {
+        await removeOfferPhotos(q, s.cnpj, 'product_id = ? AND supplier_id = ?', [l.id, s.id]);
+        await q.run('DELETE FROM offers WHERE product_id = ? AND supplier_id = ?', [l.id, s.id]);
+      }
+      const imgs = [s.card_photo, s.card_photo_original,
+        ...(await q.all('SELECT image_id FROM supplier_photos WHERE supplier_id = ?', [s.id])).map((r) => r.image_id)].filter(Boolean);
+      if (imgs.length) await q.run(`UPDATE images SET cnpj = ? WHERE cnpj = ? AND id IN (${imgs.map(() => '?').join(',')})`, [to, s.cnpj, ...imgs]);
+      await q.run('UPDATE suppliers SET cnpj = ?, updated_at = ? WHERE id = ?', [to, now(), s.id]);
+      for (const l of solo) await moveProduct(q, l, to); // o fornecedor já está na empresa nova: a oferta fica
+    });
+    return { ok: true, moved_products: solo.length, removed_offers: shared.length };
+  });
+
   // Exclui a empresa e todos os dados dela (fornecedores, produtos, roteiros, fotos).
   // Só é permitido quando não há mais usuários vinculados a ela.
   route('DELETE', '/api/admin/companies/:cnpj', async ({ user, params }) => {
