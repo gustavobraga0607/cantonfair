@@ -8,6 +8,7 @@ const cnpjUtil = require('./cnpj');
 const auth = require('./auth');
 const { buildRanking, estimateBrl, round2, round4, freightPerUnit, offerFreight, offerUnits } = require('./calc');
 const { buildTemplate, parseProductsXlsx } = require('./product-import');
+const { parseWechatBill } = require('./wechat-import');
 const { OcrError, PRICES, CONFIG_ID, configLabel, envModel } = require('./ocr');
 const ocrBench = require('./bench/ocr-bench');
 const { fetchCnyBrl } = require('./fx');
@@ -1356,6 +1357,42 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
       if (again) return expenseOut(again);
       throw err;
     }
+  });
+
+  // Fatura do WeChat Pay: leitura para conferência (nada é gravado) e gravação das linhas escolhidas.
+  route('POST', '/api/expenses/import/wechat', async ({ user, body }) => {
+    const m = /^data:[\w./+-]*;base64,([A-Za-z0-9+/=]+)$/.exec(String(body.file || ''));
+    if (!m) throw new HttpError(400, 'Envie a fatura do WeChat (.xlsx ou .csv).');
+    const buf = Buffer.from(m[1], 'base64');
+    const existing = await db.all('SELECT id, spent_on, amount, currency, client_ref, description FROM expenses WHERE user_id = ?', [user.id]);
+    try {
+      return await parseWechatBill(buf, existing);
+    } catch (err) {
+      console.error('Fatura do WeChat:', err.message);
+      throw new HttpError(400, 'Não consegui ler esta fatura. Envie o arquivo exportado pelo WeChat (.xlsx).');
+    }
+  });
+
+  route('POST', '/api/expenses/import', async ({ user, body }) => {
+    const items = Array.isArray(body.items) ? body.items.slice(0, 1000) : [];
+    if (!items.length) throw new HttpError(400, 'Nenhuma despesa escolhida.');
+    const rows = items.map((it, i) => {
+      try {
+        return { ...expenseFields({ ...it, payment: it.payment || 'wechat' }), ref: clientRef(it.client_ref) };
+      } catch (err) { throw new HttpError(400, `Linha ${i + 1}: ${err.message}`); }
+    });
+    const t = now();
+    let created = 0;
+    await db.tx(async (q) => {
+      for (const f of rows) {
+        if (f.ref && await q.get('SELECT 1 AS x FROM expenses WHERE user_id = ? AND client_ref = ?', [user.id, f.ref])) continue; // já importada
+        await q.run(`INSERT INTO expenses (user_id, spent_on, description, category, payment, amount, currency, rate_brl, amount_brl, client_ref, created_at, updated_at)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [user.id, f.spent_on, f.description, f.category, f.payment, f.amount, f.currency, f.rate_brl, f.amount_brl, f.ref, t, t]);
+        created++;
+      }
+    });
+    return { created, skipped: rows.length - created };
   });
 
   route('PUT', '/api/expenses/:id', async ({ user, params, body }) => {

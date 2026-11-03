@@ -1301,3 +1301,56 @@ test('administrador muda fornecedor e produto de empresa', async (t) => {
   assert.equal((await b('GET', `/api/products/${both.id}`)).body.offers.length, 0);
   assert.equal((await admin('POST', `/api/admin/products/${both.id}/move`, { cnpj: '11444777000161' })).status, 400, 'já é desta empresa');
 });
+
+async function wechatBill(lines) {
+  const ExcelJS = require('exceljs');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Sheet1');
+  ws.addRow(['微信支付账单明细']);
+  ws.addRow(['微信昵称：[Teste]']);
+  ws.addRow([]);
+  ws.addRow(['----------------------微信支付账单明细列表--------------------']);
+  ws.addRow(['交易时间', '交易类型', '交易对方', '商品', '收/支', '金额(元)', '支付方式', '当前状态', '交易单号', '商户单号', '备注']);
+  for (const l of lines) ws.addRow(l);
+  return 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + Buffer.from(await wb.xlsx.writeBuffer()).toString('base64');
+}
+
+test('fatura do WeChat: só saídas, sem reembolsadas, sem duplicar', async (t) => {
+  const { base, close } = await setup();
+  t.after(close);
+  const a = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  const d = (s) => new Date(`${s}Z`);
+  const file = await wechatBill([
+    [d('2026-10-31T21:30:22'), '扫二维码付款', '发发烟酒茶商行', '收款方备注:二维码收款', '支出', 20, '零钱', '已转账', '531100023262232026103119237162', '1', '/'],
+    [d('2026-10-31T14:55:59'), '商户消费', '麦当劳', '广东三元麦当劳食品有限公司', '支出', 51.5, '零钱', '支付成功', '420000323420261031258854', '2', '/'],
+    [d('2026-10-31T06:14:05'), '商户消费', '京东', '京东-订单编号3668453010571528', '支出', 1843, '零钱', '已全额退款', '450000052020261031623132', '3', '/'],
+    [d('2026-10-30T10:00:00'), '商户消费', '滴滴出行', '快车', '支出', 40, '零钱', '已退款(￥10.00)', '450000052020261030000001', '4', '/'],
+    [d('2026-10-31T10:46:43'), '京东商城-退款', '京东商城', '京东商城', '收入', 1843, '零钱', '已全额退款', '503015092120261031599287', '/', '/'],
+    [d('2026-10-29T09:00:00'), '商户消费', '酒店', '如家酒店', '支出', 300, '零钱', '支付成功', '450000052020261029000002', '5', '/'],
+  ]);
+  // despesa lançada à mão no mesmo dia e valor do hotel
+  await a('POST', '/api/expenses', { spent_on: '2026-10-29', description: 'Hotel', category: 'hospedagem', currency: 'CNY', amount: 300, rate_brl: 0.75 });
+  let r = await a('POST', '/api/expenses/import/wechat', { file });
+  assert.equal(r.status, 200);
+  const rows = r.body.rows;
+  assert.equal(rows.length, 5, 'só as saídas (支出)');
+  const by = (desc) => rows.find((x) => x.description.includes(desc));
+  assert.deepEqual([by('JD.com').status, by('JD.com').include], ['refunded', false]);
+  assert.deepEqual([by('DiDi').amount, by('DiDi').category, by('DiDi').include], [30, 'transporte', true], 'reembolso parcial: valor líquido');
+  assert.equal(by("McDonald's").category, 'alimentacao');
+  assert.equal(by('如家').status, 'possible_duplicate');
+  assert.equal(by('如家').include, false);
+  assert.equal(rows[0].spent_on, '2026-10-29', 'data local da China');
+
+  const items = rows.filter((x) => x.include).map((x) => ({ client_ref: x.ref, spent_on: x.spent_on, description: x.description, category: x.category, currency: 'CNY', amount: x.amount, rate_brl: 0.75 }));
+  r = await a('POST', '/api/expenses/import', { items });
+  assert.deepEqual(r.body, { created: 3, skipped: 0 });
+  // de novo: nada duplica, e a releitura marca como já importadas
+  r = await a('POST', '/api/expenses/import', { items });
+  assert.deepEqual(r.body, { created: 0, skipped: 3 });
+  r = await a('POST', '/api/expenses/import/wechat', { file });
+  assert.equal(r.body.rows.filter((x) => x.status === 'imported').length, 3);
+  assert.equal((await a('GET', '/api/expenses')).body.length, 4);
+  assert.equal((await a('GET', '/api/expenses')).body.find((e) => e.description.startsWith('DiDi')).payment, 'wechat');
+});

@@ -3024,6 +3024,7 @@ async function viewExpenses(query) {
     </div>
     <div class="actions" style="margin:12px 0">
       <a class="btn primary" href="#/expenses/new">+ Lançar despesa</a>
+      <a class="btn" href="#/expenses/import-wechat">${MSG_ICONS.wechat} Importar do WeChat</a>
       ${all.length ? `<button type="button" class="btn" id="export">${ic('download')} Exportar planilha</button>` : ''}
     </div>
     ${filter ? `<div class="hint" style="margin-bottom:8px">Mostrando só: <b>${esc(catInfo(filter)[2])}</b> · <a href="#/expenses">ver todas</a></div>` : ''}
@@ -3046,6 +3047,110 @@ async function viewExpenses(query) {
     <a class="fab" href="#/expenses/new" aria-label="Lançar despesa">+</a>`;
 
   document.getElementById('export')?.addEventListener('click', () => exportExpenses(all));
+}
+
+// Importa a fatura do WeChat Pay: o app lê as saídas, tira as reembolsadas e as já lançadas,
+// e o usuário confere (categoria, marcar/desmarcar) antes de gravar.
+async function viewWechatImport() {
+  setChrome({ title: 'Importar do WeChat', tab: 'account', back: '#/expenses' });
+  const rates = await expenseRates();
+  let rows = [];
+  $app.innerHTML = `
+    <div class="card stack">
+      <div class="block-title">1. Exportar a fatura no WeChat</div>
+      <ol class="steps">
+        <li>No WeChat: <b>Eu (我)</b> → <b>Serviços (服务)</b> → <b>Carteira (钱包)</b> → <b>Faturas (账单)</b>.</li>
+        <li>Toque em <b>⋯</b> ou em <b>Baixar fatura (下载账单)</b> → <b>Para conferência pessoal (用于个人对账)</b> e escolha o período da viagem.</li>
+        <li>O WeChat envia o arquivo (.xlsx) pela conversa do WeChat Pay ou por e-mail. Se vier em .zip, abra-o e use a planilha de dentro.</li>
+      </ol>
+      <div class="block-title block-sep">2. Escolher o arquivo</div>
+      <label class="btn block">${ic('receipt')} Escolher a fatura (.xlsx)
+        <input type="file" id="wx-file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></label>
+      <div class="ocr-status" id="wx-status" hidden></div>
+      <p class="hint" style="margin:0">Entram só as saídas (支出). Compras reembolsadas não entram; com reembolso parcial, entra o valor líquido.
+        Despesas já importadas ou já lançadas com a mesma data e valor ficam desmarcadas.</p>
+    </div>
+    <div id="wx-rows"></div>
+    <div class="error-box" id="err" hidden></div>
+    <div class="actions form-actions" id="wx-actions" hidden><button class="btn primary" type="button" id="wx-save">Importar</button></div>`;
+  const status = document.getElementById('wx-status');
+  const list = document.getElementById('wx-rows');
+  const saveBtn = document.getElementById('wx-save');
+  const cnyRate = rates?.CNY;
+  const catSelect = (r, i) => `<select data-cat="${i}" aria-label="Categoria">${EXPENSE_CATS.map(([k, , label]) => `<option value="${k}"${r.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
+  const rowHtml = (r, i) => `
+    <div class="wx-row${r.include ? '' : ' off'}">
+      <label class="wx-check"><input type="checkbox" data-inc="${i}"${r.include ? ' checked' : ''}${r.status === 'refunded' || r.status === 'imported' ? ' disabled' : ''}></label>
+      <div class="wx-body">
+        <div class="item-title">${esc(r.description)}</div>
+        <div class="item-sub">${r.spent_on.split('-').reverse().join('/')} ${esc(r.time)}${r.refunded && r.status !== 'refunded' ? ` · original ${priceIn(r.original_amount, 'CNY')}` : ''}</div>
+        ${r.note ? `<div class="item-sub wx-note">${esc(r.note)}</div>` : ''}
+        ${r.status === 'refunded' || r.status === 'imported' ? '' : catSelect(r, i)}
+      </div>
+      <div class="wx-amt"><b>${priceIn(r.amount, 'CNY')}</b>${cnyRate ? `<small>${brl(r.amount * cnyRate)}</small>` : ''}</div>
+    </div>`;
+  function render() {
+    const active = rows.map((r, i) => [r, i]).filter(([r]) => r.status !== 'refunded' && r.status !== 'imported');
+    const skipped = rows.map((r, i) => [r, i]).filter(([r]) => r.status === 'refunded' || r.status === 'imported');
+    const chosen = rows.filter((r) => r.include);
+    const total = chosen.reduce((sum, r) => sum + r.amount, 0);
+    list.innerHTML = rows.length ? `
+      <h2>Despesas encontradas (${active.length})</h2>
+      <div class="card wx-list">${active.map(([r, i]) => rowHtml(r, i)).join('') || '<div class="empty">Nenhuma despesa nova.</div>'}</div>
+      ${skipped.length ? `<details class="card wx-skipped"><summary>Não serão importadas (${skipped.length}): reembolsadas ou já importadas</summary>
+        ${skipped.map(([r, i]) => rowHtml(r, i)).join('')}</details>` : ''}` : '';
+    document.getElementById('wx-actions').hidden = !rows.length;
+    saveBtn.disabled = !chosen.length || !cnyRate;
+    saveBtn.textContent = chosen.length ? `Importar ${plural(chosen.length, 'despesa', 'despesas')} · ${priceIn(Math.round(total * 100) / 100, 'CNY')}${cnyRate ? ` (${brl(total * cnyRate)})` : ''}` : 'Nenhuma despesa marcada';
+  }
+  list.addEventListener('change', (e) => {
+    const inc = e.target.dataset.inc;
+    if (inc !== undefined) { rows[Number(inc)].include = e.target.checked; render(); return; }
+    const cat = e.target.dataset.cat;
+    if (cat !== undefined) rows[Number(cat)].category = e.target.value;
+  });
+  document.getElementById('wx-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > MAX_XLSX) { toast('Arquivo muito grande (máximo 3 MB).'); return; }
+    status.hidden = false;
+    status.className = 'ocr-status busy';
+    status.textContent = 'Lendo a fatura…';
+    try {
+      const r = await api('/api/expenses/import/wechat', { method: 'POST', body: { file: await readFileAsDataUrl(file) }, timeout: 60_000 });
+      rows = r.rows || [];
+      if (r.error) { status.className = 'ocr-status err'; status.textContent = r.error; render(); return; }
+      const count = (st) => rows.filter((x) => x.status === st).length;
+      status.className = 'ocr-status ok';
+      status.textContent = [`✓ ${plural(rows.length, 'saída lida', 'saídas lidas')}.`,
+        count('refunded') && `${count('refunded')} reembolsada(s) fora.`, count('imported') && `${count('imported')} já importada(s).`,
+        count('possible_duplicate') && `${count('possible_duplicate')} parecem já lançadas (desmarcadas — confira).`,
+        !cnyRate && 'Sem a cotação do yuan agora: conecte-se à internet para importar.'].filter(Boolean).join(' ');
+      render();
+    } catch (err) {
+      status.className = 'ocr-status err';
+      status.textContent = err.message;
+    }
+  });
+  saveBtn.addEventListener('click', async () => {
+    const chosen = rows.filter((r) => r.include);
+    if (!chosen.length || !cnyRate) return;
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Importando…';
+    try {
+      const r = await api('/api/expenses/import', { method: 'POST', timeout: 60_000, body: { items: chosen.map((x) => ({
+        client_ref: x.ref, spent_on: x.spent_on, description: x.description, category: x.category, payment: 'wechat', currency: 'CNY', amount: x.amount, rate_brl: cnyRate,
+      })) } });
+      toast(r.skipped ? `${r.created} despesa(s) importada(s); ${r.skipped} já estavam lançadas.` : `${r.created} despesa(s) importada(s).`);
+      location.hash = '#/expenses';
+    } catch (err) {
+      const box = document.getElementById('err');
+      box.textContent = err.message;
+      box.hidden = false;
+      render();
+    }
+  });
 }
 
 // Planilha (CSV) que abre no Excel em português: separador ";" e vírgula decimal.
@@ -4571,6 +4676,7 @@ const routes = [
   [/^\/credits$/, viewCredits],
   [/^\/admin\/credits$/, viewAdminCredits],
   [/^\/expenses$/, (m, q) => viewExpenses(q)],
+  [/^\/expenses\/import-wechat$/, () => viewWechatImport()],
   [/^\/expenses\/new$/, () => viewExpenseForm(null)],
   [/^\/expenses\/(\d+)\/edit$/, (m) => viewExpenseForm(m[1])],
   [/^\/products\/(\d+)$/, (m, q) => viewProduct(m[1], q)],

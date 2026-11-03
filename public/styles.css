@@ -663,3 +663,19 @@ body.map-mode main { display: none; }
 .move-company { display: flex; gap: 8px; align-items: center; }
 .move-company select { flex: 1; min-width: 0; }
 .move-company .btn { flex: none; }
+
+/* Importação da fatura do WeChat */
+.steps { margin: 0; padding-left: 20px; display: grid; gap: 6px; font-size: .92rem; }
+.wx-list, .wx-skipped { padding: 4px 12px; }
+.wx-row { display: flex; gap: 10px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--border); }
+.wx-row:last-child { border-bottom: 0; }
+.wx-row.off .wx-body, .wx-row.off .wx-amt { opacity: .55; }
+.wx-check { padding-top: 2px; }
+.wx-check input { width: 20px; height: 20px; }
+.wx-body { flex: 1; min-width: 0; display: grid; gap: 4px; }
+.wx-body .item-title { font-size: .95rem; overflow-wrap: anywhere; }
+.wx-body select { margin-top: 2px; max-width: 220px; padding: 6px 8px; font-size: .88rem; }
+.wx-note { color: var(--bad); }
+.wx-amt { text-align: right; white-space: nowrap; display: grid; }
+.wx-amt small { color: var(--muted, #666); }
+.wx-skipped summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
