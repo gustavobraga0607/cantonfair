@@ -3067,8 +3067,8 @@ async function viewWechatImport() {
       <label class="btn block">${ic('receipt')} Escolher a fatura (.xlsx)
         <input type="file" id="wx-file" accept=".xlsx,.csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv" hidden></label>
       <div class="ocr-status" id="wx-status" hidden></div>
-      <p class="hint" style="margin:0">Entram só as saídas (支出). Compras reembolsadas não entram; com reembolso parcial, entra o valor líquido.
-        Despesas já importadas ou já lançadas com a mesma data e valor ficam desmarcadas.</p>
+      <p class="hint" style="margin:0">Entram só as saídas (支出). Compras reembolsadas e as que parecem já lançadas (mesma data e valor) vêm desmarcadas
+        para você conferir; com reembolso parcial, entra o valor líquido. As já importadas antes não entram de novo.</p>
     </div>
     <div id="wx-rows"></div>
     <div class="error-box" id="err" hidden></div>
@@ -3080,24 +3080,24 @@ async function viewWechatImport() {
   const catSelect = (r, i) => `<select data-cat="${i}" aria-label="Categoria">${EXPENSE_CATS.map(([k, , label]) => `<option value="${k}"${r.category === k ? ' selected' : ''}>${esc(label)}</option>`).join('')}</select>`;
   const rowHtml = (r, i) => `
     <div class="wx-row${r.include ? '' : ' off'}">
-      <label class="wx-check"><input type="checkbox" data-inc="${i}"${r.include ? ' checked' : ''}${r.status === 'refunded' || r.status === 'imported' ? ' disabled' : ''}></label>
+      <label class="wx-check"><input type="checkbox" data-inc="${i}"${r.include ? ' checked' : ''}${r.status === 'imported' ? ' disabled' : ''}></label>
       <div class="wx-body">
         <div class="item-title">${esc(r.description)}</div>
         <div class="item-sub">${r.spent_on.split('-').reverse().join('/')} ${esc(r.time)}${r.refunded && r.status !== 'refunded' ? ` · original ${priceIn(r.original_amount, 'CNY')}` : ''}</div>
         ${r.note ? `<div class="item-sub wx-note">${esc(r.note)}</div>` : ''}
-        ${r.status === 'refunded' || r.status === 'imported' ? '' : catSelect(r, i)}
+        ${r.status === 'imported' ? '' : catSelect(r, i)}
       </div>
       <div class="wx-amt"><b>${priceIn(r.amount, 'CNY')}</b>${cnyRate ? `<small>${brl(r.amount * cnyRate)}</small>` : ''}</div>
     </div>`;
   function render() {
-    const active = rows.map((r, i) => [r, i]).filter(([r]) => r.status !== 'refunded' && r.status !== 'imported');
-    const skipped = rows.map((r, i) => [r, i]).filter(([r]) => r.status === 'refunded' || r.status === 'imported');
+    const active = rows.map((r, i) => [r, i]).filter(([r]) => r.status !== 'imported');
+    const skipped = rows.map((r, i) => [r, i]).filter(([r]) => r.status === 'imported');
     const chosen = rows.filter((r) => r.include);
     const total = chosen.reduce((sum, r) => sum + r.amount, 0);
     list.innerHTML = rows.length ? `
       <h2>Despesas encontradas (${active.length})</h2>
       <div class="card wx-list">${active.map(([r, i]) => rowHtml(r, i)).join('') || '<div class="empty">Nenhuma despesa nova.</div>'}</div>
-      ${skipped.length ? `<details class="card wx-skipped"><summary>Não serão importadas (${skipped.length}): reembolsadas ou já importadas</summary>
+      ${skipped.length ? `<details class="card wx-skipped"><summary>Já importadas antes (${skipped.length})</summary>
         ${skipped.map(([r, i]) => rowHtml(r, i)).join('')}</details>` : ''}` : '';
     document.getElementById('wx-actions').hidden = !rows.length;
     saveBtn.disabled = !chosen.length || !cnyRate;
@@ -3124,7 +3124,7 @@ async function viewWechatImport() {
       const count = (st) => rows.filter((x) => x.status === st).length;
       status.className = 'ocr-status ok';
       status.textContent = [`✓ ${plural(rows.length, 'saída lida', 'saídas lidas')}.`,
-        count('refunded') && `${count('refunded')} reembolsada(s) fora.`, count('imported') && `${count('imported')} já importada(s).`,
+        count('refunded') && `${count('refunded')} reembolsada(s) desmarcada(s) — confira.`, count('imported') && `${count('imported')} já importada(s).`,
         count('possible_duplicate') && `${count('possible_duplicate')} parecem já lançadas (desmarcadas — confira).`,
         !cnyRate && 'Sem a cotação do yuan agora: conecte-se à internet para importar.'].filter(Boolean).join(' ');
       render();

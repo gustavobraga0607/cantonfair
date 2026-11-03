@@ -1353,4 +1353,9 @@ test('fatura do WeChat: só saídas, sem reembolsadas, sem duplicar', async (t) 
   assert.equal(r.body.rows.filter((x) => x.status === 'imported').length, 3);
   assert.equal((await a('GET', '/api/expenses')).body.length, 4);
   assert.equal((await a('GET', '/api/expenses')).body.find((e) => e.description.startsWith('DiDi')).payment, 'wechat');
+  // reembolsada vem desmarcada, mas o usuário pode decidir lançar (pelo valor da compra)
+  const jd = rows.find((x) => x.status === 'refunded');
+  assert.equal(jd.amount, 1843);
+  r = await a('POST', '/api/expenses/import', { items: [{ client_ref: jd.ref, spent_on: jd.spent_on, description: jd.description, category: jd.category, currency: 'CNY', amount: jd.amount, rate_brl: 0.75 }] });
+  assert.deepEqual(r.body, { created: 1, skipped: 0 });
 });

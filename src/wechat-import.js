@@ -2,7 +2,7 @@
 
 // Fatura do WeChat Pay (微信支付账单明细) → despesas do controle de viagem.
 // Aceita o .xlsx exportado pelo WeChat (e o .csv das versões antigas). Só entram as saídas (支出);
-// as totalmente reembolsadas ficam de fora e as com reembolso parcial entram pelo valor líquido.
+// as totalmente reembolsadas vêm desmarcadas (o usuário decide) e as com reembolso parcial entram pelo valor líquido.
 // A leitura não grava nada: devolve as linhas para o usuário conferir no app.
 
 const { cellValue } = require('./itinerary');
@@ -135,13 +135,14 @@ async function parseWechatBill(buf, existing = []) {
       amount: net > 0 ? net : amount, original_amount: amount, refunded: refunded > 0 ? Math.min(refunded, amount) : 0,
       party, item: item === '/' ? '' : item, type, status: 'new', include: true, note: '',
     };
-    if (net <= 0) {
-      Object.assign(row, { status: 'refunded', include: false, note: 'Reembolsada: não entra nas despesas.' });
-    } else if (refs.has(ref)) {
+    const twin = existing.find((e) => !String(e.client_ref || '').startsWith('wechat-') && e.currency === 'CNY'
+      && e.spent_on === when.day && Math.abs(Number(e.amount) - row.amount) < 0.01);
+    if (refs.has(ref)) {
       Object.assign(row, { status: 'imported', include: false, note: 'Já importada antes.' });
+    } else if (net <= 0) {
+      Object.assign(row, { status: 'refunded', include: false,
+        note: `Reembolsada: só entra se você marcar.${twin ? ` Parece já lançada: "${twin.description}".` : ''}` });
     } else {
-      const twin = existing.find((e) => !String(e.client_ref || '').startsWith('wechat-') && e.currency === 'CNY'
-        && e.spent_on === when.day && Math.abs(Number(e.amount) - net) < 0.01);
       if (twin) Object.assign(row, { status: 'possible_duplicate', include: false, note: `Parece já lançada: "${twin.description}".` });
       else if (/银行卡/.test(type)) Object.assign(row, { include: false, note: 'Transferência para cartão bancário: confira se é uma despesa.' });
       else if (refunded > 0) row.note = `Reembolso parcial de ¥ ${refunded.toFixed(2)}: entra o valor líquido.`;
