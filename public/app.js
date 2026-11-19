@@ -827,7 +827,8 @@ async function viewSuppliers() {
   $app.innerHTML = `
     ${list.offline ? offlineNote('fornecedores') : ''}
     ${scopeBarHtml()}
-    <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand, província"></div>
+    <div class="toolbar"><input type="search" id="q" placeholder="Buscar fornecedor, contato, stand, província">
+      <a class="btn small" href="#/suppliers/quotes" title="Planilha com os produtos e preços das fotos dos fornecedores">${ic('receipt')} Cotações</a></div>
     <div class="list" id="list"></div>
     <a class="fab" href="#/suppliers/new" aria-label="Novo fornecedor">+</a>`;
   const render = (q = '') => {
@@ -867,6 +868,155 @@ async function viewSuppliers() {
         toast('Fornecedor excluído.');
       } catch (err) { toast(err.message); }
     } }]);
+  });
+}
+
+// ---- planilha das cotações (fotos dos fornecedores) ----
+// O leitor de produtos lê cada foto dos fornecedores (tabela de preços, etiqueta, catálogo) e o app monta
+// no celular um Excel com os produtos e preços por fornecedor, com a foto da cotação ao lado.
+let excelLib = null;
+const loadExcel = () => (excelLib ??= new Promise((resolve, reject) => {
+  const el = document.createElement('script');
+  el.src = '/vendor/exceljs.min.js';
+  el.onload = () => resolve(window.ExcelJS);
+  el.onerror = () => { excelLib = null; reject(new Error('Não consegui carregar o gerador de planilhas. Confira a internet.')); };
+  document.head.append(el);
+}));
+// Foto em JPEG reduzido (para a planilha não ficar pesada) e o tamanho em pixels.
+async function photoForSheet(url, maxSide = 1100) {
+  const blob = await (await fetch(url, { credentials: 'same-origin' })).blob();
+  const src = await readFileAsDataUrl(blob);
+  const img = await new Promise((resolve, reject) => { const i = new Image(); i.onload = () => resolve(i); i.onerror = reject; i.src = src; });
+  const k = Math.min(1, maxSide / Math.max(img.naturalWidth, img.naturalHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * k);
+  c.height = Math.round(img.naturalHeight * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return { base64: c.toDataURL('image/jpeg', 0.72).split(',')[1], width: c.width, height: c.height };
+}
+
+async function viewQuotesSheet() {
+  setChrome({ title: 'Planilha das cotações', back: '#/suppliers', tab: 'suppliers' });
+  loading();
+  const scope = isAdmin() ? getScope() : null;
+  const list = await api('/api/quotes/photos' + (scope ? `?company=${encodeURIComponent(scope)}` : ''));
+  const total = list.reduce((n, s) => n + s.photos.length, 0);
+  $app.innerHTML = `
+    ${scopeBarHtml()}
+    <div class="card stack">
+      <div class="block-title">Produtos e preços das fotos dos fornecedores</div>
+      <p style="margin:0">${total ? `<b>${plural(total, 'foto', 'fotos')}</b> em <b>${plural(list.length, 'fornecedor', 'fornecedores')}</b>.` : 'Nenhuma foto de fornecedor cadastrada ainda.'}</p>
+      <p class="hint" style="margin:0">O app lê cada foto (tabelas de preço, etiquetas, catálogos) e monta um Excel com os produtos e preços
+        organizados por fornecedor, com a foto da cotação ao lado para conferir. Fotos sem produtos (stand, pessoas) ficam só com a foto.
+        Leva alguns segundos por foto.</p>
+      ${state.me?.features?.product_ocr ? '' : '<div class="ocr-status err">Leitor de fotos não configurado (ANTHROPIC_API_KEY na Vercel).</div>'}
+      <button type="button" class="btn primary block" id="q-run"${total && state.me?.features?.product_ocr ? '' : ' disabled'}>${ic('download')} Ler as fotos e gerar a planilha</button>
+      <div class="ocr-status" id="q-status" hidden></div>
+    </div>`;
+  bindScopeBar();
+  const status = document.getElementById('q-status');
+  const btn = document.getElementById('q-run');
+  const say = (cls, t) => { status.hidden = false; status.className = `ocr-status ${cls}`; status.textContent = t; };
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    const page = location.hash;
+    const jobs = list.flatMap((s) => s.photos.map((ph, i) => ({ s, ph, n: i + 1 })));
+    let done = 0;
+    let failed = 0;
+    try {
+      const ExcelJS = await loadExcel();
+      // Leitura: 3 fotos ao mesmo tempo.
+      let next = 0;
+      const worker = async () => {
+        while (next < jobs.length && location.hash === page) {
+          const j = jobs[next++];
+          try {
+            const [read, img] = await Promise.all([
+              api('/api/quotes/read', { method: 'POST', body: { photo_id: j.ph.id }, timeout: 90_000, background: true }),
+              photoForSheet(j.ph.url),
+            ]);
+            Object.assign(j, { products: read.products || [], img });
+          } catch (err) {
+            failed++;
+            j.error = err.message;
+            j.products = [];
+            j.img = await photoForSheet(j.ph.url).catch(() => null);
+          }
+          done++;
+          say('busy', `Lendo as fotos… ${done} de ${jobs.length}`);
+        }
+      };
+      say('busy', `Lendo as fotos… 0 de ${jobs.length}`);
+      await Promise.all([worker(), worker(), worker()]);
+      if (location.hash !== page) return;
+      say('busy', 'Montando a planilha…');
+      const wb = new ExcelJS.Workbook();
+      wb.creator = 'Missão China by BR Trading';
+      const ws = wb.addWorksheet('Cotações por fornecedor', { views: [{ state: 'frozen', ySplit: 1 }] });
+      const cols = [['Foto da cotação', 48], ['Produto', 34], ['Nome na foto', 26], ['Preço', 11], ['Moeda', 8], ['MOQ', 10], ['Incoterm', 10], ['Faixas / observação', 30], ['Especificações', 40]];
+      ws.columns = cols.map(([header, width]) => ({ header, width }));
+      ws.getRow(1).font = { bold: true };
+      ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEFEFEF' } };
+      const flat = wb.addWorksheet('Lista de produtos', { views: [{ state: 'frozen', ySplit: 1 }] });
+      flat.columns = [['Fornecedor', 28], ['Stand', 12], ['Produto', 34], ['Nome na foto', 26], ['Preço', 11], ['Moeda', 8], ['MOQ', 10], ['Incoterm', 10],
+        ['Faixas / observação', 30], ['Especificações', 40], ['Foto', 8]].map(([header, width]) => ({ header, width }));
+      flat.getRow(1).font = { bold: true };
+      const IMG_W = 330; // largura da foto na planilha (px); a altura segue a proporção
+      const ROW_H = 20; // altura das linhas de produto (pontos)
+      let r = 2;
+      for (const s of list) {
+        const head = ws.getRow(r);
+        head.getCell(1).value = [s.name, s.booth && `Stand ${s.booth}`, s.contact_name, s.phone, isAdmin() && (s.company_name || s.company_cnpj)].filter(Boolean).join(' · ');
+        ws.mergeCells(r, 1, r, cols.length);
+        head.font = { bold: true, size: 13, color: { argb: 'FFFFFFFF' } };
+        head.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF0A0A0A' } };
+        head.height = 22;
+        r++;
+        for (const j of jobs.filter((x) => x.s === s)) {
+          const start = r;
+          const items = j.products.length ? j.products : [null];
+          for (const p of items) {
+            const row = ws.getRow(r);
+            row.height = ROW_H;
+            if (p) {
+              row.values = ['', p.name, p.name_original || '', p.price ?? '', p.price != null ? (p.currency === 'USD' ? 'US$' : '¥') : '', p.moq ?? '', p.incoterm || '', p.price_note || '', p.specs || ''];
+              flat.addRow([s.name, s.booth || '', p.name, p.name_original || '', p.price ?? '', p.price != null ? (p.currency === 'USD' ? 'US$' : '¥') : '', p.moq ?? '',
+                p.incoterm || '', p.price_note || '', p.specs || '', `${j.n}`]);
+            } else {
+              row.getCell(2).value = j.error ? `Não consegui ler esta foto: ${j.error}` : 'Nenhum produto identificado nesta foto.';
+              row.getCell(2).font = { italic: true, color: { argb: 'FF888888' } };
+            }
+            row.alignment = { vertical: 'top', wrapText: true };
+            r++;
+          }
+          // A foto ocupa a coluna A: linhas extras até caber a altura dela.
+          if (j.img) {
+            const h = Math.round(IMG_W * (j.img.height / j.img.width));
+            const needRows = Math.ceil((h * 0.75) / ROW_H) + 2; // + a linha do rótulo "Foto N"
+            while (r - start < needRows) { ws.getRow(r).height = ROW_H; r++; }
+            const id = wb.addImage({ base64: j.img.base64, extension: 'jpeg' });
+            ws.addImage(id, { tl: { col: 0.1, row: start + 0.1 }, ext: { width: IMG_W, height: h }, hyperlinks: { hyperlink: new URL(j.ph.url, location.origin).href } });
+          }
+          ws.getCell(start, 1).value = `Foto ${j.n}`;
+          ws.getCell(start, 1).alignment = { vertical: 'top' };
+          r++; // linha em branco entre as fotos
+        }
+      }
+      const buf = await wb.xlsx.writeBuffer();
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      a.download = `cotacoes-fornecedores-${isoToday()}.xlsx`;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+      const nProducts = jobs.reduce((n, j) => n + j.products.length, 0);
+      say(failed ? 'err' : 'ok', `✓ Planilha gerada: ${plural(nProducts, 'produto', 'produtos')} de ${plural(jobs.length, 'foto', 'fotos')}.${failed ? ` ${failed} foto(s) não puderam ser lidas (estão na planilha só com a foto).` : ''}`);
+    } catch (err) {
+      say('err', err.message);
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
@@ -4675,6 +4825,7 @@ const routes = [
   [/^\/tourism$/, (m, q) => viewTourism(q)],
   [/^\/credits$/, viewCredits],
   [/^\/admin\/credits$/, viewAdminCredits],
+  [/^\/suppliers\/quotes$/, () => viewQuotesSheet()],
   [/^\/expenses$/, (m, q) => viewExpenses(q)],
   [/^\/expenses\/import-wechat$/, () => viewWechatImport()],
   [/^\/expenses\/new$/, () => viewExpenseForm(null)],

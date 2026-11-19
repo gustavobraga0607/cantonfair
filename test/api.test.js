@@ -1359,3 +1359,26 @@ test('fatura do WeChat: só saídas, sem reembolsadas, sem duplicar', async (t) 
   r = await a('POST', '/api/expenses/import', { items: [{ client_ref: jd.ref, spent_on: jd.spent_on, description: jd.description, category: jd.category, currency: 'CNY', amount: jd.amount, rate_brl: 0.75 }] });
   assert.deepEqual(r.body, { created: 1, skipped: 0 });
 });
+
+test('planilha das cotações: lista as fotos dos fornecedores e lê cada uma (só da própria empresa)', async (t) => {
+  const readProducts = async (mime, b64) => ({ products: [{ name: 'Copo', name_original: '', price: 10, currency: 'CNY', price_note: '', moq: 100, incoterm: 'FOB', specs: '', _len: b64.length }] });
+  const { base, close } = await setup({ readProducts });
+  t.after(close);
+  const a = client(base);
+  const b = client(base);
+  await a('POST', '/api/register', { name: 'A', email: 'a@x.com', password: '12345678', cnpj: '11222333000181' });
+  await b('POST', '/api/register', { name: 'B', email: 'b@y.com', password: '12345678', cnpj: '11444777000161' });
+  const s = (await a('POST', '/api/suppliers', { name: 'S', booth: '1.1 A1' })).body;
+  await a('POST', '/api/suppliers', { name: 'Sem fotos' });
+  await a('POST', `/api/suppliers/${s.id}/photos`, { photo: PNG });
+  const list = (await a('GET', '/api/quotes/photos')).body;
+  assert.equal(list.length, 1, 'só fornecedores com fotos');
+  assert.equal(list[0].booth, '1.1 A1');
+  assert.equal(list[0].photos.length, 1);
+  assert.deepEqual((await b('GET', '/api/quotes/photos')).body, [], 'outra empresa não vê');
+  const pid = list[0].photos[0].id;
+  assert.equal((await b('POST', '/api/quotes/read', { photo_id: pid })).status, 404, 'outra empresa não lê');
+  const r = await a('POST', '/api/quotes/read', { photo_id: pid });
+  assert.equal(r.status, 200);
+  assert.equal(r.body.products[0].name, 'Copo');
+});

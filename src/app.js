@@ -63,6 +63,7 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
   const emailLimiter = auth.createRateLimiter({ max: 30 });                          // e-mail, de qualquer IP
   const cnpjLimiter = auth.createRateLimiter({ max: 60 });                           // consultas públicas de CNPJ por IP
   const ocrLimiter = auth.createRateLimiter({ max: 60, windowMs: 60 * 60_000 });     // leituras de cartão por usuário/hora
+  const quoteLimiter = auth.createRateLimiter({ max: 400, windowMs: 60 * 60_000 });  // leituras das fotos de cotação (planilha)
   const cornerLimiter = auth.createRateLimiter({ max: 200, windowMs: 60 * 60_000 }); // cantos do cartão (consulta leve)
   const clientIp = (req) => String(req.headers['x-real-ip'] || req.headers['x-forwarded-for'] || req.socket.remoteAddress || '')
     .split(',')[0].trim();
@@ -1105,6 +1106,41 @@ function createApp({ db, publicDir, fetchCny = fetchCnyBrl, cnpjLookup = cnpjUti
     const s = await loadSupplier(db, accessCnpj(user), params.id);
     await db.tx((q) => removeSupplierPhotos(q, s.cnpj, 'id = ? AND supplier_id = ?', [toId(params.photoId), s.id]));
     return { photos: await supplierPhotos(s.id) };
+  });
+
+  // Planilha das cotações: fotos dos fornecedores (tabelas de preço, etiquetas) lidas uma a uma pelo
+  // leitor de produtos. A planilha é montada no celular (com as fotos), aqui só a lista e a leitura.
+  route('GET', '/api/quotes/photos', async ({ user, query }) => {
+    const cnpj = listCnpj(user, query);
+    const rows = await db.all(`
+      SELECT s.id, s.name, s.booth, s.contact_name, s.phone, s.cnpj, c.name AS company_name, ph.id AS photo_id, ph.image_id
+      FROM supplier_photos ph JOIN suppliers s ON s.id = ph.supplier_id JOIN companies c ON c.cnpj = s.cnpj
+      WHERE 1 = 1${companyFilter('s', cnpj)} ORDER BY lower(s.name), ph.id`, companyParam(cnpj));
+    const out = [];
+    for (const r of rows) {
+      let s = out[out.length - 1];
+      if (!s || s.id !== r.id) {
+        s = { id: r.id, name: r.name, booth: r.booth ?? null, contact_name: r.contact_name ?? null, phone: r.phone ?? null,
+          company_cnpj: r.cnpj, company_name: r.company_name ?? null, photos: [] };
+        out.push(s);
+      }
+      s.photos.push({ id: r.photo_id, url: photoUrl(r.image_id) });
+    }
+    return out;
+  });
+  route('POST', '/api/quotes/read', async ({ user, body }) => {
+    if (!readProducts) throw new HttpError(503, 'Leitor de fotos não configurado (defina ANTHROPIC_API_KEY na Vercel).');
+    if (!quoteLimiter.hit(String(user.id))) throw new HttpError(429, 'Muitas leituras de foto em pouco tempo. Tente mais tarde.');
+    const cnpj = accessCnpj(user);
+    const ph = await db.get(`SELECT i.mime, i.data FROM supplier_photos ph JOIN suppliers s ON s.id = ph.supplier_id JOIN images i ON i.id = ph.image_id
+      WHERE ph.id = ?${companyFilter('s', cnpj)}`, [toId(body.photo_id), ...companyParam(cnpj)]);
+    if (!ph) throw new HttpError(404, 'Foto não encontrada.');
+    try {
+      return await readProducts(ph.mime, Buffer.from(ph.data).toString('base64'));
+    } catch (err) {
+      if (err instanceof OcrError) throw new HttpError(err.status, err.message);
+      throw err;
+    }
   });
 
   // --- produtos ---
